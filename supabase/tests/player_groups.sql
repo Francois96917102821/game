@@ -335,10 +335,14 @@ begin
     raise exception 'Mailbox data must be inaccessible directly and mailbox RPCs must be security definer';
   end if;
 
-  perform set_config('request.jwt.claim.sub', '11111111-1111-4111-8111-111111111111', true);
-  perform public.heartbeat_player_group('Owner', 250, true);
-  perform set_config('request.jwt.claim.sub', '22222222-2222-4222-8222-222222222222', true);
-  perform public.heartbeat_player_group('Partner', 250, true);
+  reset role;
+  update public.player_group_members
+  set level = 250, heartbeat_at = now()
+  where user_id in (
+    '11111111-1111-4111-8111-111111111111',
+    '22222222-2222-4222-8222-222222222222'
+  );
+  set local role authenticated;
   perform set_config('request.jwt.claim.sub', '11111111-1111-4111-8111-111111111111', true);
   insert into public.game_saves (user_id, save_data)
   values (

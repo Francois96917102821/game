@@ -1,0 +1,432 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8">
+    <title>Тесты домов и участков</title>
+  </head>
+  <body>
+    <h1 id="result">RUNNING</h1>
+    <pre id="log"></pre>
+    <script src="../tavern-model.js"></script>
+    <script src="../homestead-model.js"></script>
+    <script>
+      "use strict";
+
+      const output = document.getElementById("log");
+      const failures = [];
+      const model = window.WellHomesteadModel;
+      const hour = model.HOUR;
+      function assert(condition, message) {
+        if (!condition) throw new Error(message);
+      }
+      function rejects(action, message) {
+        let rejected = false;
+        try { action(); } catch { rejected = true; }
+        assert(rejected, message);
+      }
+      function check(name, action) {
+        try {
+          action();
+          output.textContent += `PASS ${name}\n`;
+        } catch (error) {
+          failures.push(`${name}: ${error.message}`);
+          output.textContent += `FAIL ${name}: ${error.message}\n`;
+        }
+      }
+      function addHome(state, tier, payment, essence, gold, id, now) {
+        const result = model.purchaseHome(state, tier, payment, essence, gold, id, now);
+        assert(result.ok, result.reason || `could not buy ${tier}`);
+        return result;
+      }
+      function addPlot(state, essence, id, now) {
+        const result = model.buyPlot(state, essence, id, now);
+        assert(result.ok, result.reason || "could not buy plot");
+        return result;
+      }
+      function createHouseWithPlots(tier, count, now = 1000) {
+        let bought = addHome(model.createState(now), tier, tier === "cabin" ? "gold" : "essence",
+          100000, 100000, `home-${tier}`, now);
+        let state = bought.state;
+        for (let index = 0; index < count; index += 1) {
+          state = addPlot(state, 100000, `plot-${tier}-${index}`, now + index + 1).state;
+        }
+        state = model.enterHome(state, now + count + 2).state;
+        return state;
+      }
+      function build(state, index, building, stock, now = 2000) {
+        const result = model.buildOrUpgrade({ ...state, resources: { ...state.resources, ...stock } },
+          index, building, now);
+        assert(result.ok, result.reason || `could not build ${building}`);
+        return result.state;
+      }
+      function resourceBag(values = {}) {
+        return Object.fromEntries(model.RESOURCE_KEYS.map((key) => [key, values[key] || 0]));
+      }
+      function buildWithStorage(state, plotIndex, building, now = 2000) {
+        const storageIndex = state.plots.length - 1;
+        assert(storageIndex !== plotIndex, "test setup needs a separate storage plot");
+        state.resources = resourceBag({ boards: 5, blocks: 5, ingots: 3, cloth: 3 });
+        state = build(state, storageIndex, "storage", {}, now);
+        const recipe = model.BUILDINGS[building].recipe;
+        const required = Object.values(recipe).reduce((sum, amount) => sum + amount, 0);
+        while (model.getStorageCapacity(state) < required) {
+          state.resources = resourceBag({ boards: 5, blocks: 5, ingots: 3, cloth: 3 });
+          state = build(state, storageIndex, "storage", {}, now + 1);
+        }
+        state.resources = resourceBag(recipe);
+        return build(state, plotIndex, building, {}, now + 2);
+      }
+
+      check("house prices, tier selection, unlimited ownership, and upper-district prerequisite", () => {
+        const empty = model.createState(1000);
+        const poor = model.purchaseHome(empty, "cabin", "gold", 0, 19999, "poor", 1001);
+        assert(!poor.ok && poor.gold === undefined && empty.homes.length === 0, "insufficient gold is not charged");
+        const cabin = addHome(empty, "cabin", "gold", 0, 25000, "cabin-one", 1002);
+        assert(cabin.gold === 5000 && cabin.state.homes.length === 1, "simple cabin costs exactly 20,000 persistent tavern gold");
+        const sturdy = addHome(cabin.state, "sturdy", "essence", 900, 5000, "sturdy-one", 1003);
+        assert(sturdy.essence === 500 && model.getBestHome(sturdy.state).tier === "sturdy",
+          "a 400-shard sturdy home becomes the automatically active home");
+        const mansion = model.purchaseHome(sturdy.state, "mansion", "upgrade", 500, 5000, "mansion-one", 1004);
+        assert(!mansion.ok && mansion.reason.includes("600"), "the sturdy-plus-600 path checks exact balance");
+        const mansionBought = addHome(sturdy.state, "mansion", "upgrade", 600, 5000, "mansion-one", 1005);
+        assert(mansionBought.essence === 0 && model.getBestHome(mansionBought.state).tier === "mansion",
+          "upgrading a sturdy home to a mansion costs exactly 600 shards");
+        const secondMansion = addHome(mansionBought.state, "mansion", "essence", 1000, 5000, "mansion-two", 1006);
+        assert(secondMansion.state.homes.length === 4 && model.getBestHome(secondMansion.state).tier === "mansion",
+          "any number of houses may be owned");
+        const legacy = model.withDefaults({ homes: [] }, 2000);
+        assert(model.isValidState(legacy) && legacy.homes.length === 0, "legacy saves gain safe defaults");
+      });
+
+      check("plot capacity grows with the best home and never removes purchased slots", () => {
+        let state = createHouseWithPlots("cabin", 2);
+        const third = model.buyPlot(state, 1000, "too-many", 3000);
+        assert(!third.ok && third.essence === undefined, "a cabin cannot buy a third active plot");
+        const sturdy = addHome(state, "sturdy", "essence", 1000, 0, "sturdy", 3001);
+        state = sturdy.state;
+        state = addPlot(state, 900, "plot-three", 3002).state;
+        state = addPlot(state, 800, "plot-four", 3003).state;
+        state = addHome(state, "mansion", "essence", 1000, 0, "mansion", 3004).state;
+        state = addPlot(state, 700, "plot-five", 3005).state;
+        state = addPlot(state, 600, "plot-six", 3006).state;
+        assert(state.plots.map((plot) => plot.index).join(",") === "0,1,2,3,4,5",
+          "plot indices remain stable across house upgrades");
+        assert(model.getPlotLimit(state) === 6, "mansion opens six plot slots");
+      });
+
+      check("workshop recipes, exact 3-to-1 processing, levels, daily quotas, and warehouse capacity", () => {
+        let state = createHouseWithPlots("cabin", 2);
+        state = build(state, 0, "boards", { logs: 15, stone: 15 }, 2000);
+        assert(state.resources.logs === 10 && state.resources.stone === 10, "building a workshop costs exactly 5 logs and 5 stone");
+        state.resources = resourceBag({ logs: 9 });
+        state = model.processMaterials(state, 0, 2, 3000).state;
+        assert(state.resources.logs === 3 && state.resources.boards === 2, "two operations consume six logs and produce two boards");
+        state = model.processMaterials(state, 0, 1, 3001).state;
+        const overQuota = model.processMaterials(state, 0, 1, 3002);
+        assert(!overQuota.ok && state.resources.logs === 0, "level-one workshop allows exactly three daily operations");
+        state.resources.logs = 3;
+        const nextDay = model.processMaterials(state, 0, 1, 24 * 60 * 60 * 1000 + 3000);
+        assert(nextDay.ok, "daily workshop quota resets on the next UTC day");
+        state = nextDay.state;
+        state.resources = resourceBag({ logs: 5, stone: 5 });
+        state = model.buildOrUpgrade(state, 0, "boards", 24 * 60 * 60 * 1000 + 3001).state;
+        assert(state.plots[0].level === 2, "workshops remain upgradeable beyond the first level");
+        state.resources = resourceBag({ logs: 9 });
+        const levelTwo = model.processMaterials(state, 0, 3, 24 * 60 * 60 * 1000 + 3002);
+        assert(levelTwo.ok && levelTwo.quota === 4 && levelTwo.state.plots[0].daily.processed === 4,
+          "level-two workshop permits exactly four daily operations");
+        state.plots[0].level = 10001;
+        assert(model.isValidState(state), "workshop levels have no gameplay cap");
+        let rebuild = createHouseWithPlots("cabin", 2);
+        rebuild = build(rebuild, 0, "boards", { logs: 5, stone: 5 }, 4000);
+        rebuild.resources = resourceBag({ logs: 5, stone: 5, boards: 1 });
+        rebuild = model.buildOrUpgrade(rebuild, 0, "blocks", 4001).state;
+        assert(rebuild.plots[0].building === "blocks" && rebuild.plots[0].level === 1 &&
+          rebuild.resources.logs === 0 && rebuild.resources.stone === 0 && rebuild.resources.boards === 1,
+        "rebuilding pays the complete new recipe, resets the building level, and preserves stored products");
+        let usedQuota = createHouseWithPlots("cabin", 2);
+        usedQuota = build(usedQuota, 0, "boards", { logs: 5, stone: 5 }, 5000);
+        usedQuota.resources = resourceBag({ logs: 3 });
+        usedQuota = model.processMaterials(usedQuota, 0, 1, 5001).state;
+        usedQuota.resources = resourceBag({ logs: 5, stone: 5 });
+        const blockedRebuild = model.buildOrUpgrade(usedQuota, 0, "blocks", 5002);
+        assert(!blockedRebuild.ok && blockedRebuild.reason.includes("дневную квоту") &&
+          usedQuota.resources.logs === 5,
+        "rebuilding cannot reset a workshop's used daily quota or charge materials");
+        let warehouse = createHouseWithPlots("cabin", 2);
+        warehouse.resources = resourceBag({ boards: 6, blocks: 5, ingots: 3, cloth: 3 });
+        warehouse = build(warehouse, 0, "storage", {}, 5000);
+        assert(model.getStorageCapacity(warehouse) === 30, "level-one warehouse gives exactly 20 + 10 capacity");
+        assert(warehouse.resources.boards === 1 && warehouse.resources.blocks === 0 &&
+          warehouse.resources.ingots === 0 && warehouse.resources.cloth === 0,
+        "warehouse construction consumes its exact material recipe");
+        warehouse.resources = resourceBag({ boards: 5, blocks: 5, ingots: 3, cloth: 3 });
+        warehouse = model.buildOrUpgrade(warehouse, 0, "storage", 5001).state;
+        warehouse.resources = resourceBag({ logs: 5, stone: 5, seeds: 26 });
+        const overCapacity = model.buildOrUpgrade(warehouse, 0, "boards", 5002);
+        assert(!overCapacity.ok && overCapacity.reason.includes("склад не вместит") &&
+          warehouse.resources.logs === 5 && model.isValidState(warehouse),
+        "rebuilding storage cannot strand more resources than the reduced capacity or charge materials");
+      });
+
+      check("gathering and pond water/fishing are home-only, capped, and time-gated", () => {
+        let state = createHouseWithPlots("cabin", 2);
+        const away = model.gather({ ...state, atHome: false }, 10000);
+        assert(!away.ok, "gathering away from home is rejected");
+        const gathered = model.gather(state, 10000);
+        assert(gathered.ok && gathered.state.resources.logs === 5 && gathered.state.resources.bait === 3 &&
+          gathered.state.resources.seeds === 1, "daily home gathering has fixed, documented yields");
+        assert(!model.gather(gathered.state, 10000 + model.DAY - 1).ok, "gathering cannot bypass its 24-hour cooldown");
+        let pond = createHouseWithPlots("sturdy", 3, 10000);
+        pond = buildWithStorage(pond, 0, "pond", 11000);
+        pond.resources.bait = 3;
+        const water = model.drawWater(pond, 0, 12000);
+        assert(water.ok && water.water === 300, "one water draw adds exactly 300");
+        assert(!model.drawWater(water.state, 0, 12000 + 8 * hour - 1).ok, "water source has an eight-hour cooldown");
+        const pondReplacementState = {
+          ...water.state,
+          resources: resourceBag({ boards: 5, blocks: 5, ingots: 3, cloth: 3, bait: 3 }),
+        };
+        const blockedPondReplacement = model.buildOrUpgrade(pondReplacementState, 0, "storage", 12001);
+        assert(!blockedPondReplacement.ok && blockedPondReplacement.reason.includes("выловлен") &&
+          pondReplacementState.resources.boards === 5,
+        "a pond with water cannot be replaced or charged");
+        const catchResult = model.fish(water.state, 0, 13000, () => 0);
+        assert(catchResult.ok && catchResult.fish === 3 && catchResult.state.plots[0].water === 0 &&
+          catchResult.state.resources.bait === 0, "level-one pond consumes 300 water and 3 bait for three fish");
+        const pondCooldownState = {
+          ...catchResult.state,
+          resources: resourceBag({ boards: 5, blocks: 5, ingots: 3, cloth: 3 }),
+        };
+        const blockedCooldownReplacement = model.buildOrUpgrade(pondCooldownState, 0, "storage", 13001);
+        assert(!blockedCooldownReplacement.ok && blockedCooldownReplacement.reason.includes("таймера пруда") &&
+          pondCooldownState.resources.boards === 5,
+        "rebuilding cannot reset a pond's eight-hour cooldown or charge materials");
+        assert(!model.fish(catchResult.state, 0, 13000 + 8 * hour).ok, "fishing requires at least 300 water");
+        let full = { ...water.state, plots: water.state.plots.map((plot) =>
+          plot.building === "pond" ? { ...plot, water: 900 } : plot) };
+        full = model.drawWater(full, 0, 12000 + 8 * hour).state;
+        assert(full.plots[0].water === 1000, "pond water never exceeds its 1,000 cap");
+        assert(!model.drawWater(full, 0, 12000 + 16 * hour).ok, "a full pond cannot create excess water");
+        let maxPond = buildWithStorage(createHouseWithPlots("sturdy", 3, 20000), 0, "pond", 20010);
+        for (let level = 2; level <= 18; level += 1) {
+          maxPond.resources = resourceBag(model.BUILDINGS.pond.recipe);
+          maxPond = model.buildOrUpgrade(maxPond, 0, "pond", 20010 + level).state;
+        }
+        maxPond.resources = resourceBag(model.BUILDINGS.pond.recipe);
+        const cappedPond = model.buildOrUpgrade(maxPond, 0, "pond", 30000);
+        assert(!cappedPond.ok && maxPond.plots[0].level === 18 &&
+          maxPond.resources.boards === 10, "pond stops at level 18 without consuming upgrade materials");
+      });
+
+      check("garden seeds, two watering timestamps, harvest yield, and missed-window recovery", () => {
+        let garden = createHouseWithPlots("sturdy", 3, 9000);
+        garden = buildWithStorage(garden, 0, "garden", 10000);
+        garden.resources.seeds = 1;
+        assert(!model.plant({ ...garden, atHome: false }, 0, 10001).ok, "planting is home-only");
+        garden = model.plant(garden, 0, 10001).state;
+        garden.resources = resourceBag({ boards: 5, blocks: 5, ingots: 3, cloth: 3 });
+        const blockedGardenReplacement = model.buildOrUpgrade(garden, 0, "storage", 10002);
+        assert(!blockedGardenReplacement.ok && blockedGardenReplacement.reason.includes("посев") &&
+          garden.resources.boards === 5,
+        "a planted garden cannot be replaced or charged");
+        assert(!model.waterGarden(garden, 0, 10001 + 10 * hour - 1).ok, "second watering is blocked before 10 hours");
+        garden = model.waterGarden(garden, 0, 10001 + 11 * hour).state;
+        assert(!model.harvestGarden(garden, 0, 10001 + 20 * hour - 1).ok, "harvest requires 20 hours");
+        const harvest = model.harvestGarden(garden, 0, 10001 + 20 * hour);
+        assert(harvest.ok && harvest.herbs === 3 && harvest.state.resources.herbs === 3,
+          "level-one garden yields exactly 2 + level plants after two waterings");
+        garden = harvest.state;
+        garden.resources.seeds = 1;
+        let expired = model.plant(garden, 0, 50000).state;
+        assert(!model.waterGarden(expired, 0, 50000 + 12 * hour + 1).ok, "late watering is rejected");
+        expired = model.discardCrop(expired, 0, 50000 + 12 * hour + 1).state;
+        assert(expired.plots[0].crop === null && expired.resources.seeds === 0,
+          `missed crops can be cleared without refunding the seed (${JSON.stringify(expired.plots[0].crop)}; ${expired.resources.seeds})`);
+        let maxGarden = buildWithStorage(createHouseWithPlots("sturdy", 3, 60000), 0, "garden", 60010);
+        for (let level = 2; level <= 8; level += 1) {
+          maxGarden.resources = resourceBag(model.BUILDINGS.garden.recipe);
+          maxGarden = model.buildOrUpgrade(maxGarden, 0, "garden", 60010 + level).state;
+        }
+        maxGarden.resources = resourceBag(model.BUILDINGS.garden.recipe);
+        const cappedGarden = model.buildOrUpgrade(maxGarden, 0, "garden", 70000);
+        assert(!cappedGarden.ok && maxGarden.plots[0].level === 8 &&
+          maxGarden.resources.boards === 15, "garden stops at level 8 without consuming upgrade materials");
+      });
+
+      check("sanctuary costs scale, fishing altar effect is real, and unsupported altars cannot charge", () => {
+        let state = createHouseWithPlots("mansion", 3);
+        const first = model.upgradeAltar(state, "fishing", 500, "altar-1", 10000);
+        assert(first.ok && first.cost === 100 && first.essence === 400 &&
+          first.state.altars.fishing === 1, "first altar upgrade costs 100 × (0 + 1)");
+        const second = model.upgradeAltar(first.state, "fishing", 400, "altar-2", 10001);
+        assert(second.ok && second.cost === 200 && second.essence === 200,
+          "second altar upgrade costs 100 × (1 + 1)");
+        const unsupported = model.upgradeAltar(second.state, "runes", 200, "rune-altar", 10002);
+        assert(!unsupported.ok && unsupported.essence === undefined,
+          "unimplemented rune system is disclosed and never charges shards");
+        let pond = buildWithStorage(second.state, 0, "pond", 10003);
+        pond.resources.bait = 3;
+        pond = model.drawWater(pond, 0, 10004).state;
+        const catchResult = model.fish(pond, 0, 10005, () => 0);
+        assert(catchResult.ok && catchResult.bait === 5 && catchResult.state.resources.bait === 5,
+          "level-one fishing altar adds the actual 3–6 + level bait reward");
+        let capped = createHouseWithPlots("mansion", 0, 20000);
+        let remainingEssence = 12000;
+        for (let level = 1; level <= 15; level += 1) {
+          const upgrade = model.upgradeAltar(capped, "fishing", remainingEssence,
+            `altar-cap-${level}`, 20000 + level);
+          assert(upgrade.ok && upgrade.state.altars.fishing === level,
+            `fishing altar reaches level ${level}`);
+          capped = upgrade.state;
+          remainingEssence = upgrade.essence;
+        }
+        const cappedUpgrade = model.upgradeAltar(capped, "fishing", 100000, "altar-over-cap", 30000);
+        assert(!cappedUpgrade.ok && remainingEssence === 0 && capped.altars.fishing === 15,
+          "fishing altar stops at level 15 after exact incremental shard costs");
+      });
+
+      check("sleep durations, offline completion, at-home guard, clinic calendar cap", () => {
+        for (const [tier, minutes] of [["cabin", 160], ["sturdy", 140], ["mansion", 120]]) {
+          let state = createHouseWithPlots(tier, 0, 20000);
+          const sleep = model.startSleep(state, 30000);
+          assert(sleep.ok && sleep.durationMs === minutes * 60000, `${tier} sleep lasts exactly ${minutes} minutes`);
+          assert(!model.completeSleep(sleep.state, sleep.endsAt - 1).ok, "sleep cannot finish early");
+          const left = model.leaveHome(sleep.state, sleep.endsAt);
+          assert(!model.completeSleep(left.state, sleep.endsAt).ok, "leaving home cancels sleep");
+          const returned = model.enterHome(sleep.state, sleep.endsAt);
+          const completed = model.completeSleep(returned.state, sleep.endsAt);
+          assert(completed.ok && completed.healed && completed.state.sleep === null,
+            "sleep timer survives serialization/re-entry and finishes offline");
+        }
+        let state = createHouseWithPlots("mansion", 0, 40000);
+        const clinic = model.useClinic(state, 2, Date.UTC(2026, 0, 1, 10));
+        assert(clinic.ok && clinic.healed === 2, "mansion clinic reuses current injury count");
+        assert(!model.useClinic(clinic.state, 1, Date.UTC(2026, 0, 1, 23)).ok,
+          "clinic cannot be used twice in the same real calendar day");
+        assert(model.useClinic(clinic.state, 1, Date.UTC(2026, 0, 2, 0)).ok,
+          "clinic becomes available on the next calendar day");
+      });
+
+      check("cloud merge unions permanent purchases and preserves their shard/gold debits", () => {
+        const base = model.createState(50000);
+        const cabin = addHome(base, "cabin", "gold", 0, 25000, "merge-cabin", 50001);
+        const sturdy = addHome(base, "sturdy", "essence", 400, 0, "merge-sturdy", 50002);
+        const merged = model.merge(cabin.state, sturdy.state);
+        assert(merged.homes.length === 2 && merged.receipts.length === 2 &&
+          model.getBestHome(merged).tier === "sturdy", "independent homes and receipts survive cloud merge");
+        assert(model.isValidState(merged), "merged state passes cloud validation");
+      });
+
+      async function checkBrowserUi() {
+        const game = document.createElement("iframe");
+        game.title = "Проверка домашней лавки";
+        game.style.width = "390px";
+        game.style.height = "800px";
+        const seeded = {
+          essence: 1000,
+          upgrades: { vitality: 0, power: 0, supplies: 0 },
+          bossesDefeated: 0,
+          secretsFound: [],
+          groupInboxReceipts: [],
+          tavern: window.WellTavernModel.createState(),
+        };
+        seeded.tavern.gold = 25000;
+        localStorage.setItem("well-of-whispers-camp-progress", JSON.stringify(seeded));
+        game.src = "../index.html?homestead-test=1";
+        document.body.append(game);
+        await new Promise((resolve, reject) => {
+          game.addEventListener("load", resolve, { once: true });
+          game.addEventListener("error", reject, { once: true });
+        });
+        const app = game.contentWindow;
+        let doc = app.document;
+        const debited = app.createMetaProgress(5000);
+        debited.essence = 100;
+        const sturdyHome = app.WellHomesteadModel.purchaseHome(
+          debited.homestead, "sturdy", "essence", 500, 20000, "cloud-sturdy", 5001);
+        const cabinHome = app.WellHomesteadModel.purchaseHome(
+          sturdyHome.state, "cabin", "gold", sturdyHome.essence, 20000, "cloud-cabin", 5002);
+        debited.essence = cabinHome.essence;
+        debited.tavern.gold = cabinHome.gold;
+        debited.homestead = cabinHome.state;
+        const stale = app.createMetaProgress(5000);
+        stale.essence = 500;
+        stale.tavern.gold = 20000;
+        const mergedCloud = app.mergeMetaProgress(debited, stale);
+        assert(mergedCloud.essence === 100 && mergedCloud.tavern.gold === 0 &&
+          mergedCloud.homestead.homes.length === 2,
+        "meta cloud merge preserves house receipts without refunding shard or gold purchases");
+        assert(app.isValidMetaProgress(mergedCloud), "merged homestead remains valid in the complete cloud meta snapshot");
+        game.contentWindow.confirm = () => false;
+        doc.querySelector("#homestead-open-button").click();
+        await waitFor(() => doc.querySelector("#homestead-dialog").open, "profile shop did not open");
+        doc.querySelector('[data-homestead-action="buy-home"][data-tier="cabin"]').click();
+        let saved = JSON.parse(app.localStorage.getItem("well-of-whispers-camp-progress"));
+        assert((saved.homestead?.homes || []).length === 0 && saved.tavern.gold === 25000,
+          "canceling the explicit price confirmation spends no currency");
+        const concurrent = app.createMetaProgress(5000);
+        concurrent.essence = 1000;
+        concurrent.tavern.gold = 25000;
+        const concurrentHome = app.WellHomesteadModel.purchaseHome(
+          concurrent.homestead, "sturdy", "essence", 1000, 25000, "other-tab-home", 5001);
+        concurrent.essence = concurrentHome.essence;
+        concurrent.homestead = concurrentHome.state;
+        app.localStorage.setItem("well-of-whispers-camp-progress", JSON.stringify(concurrent));
+        game.contentWindow.confirm = () => true;
+        doc.querySelector('[data-homestead-action="buy-home"][data-tier="sturdy"]').click();
+        saved = JSON.parse(game.contentWindow.localStorage.getItem("well-of-whispers-camp-progress"));
+        assert(saved.homestead.homes.length === 2 && saved.homestead.homes.every((home) => home.tier === "sturdy") &&
+          saved.essence === 200,
+        `concurrent home receipt merges without double-charging its 400-shard debit (${saved.homestead.homes.length} homes, ${saved.essence} shards)`);
+        assert(doc.querySelector('[data-district="upper"]').getAttribute("aria-label") === "Верхний квартал",
+          "owning a house unlocks the upper district");
+        doc.querySelector('[data-homestead-action="buy-plot"]').click();
+        saved = JSON.parse(game.contentWindow.localStorage.getItem("well-of-whispers-camp-progress"));
+        assert(saved.homestead.plots.length === 1 && saved.essence === 100,
+          "plot purchase persists its fixed slot and debits exactly 100 shards after receipt reconciliation");
+        assert(game.contentWindow.getCloudSaveSnapshot().meta.homestead.plots[0].index === 0,
+          "cloud snapshot includes persistent homestead slots");
+        doc.querySelector("#homestead-close-button").click();
+        const secondReload = new Promise((resolve, reject) => {
+          game.addEventListener("load", resolve, { once: true });
+          game.addEventListener("error", reject, { once: true });
+        });
+        game.src = "../index.html?homestead-test=reload";
+        await secondReload;
+        doc = game.contentWindow.document;
+        doc.querySelector("#homestead-open-button").click();
+        await waitFor(() => doc.querySelector("#homestead-dialog").open, "house did not reopen after reload");
+        assert(JSON.parse(game.contentWindow.localStorage.getItem("well-of-whispers-camp-progress"))
+          .homestead.plots[0].index === 0, "persistent plot slot survives page reload");
+        game.remove();
+      }
+
+      function waitFor(predicate, message, timeout = 8000) {
+        return new Promise((resolve, reject) => {
+          const start = Date.now();
+          const timer = setInterval(() => {
+            if (predicate()) {
+              clearInterval(timer);
+              resolve();
+            } else if (Date.now() - start >= timeout) {
+              clearInterval(timer);
+              reject(new Error(message));
+            }
+          }, 40);
+        });
+      }
+
+      checkBrowserUi().catch((error) => failures.push(`browser UI: ${error.message}`)).finally(() => {
+        if (failures.length) {
+          output.textContent += `${failures.length} FAILURE(S)\n${failures.join("\n")}\n`;
+          document.getElementById("result").textContent = "FAIL";
+          document.getElementById("result").dataset.result = "fail";
+        } else {
+          document.getElementById("result").textContent = "PASS";
+          document.getElementById("result").dataset.result = "pass";
+        }
+      });
+    </script>
+  </body>
+</html>

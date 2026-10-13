@@ -75,6 +75,7 @@
             <p>Осколки за забеги и найденные тайны усиливают следующие спуски.</p>
             <div class="meta-upgrades" id="meta-upgrades"></div>
             <div class="meta-secrets"><strong>Летопись глубин</strong><span id="meta-secrets">0/4 записей · исследуй тайные залы</span></div>
+            <button class="service-button profile-homes-button" id="homestead-open-button" type="button">Магазин · Дома</button>
           </section>
           <p class="save-note"><span aria-hidden="true">●</span> Прогресс сохраняется автоматически</p>
         </aside>
@@ -223,6 +224,18 @@
       </section>
       <footer class="footer-note"><span>КОЛОДЕЦ ШЁПОТА</span><span>Каждый спуск — новая история</span><span>✧</span></footer>
     </main>
+    <dialog class="game-dialog homestead-dialog" id="homestead-dialog" aria-labelledby="homestead-title">
+      <div class="dialog-close-form">
+        <button class="dialog-close" id="homestead-close-button" type="button" aria-label="Закрыть дом и вернуться в город">×</button>
+      </div>
+      <span class="eyebrow">ПРОФИЛЬ · МАГАЗИН · ДОМА</span>
+      <h2 id="homestead-title">Дома и участки</h2>
+      <p class="dialog-intro">Покупай дома без ограничения по количеству: автоматически используется самый высокий из купленных. Цены указаны до покупки; списываются только уже имеющиеся игровые осколки или золото таверны — платёжных операций нет.</p>
+      <p class="homestead-status" id="homestead-status" role="status" aria-live="polite"></p>
+      <div class="homestead-wallet" id="homestead-wallet"></div>
+      <div class="homestead-content" id="homestead-content" aria-live="polite"></div>
+      <button class="tavern-return-button" id="homestead-return-button" type="button">← Вернуться в город (прервать сон)</button>
+    </dialog>
     <dialog class="game-dialog tavern-dialog" id="tavern-dialog" aria-labelledby="tavern-title">
       <form method="dialog" class="dialog-close-form">
         <button class="dialog-close" aria-label="Закрыть таверну и вернуться в город">×</button>
@@ -424,6 +437,7 @@
     <script src="player-groups.js"></script>
     <script src="tavern-model.js"></script>
     <script src="expeditions-model.js"></script>
+    <script src="homestead-model.js"></script>
     <script src="game.js"></script>
   </body>
 </html>

@@ -21,6 +21,20 @@ const META_UPGRADES = {
   power: { name: "Точная рука", description: "+1 к силе удара в новом забеге", costs: [2, 4, 6] },
   supplies: { name: "Запас зелий", description: "+1 зелье в начале нового забега", costs: [2, 4, 6] },
 };
+const HOME_RESOURCE_NAMES = {
+  logs: "брёвен",
+  stone: "камня",
+  ore: "руды",
+  flax: "льна",
+  boards: "досок",
+  blocks: "блоков",
+  ingots: "слитков",
+  cloth: "ткани",
+  seeds: "семян",
+  herbs: "растений",
+  fish: "рыбы",
+  bait: "приманки",
+};
 const SECRET_LORE = [
   { id: "well", title: "Голос у колодца", text: "Колодец не зовёт путников. Он повторяет последнее обещание того, кто исчез внизу." },
   { id: "drowned", title: "Затонувший колокол", text: "Город ушёл под воду, когда его жители позвонили в колокол, чтобы разбудить море." },
@@ -76,7 +90,7 @@ const CITY_DISTRICTS = {
     description: "Элитная часть города с ареной, домами и местами для самых известных героев.",
     services: [
       { icon: "⚔", name: "Арена", description: "PvP и элитные монстры для героев высокого уровня.", status: "soon", statusLabel: "СКОРО" },
-      { icon: "⌂", name: "Свой дом", description: "Интерьер, строительство и личные владения. Покупка дома пока не реализована.", status: "soon", statusLabel: "СКОРО" },
+      { icon: "⌂", name: "Домашняя лавка", description: "Покупка домов, участки, мастерские, пруд, сад и доступные комнаты.", status: "ready", statusLabel: "ДОСТУПНО", action: "homestead", actionLabel: "Магазин · Дома" },
       { icon: "▤", name: "Ратуша", description: "Гильдии, купоны и городские события.", status: "soon", statusLabel: "СКОРО" },
       { icon: "✧", name: "Аллея славы", description: "Статуи великих игроков и их истории.", status: "soon", statusLabel: "СКОРО" },
     ],
@@ -551,6 +565,11 @@ const ui = {
   harborStatus: $("harbor-status"),
   harborContent: $("harbor-content"),
   harborHistory: $("harbor-history"),
+  homesteadDialog: $("homestead-dialog"),
+  homesteadStatus: $("homestead-status"),
+  homesteadWallet: $("homestead-wallet"),
+  homesteadContent: $("homestead-content"),
+  homesteadOpenButton: $("homestead-open-button"),
   tavernDialog: $("tavern-dialog"),
   tavernStatus: $("tavern-status"),
   tavernGold: $("tavern-gold"),
@@ -577,6 +596,8 @@ let tavernMessage = "";
 let pendingTavernState = null;
 let selectedTavernTab = "food";
 let harborMessage = "";
+let homesteadMessage = "";
+let homesteadBusy = false;
 let tavernSelectedGameId = null;
 let selectedDiceToHold = [];
 let tavernDatabasePromise = null;
@@ -658,6 +679,7 @@ function createMetaProgress(now = Date.now()) {
     groupInboxReceipts: [],
     tavern,
     harbor: window.WellExpeditionsModel.createState(),
+    homestead: window.WellHomesteadModel.createState(now),
   };
 }
 
@@ -683,7 +705,8 @@ function isValidMetaProgress(progress) {
     new Set(progress.secretsFound).size === progress.secretsFound.length &&
     isValidInboxReceipts(progress.groupInboxReceipts) &&
     (progress.tavern === undefined || window.WellTavernModel.isValidState(progress.tavern)) &&
-    (progress.harbor === undefined || window.WellExpeditionsModel.isValidState(progress.harbor))
+    (progress.harbor === undefined || window.WellExpeditionsModel.isValidState(progress.harbor)) &&
+    (progress.homestead === undefined || window.WellHomesteadModel.isValidState(progress.homestead))
   );
 }
 
@@ -693,6 +716,7 @@ function normalizeMetaProgress(progress) {
     ? createMetaProgress(0).tavern
     : window.WellTavernModel.withDefaults(progress.tavern);
   normalized.harbor = window.WellExpeditionsModel.withDefaults(progress?.harbor);
+  normalized.homestead = window.WellHomesteadModel.withDefaults(progress?.homestead);
   return normalized;
 }
 
@@ -716,21 +740,38 @@ function readMetaProgress() {
 function mergeMetaProgress(left, right) {
   const first = normalizeMetaProgress(isValidMetaProgress(left) ? left : createMetaProgress(0));
   const second = normalizeMetaProgress(isValidMetaProgress(right) ? right : createMetaProgress(0));
-  const tavern = second.tavern.updatedAt > first.tavern.updatedAt ||
+  const useSecondTavern = second.tavern.updatedAt > first.tavern.updatedAt ||
     (second.tavern.updatedAt === first.tavern.updatedAt && second.tavern.revision >= first.tavern.revision)
-    ? second.tavern
-    : first.tavern;
+  const tavernSource = useSecondTavern ? second : first;
+  const tavern = JSON.parse(JSON.stringify(tavernSource.tavern));
   const harbor = window.WellExpeditionsModel.merge(first.harbor, second.harbor);
+  const homestead = window.WellHomesteadModel.merge(first.homestead, second.homestead);
   const firstTicketReceipts = new Set(first.harbor.ticketPurchases.map((receipt) => receipt.id));
   const secondTicketReceipts = new Set(second.harbor.ticketPurchases.map((receipt) => receipt.id));
   const missingDebits = (sourceReceipts, otherHarbor) => otherHarbor.ticketPurchases
     .filter((receipt) => !sourceReceipts.has(receipt.id))
     .reduce((total, receipt) => total + receipt.essenceCost, 0);
+  const firstHomesteadReceipts = new Set(first.homestead.receipts.map((receipt) => receipt.id));
+  const secondHomesteadReceipts = new Set(second.homestead.receipts.map((receipt) => receipt.id));
+  const missingHomesteadDebits = (sourceReceipts, otherHomestead, currency) => otherHomestead.receipts
+    .filter((receipt) => !sourceReceipts.has(receipt.id))
+    .reduce((total, receipt) => total + receipt[`${currency}Cost`], 0);
+  const tavernSourceReceipts = useSecondTavern ? secondHomesteadReceipts : firstHomesteadReceipts;
+  const otherHomestead = useSecondTavern ? first.homestead : second.homestead;
+  tavern.gold = Math.max(0, tavern.gold - missingHomesteadDebits(
+    tavernSourceReceipts,
+    otherHomestead,
+    "gold",
+  ));
+  const essenceAfterHomePurchases = (source, other, sourceReceipts) =>
+    source.essence - missingHomesteadDebits(sourceReceipts, other.homestead, "essence");
   return {
     essence: Math.max(
       0,
-      first.essence - missingDebits(firstTicketReceipts, second.harbor),
-      second.essence - missingDebits(secondTicketReceipts, first.harbor),
+      essenceAfterHomePurchases(first, second, firstHomesteadReceipts) -
+        missingDebits(firstTicketReceipts, second.harbor),
+      essenceAfterHomePurchases(second, first, secondHomesteadReceipts) -
+        missingDebits(secondTicketReceipts, first.harbor),
     ),
     upgrades: Object.fromEntries(Object.keys(META_UPGRADES).map((id) => [
       id,
@@ -744,12 +785,30 @@ function mergeMetaProgress(left, right) {
     ])],
     tavern: JSON.parse(JSON.stringify(tavern)),
     harbor,
+    homestead,
   };
 }
 
 function persistMetaProgress() {
   let persisted = false;
   try {
+    const stored = JSON.parse(window.localStorage.getItem(META_SAVE_KEY) || "null");
+    if (stored !== null && isValidMetaProgress(stored)) {
+      const local = normalizeMetaProgress(stored);
+      const currentReceipts = new Set(metaProgress.homestead.receipts.map((receipt) => receipt.id));
+      const missingDebits = (currency) => local.homestead.receipts
+        .filter((receipt) => !currentReceipts.has(receipt.id))
+        .reduce((total, receipt) => total + receipt[`${currency}Cost`], 0);
+      metaProgress = {
+        ...metaProgress,
+        essence: Math.max(0, metaProgress.essence - missingDebits("essence")),
+        tavern: {
+          ...metaProgress.tavern,
+          gold: Math.max(0, metaProgress.tavern.gold - missingDebits("gold")),
+        },
+        homestead: window.WellHomesteadModel.merge(metaProgress.homestead, local.homestead),
+      };
+    }
     window.localStorage.setItem(META_SAVE_KEY, JSON.stringify(metaProgress));
     persisted = true;
   } catch (error) {
@@ -2679,7 +2738,8 @@ function renderCity() {
   if (!townVisible) return;
 
   const characterProgress = state.started ? state : savedRun;
-  const upperUnlocked = Boolean(characterProgress?.advancedClassId || characterProgress?.masteryClassId);
+  const ownsHome = metaProgress.homestead.homes.length > 0;
+  const upperUnlocked = Boolean(characterProgress?.advancedClassId || characterProgress?.masteryClassId || ownsHome);
   const district = CITY_DISTRICTS[selectedDistrict];
   ui.citySummary.textContent = savedRun
     ? `Сохранённый спуск: этаж ${savedRun.floor}, уровень ${savedRun.level}. Его можно продолжить из Колодца.`
@@ -2691,7 +2751,13 @@ function renderCity() {
   ui.districtDescription.textContent = district.description;
   ui.districtBackButton.hidden = selectedDistrict === "main";
   ui.districtLockNote.hidden = selectedDistrict !== "upper" || upperUnlocked;
-  ui.districtLockNote.textContent = "Верхний квартал откроется после выбора первого продвинутого класса на 3-м уровне в Ордене глубин. Купить дом пока нельзя: такой системы в игре ещё нет.";
+  ui.districtLockNote.textContent = ownsHome
+    ? ""
+    : "Верхний квартал откроется после выбора первого продвинутого класса на 3-м уровне или покупки любого дома.";
+  ui.homesteadOpenButton.disabled = Boolean(state.started && !state.gameOver);
+  ui.homesteadOpenButton.title = ui.homesteadOpenButton.disabled
+    ? "Домашняя лавка доступна между спусками."
+    : "Открыть магазин домов и личные владения.";
   for (const tab of ui.districtTabs.querySelectorAll("[data-district]")) {
     const active = tab.dataset.district === selectedDistrict;
     tab.setAttribute("aria-pressed", String(active));
@@ -2720,6 +2786,507 @@ function harborActionButton(label, action, data = {}, disabled = false, classNam
   for (const [key, value] of Object.entries(data)) button.dataset[key] = String(value);
   button.disabled = disabled;
   return button;
+}
+
+function homesteadReceiptId() {
+  return window.crypto?.randomUUID
+    ? window.crypto.randomUUID()
+    : `home-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function homesteadButton(label, action, data = {}, disabled = false) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "service-button";
+  button.textContent = label;
+  button.dataset.homesteadAction = action;
+  for (const [key, value] of Object.entries(data)) button.dataset[key] = String(value);
+  button.disabled = disabled || homesteadBusy || !localMetaReadable;
+  return button;
+}
+
+function homeSection(title, description = "") {
+  const section = document.createElement("section");
+  section.className = "homestead-section";
+  const heading = document.createElement("h3");
+  heading.textContent = title;
+  section.append(heading);
+  if (description) {
+    const note = document.createElement("p");
+    note.className = "homestead-note";
+    note.textContent = description;
+    section.append(note);
+  }
+  return section;
+}
+
+function homeCard(title, description, actions = []) {
+  const card = document.createElement("article");
+  card.className = "homestead-card";
+  const heading = document.createElement("h4");
+  heading.textContent = title;
+  const detail = document.createElement("p");
+  detail.textContent = description;
+  card.append(heading, detail);
+  if (actions.length) {
+    const controls = document.createElement("div");
+    controls.className = "homestead-actions";
+    controls.append(...actions);
+    card.append(controls);
+  }
+  return card;
+}
+
+function formatHomeCountdown(timestamp, now = Date.now()) {
+  const remaining = Math.max(0, timestamp - now);
+  const hours = Math.floor(remaining / window.WellHomesteadModel.HOUR);
+  const minutes = Math.ceil((remaining % window.WellHomesteadModel.HOUR) / 60000);
+  return `${hours} ч ${minutes} мин`;
+}
+
+function renderHomestead() {
+  if (!ui.homesteadDialog?.open || !metaProgress?.homestead) return;
+  const model = window.WellHomesteadModel;
+  const homestead = model.withDefaults(metaProgress.homestead);
+  const bestHome = model.getBestHome(homestead);
+  const homeType = bestHome ? model.HOME_TYPES[bestHome.tier] : null;
+  const now = Date.now();
+  ui.homesteadStatus.textContent = homesteadMessage || (bestHome
+    ? homestead.atHome
+      ? `Ты дома: используется ${homeType.name}. Закрытие окна покидает дом и прерывает сон.`
+      : `${homeType.name} используется автоматически. Войди в дом, чтобы собирать и строить.`
+    : "Домов пока нет. Покупка любого дома откроет Верхний квартал.");
+  ui.homesteadStatus.classList.toggle("error", Boolean(homesteadMessage) &&
+    /Не удалось|Недостаточно|Нужно |недоступ|заблок|ошиб/i.test(homesteadMessage));
+  ui.homesteadWallet.replaceChildren();
+  const walletData = [
+    ["ОСКОЛКИ", `${metaProgress.essence} ✦`],
+    ["ЗОЛОТО ТАВЕРНЫ", `${metaProgress.tavern.gold} золота`],
+    ["СКЛАД", `${model.resourceTotal(homestead)} / ${model.getStorageCapacity(homestead)}`],
+  ];
+  for (const [label, value] of walletData) {
+    const cell = document.createElement("div");
+    const caption = document.createElement("span");
+    caption.textContent = label;
+    const amount = document.createElement("strong");
+    amount.textContent = value;
+    cell.append(caption, amount);
+    ui.homesteadWallet.append(cell);
+  }
+  ui.homesteadContent.replaceChildren();
+
+  const shop = homeSection("Магазин домов", "После каждой покупки автоматически выбирается лучший дом. Домов можно покупать сколько угодно.");
+  shop.append(
+    homeCard("Простая хижина · 2 участка · сон 2 ч 40 мин",
+      "Комнаты: спальня, ремесленный стол, почтовый ящик, кухня. Цена: 20 000 золота таверны.",
+      [homesteadButton("Купить хижину · 20 000 золота", "buy-home", { tier: "cabin", payment: "gold" },
+        metaProgress.tavern.gold < 20000)]),
+    homeCard("Добротный дом · 4 участка · сон 2 ч 20 мин",
+      "Комнаты: спальня, ремесленный стол, почтовый ящик, кухня, библиотека. Цена: 400 осколков.",
+      [homesteadButton("Купить дом · 400 осколков", "buy-home", { tier: "sturdy", payment: "essence" },
+        metaProgress.essence < 400)]),
+    homeCard("Богатый особняк · 6 участков · сон 2 ч",
+      "Комнаты: спальня, ремесленный стол, почтовый ящик, кухня, библиотека, лечебница, святилище, тренировочный зал.",
+      [
+        homesteadButton("Купить · 1 000 осколков", "buy-home", { tier: "mansion", payment: "essence" },
+          metaProgress.essence < 1000),
+        homesteadButton("Добротный дом + 600 осколков", "buy-home", { tier: "mansion", payment: "upgrade" },
+          !homestead.homes.some((home) => home.tier === "sturdy") || metaProgress.essence < 600),
+      ]),
+  );
+  ui.homesteadContent.append(shop);
+  if (!bestHome) return;
+
+  const holdings = homeSection("Личные владения", `Куплено домов: ${homestead.homes.length} · используется ${homeType.name} · открыто ${model.getPlotLimit(homestead)} участков.`);
+  const enter = homestead.atHome
+    ? homesteadButton("Ты находишься дома", "noop", {}, true)
+    : homesteadButton("Войти в дом", "enter");
+  holdings.append(homeCard("Автоматический выбор дома",
+    `Всегда активен самый высокий купленный уровень: ${homeType.name}. Смена дома не удаляет купленные участки.`,
+    [enter]));
+  if (homestead.plots.length < model.getPlotLimit(homestead)) {
+    holdings.append(homeCard(`Новый участок · 100 осколков`,
+      `Куплено участков: ${homestead.plots.length} / ${model.getPlotLimit(homestead)}. Участок сохраняет номер и не пропадает при смене дома.`,
+      [homesteadButton("Купить участок · 100 осколков", "buy-plot", {}, metaProgress.essence < 100)]));
+  }
+  if (!homestead.atHome) {
+    holdings.append(homeCard("Работы и сбор доступны только дома",
+      "Войди в дом, чтобы заниматься участками. Покупать дома и участки можно и сейчас."));
+    ui.homesteadContent.append(holdings);
+    return;
+  }
+
+  holdings.append(homeCard("Домашний сбор · раз в 24 часа",
+    "Собирай ровно 5 брёвен, 5 камня, 3 руды, 3 льна, 1 семя и 3 приманки. Никаких бесконечных бесплатных материалов; сбор доступен только дома.",
+    [homesteadButton(
+      homestead.gatheredAt !== null && now - homestead.gatheredAt < model.DAY
+        ? `Следующий сбор через ${formatHomeCountdown(homestead.gatheredAt + model.DAY, now)}`
+        : "Собрать дневные материалы",
+      "gather",
+      {},
+      Boolean(homestead.gatheredAt !== null && now - homestead.gatheredAt < model.DAY) ||
+        model.resourceTotal(homestead) + 20 > model.getStorageCapacity(homestead),
+    )]));
+  const house = homeType;
+  const bedroom = homeSection("Комнаты", `Уровень сна выбранного дома: ${house.sleepMs / 60000} минут. Спальня восстанавливает травмы только по завершении таймера, пока путник остаётся дома.`);
+  bedroom.append(homeCard("Спальня",
+    homestead.sleep
+      ? now >= homestead.sleep.endsAt
+        ? "Сон окончен. Нажми, чтобы завершить отдых и вылечить травмы таверны."
+        : `Сон завершится через ${formatHomeCountdown(homestead.sleep.endsAt, now)}. Не покидай дом.`
+      : "Отдых лечит все травмы после точного срока; выход из дома отменяет сон.",
+    [homestead.sleep
+      ? homesteadButton(now >= homestead.sleep.endsAt ? "Завершить сон и вылечить травмы" : "Сон продолжается",
+        "finish-sleep", {}, now < homestead.sleep.endsAt)
+      : homesteadButton(`Лечь спать · ${Math.floor(house.sleepMs / 60000)} минут`, "sleep")]));
+  bedroom.append(homeCard("Ремесленный стол",
+    "Обрабатывай сырьё в мастерских на участках: 3 единицы сырья дают 1 материал. Рецепты строительства показаны у каждой постройки."));
+  bedroom.append(homeCard("Кухня",
+    "Открывает существующую систему рецептов и сытости таверны; блюда действительно попадают в запас еды.",
+    [homesteadButton("Открыть кухню таверны", "kitchen")]));
+  bedroom.append(homeCard("Почтовый ящик · пока недоступен",
+    "Без защищённой серверной доставки обмен между игроками невозможен. Письма и отправка предметов не имитируются."));
+  if (house.tier >= 2) {
+    bedroom.append(homeCard("Библиотека · пока недоступна",
+      "В игре нет системы навыков или сброса характеристик; страницы и услуги не продаются."));
+  }
+  if (house.tier >= 3) {
+    bedroom.append(homeCard("Тренировочный зал · пока недоступен",
+      "Манекен не выдаёт опыт и не маскирует боевые действия."));
+    const clinic = model.useClinic(homestead, metaProgress.tavern.injuries, now);
+    bedroom.append(homeCard("Лечебница",
+      `Лечит все травмы не чаще одного раза в реальный календарный день. Травм сейчас: ${metaProgress.tavern.injuries} / 3.${homestead.clinicDate === new Date(now).toISOString().slice(0, 10) ? " Сегодня уже использована." : ""}`,
+      [homesteadButton("Вылечить травмы сегодня", "clinic", {}, !clinic.ok)]));
+    bedroom.append(homeCard("Святилище",
+      "Алтарь рыбалки влияет на настоящий улов. Рун, характеристик и боли в боевой системе пока нет: эти алтари честно отмечены недоступными.",
+      [homesteadButton("К святилищу", "sanctuary")]));
+  }
+  holdings.append(bedroom);
+
+  const plotsSection = homeSection("Участки и постройки", "На каждом участке — одна постройка. Перестройка в другой тип стоит полный рецепт новой постройки и не возвращает прежние материалы; активные посевы, вода и дневные квоты защищены.");
+  const resources = model.RESOURCE_KEYS.map((key) =>
+    `${HOME_RESOURCE_NAMES[key]}: ${homestead.resources[key]}`
+  ).join(" · ");
+  const inventory = document.createElement("p");
+  inventory.className = "homestead-note";
+  inventory.textContent = `Материалы: ${resources}`;
+  plotsSection.append(inventory);
+  if (!homestead.plots.length) {
+    plotsSection.append(homeCard("Участков пока нет", "Купи участок выше за 100 осколков, чтобы построить сооружение."));
+  }
+  const buildingLabels = model.BUILDINGS;
+  for (const plot of homestead.plots) {
+    const inactive = plot.index >= model.getPlotLimit(homestead);
+    const built = plot.building ? `${buildingLabels[plot.building].name} · ур. ${plot.level}` : "Пустой участок";
+    const actions = [];
+    if (!inactive && !plot.building) {
+      for (const [buildingId, definition] of Object.entries(buildingLabels)) {
+        const price = Object.entries(definition.recipe)
+          .map(([key, amount]) => `${amount} ${HOME_RESOURCE_NAMES[key]}`).join(" + ");
+        actions.push(homesteadButton(`Построить ${definition.name} · ${price}`, "build",
+          { index: plot.index, building: buildingId },
+          Object.entries(definition.recipe).some(([key, amount]) => homestead.resources[key] < amount)));
+      }
+    } else if (!inactive && plot.building) {
+      const definition = buildingLabels[plot.building];
+      const price = Object.entries(definition.recipe)
+        .map(([key, amount]) => `${amount} ${HOME_RESOURCE_NAMES[key]}`).join(" + ");
+      const capped = plot.level >= definition.maxLevel;
+      actions.push(homesteadButton(capped ? "Достигнут предел уровня" : `Улучшить · ${price}`,
+        "build", { index: plot.index, building: plot.building },
+        capped || Object.entries(definition.recipe).some(([key, amount]) => homestead.resources[key] < amount)));
+      for (const [buildingId, replacement] of Object.entries(buildingLabels)) {
+        if (buildingId === plot.building) continue;
+        const replacementPrice = Object.entries(replacement.recipe)
+          .map(([key, amount]) => `${amount} ${HOME_RESOURCE_NAMES[key]}`).join(" + ");
+        const canReplace = model.canReplaceBuilding(homestead, plot.index, buildingId, now);
+        actions.push(homesteadButton(`Перестроить в ${replacement.name} · ${replacementPrice}`, "build",
+          { index: plot.index, building: buildingId },
+          !canReplace.ok ||
+            Object.entries(replacement.recipe).some(([key, amount]) => homestead.resources[key] < amount)));
+      }
+      if (plot.building === "boards" || plot.building === "blocks" ||
+        plot.building === "ingots" || plot.building === "cloth") {
+        const today = new Date(now).toISOString().slice(0, 10);
+        const used = plot.daily.day === today ? plot.daily.processed : 0;
+        const quota = 2 + plot.level;
+        const raw = definition.input;
+        actions.push(homesteadButton(`Переработать 3 ${HOME_RESOURCE_NAMES[raw]} → 1 ${HOME_RESOURCE_NAMES[definition.output]} · ${used}/${quota} сегодня`,
+          "process", { index: plot.index }, used >= quota || homestead.resources[raw] < 3));
+      } else if (plot.building === "pond") {
+        const waterReady = plot.waterAt === null || now - plot.waterAt >= 8 * model.HOUR;
+        const fishReady = plot.fishedAt === null || now - plot.fishedAt >= 8 * model.HOUR;
+        actions.push(homesteadButton(
+          waterReady ? "Набрать 300 воды (кулдаун 8 ч)" : `Вода через ${formatHomeCountdown(plot.waterAt + 8 * model.HOUR, now)}`,
+          "draw-water", { index: plot.index }, !waterReady || plot.water >= 1000));
+        const baitCost = 2 + plot.level;
+        actions.push(homesteadButton(
+          fishReady ? `Ловить · ≥300 воды, ${baitCost} приманки, кулдаун 8 ч` : `Ловля через ${formatHomeCountdown(plot.fishedAt + 8 * model.HOUR, now)}`,
+          "fish", { index: plot.index }, !fishReady || plot.water < 300 || homestead.resources.bait < baitCost));
+        const waterNote = document.createElement("p");
+        waterNote.className = "homestead-note";
+        waterNote.textContent = `В пруду ${plot.water} / 1 000 воды. Ловля даёт ${2 + plot.level} рыбы; источник воды: 300 каждые 8 часов, только пока ты дома.`;
+        plotsSection.append(homeCard(`Участок ${plot.index + 1} · ${built}`, "", actions), waterNote);
+        continue;
+      } else if (plot.building === "garden") {
+        const crop = plot.crop;
+        if (!crop) {
+          actions.push(homesteadButton("Посеять · 1 семя", "plant", { index: plot.index },
+            homestead.resources.seeds < 1));
+        } else if (crop.secondWateredAt === null) {
+          const elapsed = now - crop.plantedAt;
+          actions.push(homesteadButton(
+            elapsed < 10 * model.HOUR ? `Второй полив через ${formatHomeCountdown(crop.plantedAt + 10 * model.HOUR, now)}`
+              : elapsed > 12 * model.HOUR ? "Окно полива пропущено" : "Полить второй раз (10–12 ч)",
+            elapsed > 12 * model.HOUR ? "discard-crop" : "water-garden",
+            { index: plot.index },
+            elapsed < 10 * model.HOUR));
+        } else {
+          actions.push(homesteadButton(
+            now - crop.plantedAt < 20 * model.HOUR
+              ? `Урожай через ${formatHomeCountdown(crop.plantedAt + 20 * model.HOUR, now)}`
+              : `Собрать ${2 + plot.level} растений`,
+            "harvest-garden", { index: plot.index }, now - crop.plantedAt < 20 * model.HOUR));
+        }
+      }
+    }
+    if (inactive) {
+      plotsSection.append(homeCard(`Участок ${plot.index + 1} · не активен`,
+        "Этот ранее купленный участок сохранён, но доступен после приобретения дома более высокого уровня."));
+    } else {
+      plotsSection.append(homeCard(`Участок ${plot.index + 1} · ${built}`, "", actions));
+    }
+    if (plot.building === "garden" && plot.crop) {
+      const cropNote = document.createElement("p");
+      cropNote.className = "homestead-note";
+      cropNote.textContent = `Посев от ${new Date(plot.crop.plantedAt).toLocaleString("ru-RU")}; первый полив уже выполнен. Второй обязателен через 10–12 часов.`;
+      plotsSection.append(cropNote);
+    }
+  }
+  holdings.append(plotsSection);
+
+  if (house.tier >= 3) {
+    const sanctuary = homeSection("Алтари особняка");
+    for (const [id, altar] of Object.entries(model.ALTARS)) {
+      const level = homestead.altars[id];
+      if (id === "fishing") {
+        const cost = 100 * (level + 1);
+        sanctuary.append(homeCard(`Алтарь рыбалки · ур. ${level} / ${altar.maxLevel}`,
+          `${model.ALTAR_EFFECTS[id]} Следующее улучшение: ${cost} осколков.`,
+          [homesteadButton(level >= altar.maxLevel ? "Предел уровня" : `Улучшить · ${cost} осколков`,
+            "upgrade-altar", { altar: id, cost },
+            level >= altar.maxLevel || metaProgress.essence < cost)]));
+      } else {
+        sanctuary.append(homeCard(`Алтарь ${altar.name} · ур. ${level} / ${altar.maxLevel} · недоступен`,
+          `${model.ALTAR_EFFECTS[id]} Списание осколков отключено, пока нет работающего эффекта.`));
+      }
+    }
+    holdings.append(sanctuary);
+  }
+  ui.homesteadContent.append(holdings);
+}
+
+function saveHomesteadResult(result, message, options = {}) {
+  if (!result.ok) {
+    homesteadMessage = result.reason;
+    renderHomestead();
+    return false;
+  }
+  const previous = metaProgress;
+  let tavern = previous.tavern;
+  if (result.gold !== undefined && result.gold !== previous.tavern.gold) {
+    tavern = {
+      ...previous.tavern,
+      gold: result.gold,
+      revision: previous.tavern.revision + 1,
+      updatedAt: Date.now(),
+    };
+  }
+  if (options.healInjuries) {
+    tavern = {
+      ...tavern,
+      injuries: 0,
+      revision: tavern.revision + 1,
+      updatedAt: Date.now(),
+    };
+  }
+  metaProgress = {
+    ...previous,
+    essence: result.essence === undefined ? previous.essence : result.essence,
+    tavern,
+    homestead: result.state,
+  };
+  if (!persistMetaProgress()) {
+    metaProgress = previous;
+    homesteadMessage = "Не удалось сохранить изменение дома. Ничего не списано и действие не применено.";
+    renderHomestead();
+    return false;
+  }
+  homesteadMessage = message;
+  render();
+  renderHomestead();
+  return true;
+}
+
+function latestHomesteadBalances() {
+  let stored;
+  try {
+    stored = JSON.parse(window.localStorage.getItem(META_SAVE_KEY) || "null");
+  } catch {
+    throw new Error("Не удалось проверить сохранённый кошелёк. Покупка не выполнена.");
+  }
+  if (stored === null) {
+    return { essence: metaProgress.essence, gold: metaProgress.tavern.gold };
+  }
+  if (!isValidMetaProgress(stored)) {
+    throw new Error("Сохранённый кошелёк повреждён; покупка заблокирована без списания.");
+  }
+  metaProgress = mergeMetaProgress(metaProgress, stored);
+  return {
+    essence: metaProgress.essence,
+    gold: metaProgress.tavern.gold,
+  };
+}
+
+function openHomestead() {
+  if (state.started && !state.gameOver) {
+    homesteadMessage = "Домашняя лавка доступна между спусками.";
+    return;
+  }
+  homesteadMessage = "";
+  const homestead = metaProgress.homestead;
+  if (window.WellHomesteadModel.getBestHome(homestead) && !homestead.atHome) {
+    const entered = window.WellHomesteadModel.enterHome(homestead);
+    if (!saveHomesteadResult(entered, "")) return;
+  }
+  if (!ui.homesteadDialog.open) ui.homesteadDialog.showModal();
+  renderHomestead();
+}
+
+function closeHomestead() {
+  if (metaProgress.homestead.atHome) {
+    const result = window.WellHomesteadModel.leaveHome(metaProgress.homestead);
+    if (!saveHomesteadResult(result, "Ты покинул дом; незавершённый сон отменён.")) return false;
+  }
+  if (ui.homesteadDialog.open) ui.homesteadDialog.close();
+  selectedDistrict = "upper";
+  renderCity();
+  return true;
+}
+
+async function handleHomesteadAction(action, data = {}) {
+  if (homesteadBusy || !localMetaReadable) return;
+  homesteadBusy = true;
+  const model = window.WellHomesteadModel;
+  let current = metaProgress.homestead;
+  const now = Date.now();
+  try {
+    let result;
+    let message = "";
+    let options = {};
+    if (action === "noop") return;
+    if (action === "enter") {
+      result = model.enterHome(current, now);
+      message = "Ты вошёл в дом.";
+    } else if (action === "buy-home") {
+      const price = data.payment === "gold" ? "20 000 золотых таверны"
+        : data.payment === "upgrade" ? "600 осколков"
+          : data.tier === "sturdy" ? "400 осколков" : "1 000 осколков";
+      if (!window.confirm(`Купить «${model.HOME_TYPES[data.tier]?.name}» за ${price}? Будет списан только существующий игровой баланс.`)) return;
+      const balances = latestHomesteadBalances();
+      current = metaProgress.homestead;
+      result = model.purchaseHome(current, data.tier, data.payment, balances.essence,
+        balances.gold, homesteadReceiptId(), now);
+      if (result.ok) {
+        result.state = model.enterHome(result.state, now).state;
+        message = `${model.HOME_TYPES[data.tier].name} куплен. Теперь автоматически используется лучший дом.`;
+      }
+    } else if (action === "buy-plot") {
+      if (!window.confirm("Купить новый участок за 100 имеющихся осколков?")) return;
+      const balances = latestHomesteadBalances();
+      current = metaProgress.homestead;
+      result = model.buyPlot(current, balances.essence, homesteadReceiptId(), now);
+      message = result.ok ? `Участок ${result.plot.index + 1} куплен.` : "";
+    } else if (action === "gather") {
+      result = model.gather(current, now);
+      message = result.ok ? "Материалы собраны. Следующий сбор — через 24 часа." : "";
+    } else if (action === "build") {
+      const plotIndex = Number(data.index);
+      const plot = current.plots[plotIndex];
+      if (plot?.building && plot.building !== data.building) {
+        const replacement = model.canReplaceBuilding(current, plotIndex, data.building, now);
+        if (!replacement.ok) throw new Error(replacement.reason);
+        const definition = model.BUILDINGS[data.building];
+        if (!definition) throw new Error("Неизвестная постройка.");
+        const recipe = Object.entries(definition.recipe)
+          .map(([key, amount]) => `${amount} ${HOME_RESOURCE_NAMES[key]}`).join(" + ");
+        if (!window.confirm(
+          `Перестроить участок ${plotIndex + 1} в «${definition.name}» за ${recipe}? ` +
+          "Полный рецепт будет списан; уровень и вложенные материалы прежней постройки не возвращаются.",
+        )) return;
+      }
+      result = model.buildOrUpgrade(current, plotIndex, data.building, now);
+      message = result.ok ? `${model.BUILDINGS[data.building].name}: уровень ${result.plot.level}. Материалы списаны по рецепту.` : "";
+    } else if (action === "process") {
+      result = model.processMaterials(current, Number(data.index), 1, now);
+      message = result.ok ? `Переработано: ${result.output} ед. материала. Операции списаны из дневного лимита.` : "";
+    } else if (action === "draw-water") {
+      result = model.drawWater(current, Number(data.index), now);
+      message = result.ok ? `В пруду ${result.water} / 1 000 воды.` : "";
+    } else if (action === "fish") {
+      result = model.fish(current, Number(data.index), now);
+      message = result.ok ? `Улов: ${result.fish} рыбы${result.bait ? ` и ${result.bait} приманки` : ""}.` : "";
+    } else if (action === "plant") {
+      result = model.plant(current, Number(data.index), now);
+      message = result.ok ? "Посев сделан и полит. Второй полив требуется через 10–12 часов." : "";
+    } else if (action === "water-garden") {
+      result = model.waterGarden(current, Number(data.index), now);
+      message = result.ok ? "Второй полив выполнен. Урожай созреет через 20 часов после посева." : "";
+    } else if (action === "discard-crop") {
+      result = model.discardCrop(current, Number(data.index), now);
+      message = result.ok ? "Посев удалён без возврата семени." : "";
+    } else if (action === "harvest-garden") {
+      result = model.harvestGarden(current, Number(data.index), now);
+      message = result.ok ? `Собрано растений: ${result.herbs}.` : "";
+    } else if (action === "sleep") {
+      result = model.startSleep(current, now);
+      message = result.ok ? `Сон начался на ${result.durationMs / 60000} минут. Не покидай дом.` : "";
+    } else if (action === "finish-sleep") {
+      result = model.completeSleep(current, now);
+      options.healInjuries = result.ok;
+      message = result.ok ? "Сон завершён; травмы вылечены." : "";
+    } else if (action === "clinic") {
+      result = model.useClinic(current, metaProgress.tavern.injuries, now);
+      options.healInjuries = result.ok;
+      message = result.ok ? `Лечебница сняла ${result.healed} травм. Повторный приём — завтра.` : "";
+    } else if (action === "upgrade-altar") {
+      const cost = Number(data.cost);
+      if (!window.confirm(`Улучшить алтарь рыбалки за ${cost} имеющихся осколков?`)) return;
+      const balances = latestHomesteadBalances();
+      current = metaProgress.homestead;
+      result = model.upgradeAltar(current, data.altar, balances.essence, homesteadReceiptId(), now);
+      message = result.ok ? `Алтарь рыбалки улучшен до уровня ${result.state.altars.fishing}.` : "";
+    } else if (action === "kitchen") {
+      if (!model.getBestHome(current) || !current.atHome) throw new Error("Кухня доступна только в собственном доме.");
+      if (!closeHomestead()) return;
+      openTavern();
+      return;
+    } else if (action === "sanctuary") {
+      homesteadMessage = "Алтари доступны в разделе «Алтари особняка» ниже.";
+      renderHomestead();
+      ui.homesteadContent.scrollTo({ top: ui.homesteadContent.scrollHeight, behavior: "smooth" });
+      return;
+    } else {
+      throw new Error("Неизвестное действие домашней лавки.");
+    }
+    if (!result) return;
+    saveHomesteadResult(result, message, options);
+  } catch (error) {
+    homesteadMessage = error.message;
+  } finally {
+    homesteadBusy = false;
+    renderHomestead();
+  }
 }
 
 function openHarbor() {
@@ -3573,7 +4140,24 @@ ui.cityServices.addEventListener("click", (event) => {
     openTavern();
   } else if (button.dataset.cityAction === "harbor") {
     openHarbor();
+  } else if (button.dataset.cityAction === "homestead") {
+    openHomestead();
   }
+});
+ui.homesteadOpenButton.addEventListener("click", openHomestead);
+ui.homesteadContent.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-homestead-action]");
+  if (button) handleHomesteadAction(button.dataset.homesteadAction, button.dataset);
+});
+$("homestead-close-button").addEventListener("click", closeHomestead);
+$("homestead-return-button").addEventListener("click", closeHomestead);
+ui.homesteadDialog.addEventListener("cancel", (event) => {
+  event.preventDefault();
+  closeHomestead();
+});
+ui.homesteadDialog.addEventListener("close", () => {
+  selectedDistrict = "upper";
+  renderCity();
 });
 ui.harborDialog.addEventListener("click", (event) => {
   const button = event.target.closest("button[data-harbor-action]");
@@ -3623,6 +4207,9 @@ $("harbor-return-button").addEventListener("click", closeHarbor);
 $("tavern-waiter-hours").addEventListener("change", renderTavern);
 setInterval(() => {
   if (ui.tavernDialog.open) renderTavern();
+}, 1000);
+setInterval(() => {
+  if (ui.homesteadDialog.open) renderHomestead();
 }, 1000);
 
 async function initializeGameServices() {

@@ -334,7 +334,7 @@
           "tier-2 recipes are locked outside a sturdy house without consuming stock");
       });
 
-      check("kitchen meals use seed grain, completed rest, 100% satiety and a real two-hour proc", () => {
+      check("kitchen grain and legacy meals refill satiety without fake stat growth", () => {
         let state = createHouseWithPlots("cabin", 0, 200000);
         state.resources = resourceBag({ seeds: 1 });
         const bread = model.cookMeal(state, "grainBread", 200010);
@@ -348,16 +348,14 @@
         const sleep = model.startSleep(state, 200020);
         const rested = model.completeSleep(sleep.state, sleep.endsAt);
         const meal = model.cookMeal(rested.state, "attackMeal", sleep.endsAt + 1);
-        assert(meal.ok && meal.state.meals.attackMeal === 1 && meal.state.lastRestMealAt === sleep.endsAt,
-          "a finished rest unlocks one selected special meal");
-        const repeat = model.cookMeal(meal.state, "defenseMeal", sleep.endsAt + 2);
-        assert(!repeat.ok && repeat.state.resources.seeds === 0,
-          "one special meal opportunity is allowed per completed sleep");
+        assert(!meal.ok && meal.reason.includes("системы роста") && meal.state.resources.seeds === 1,
+          "a finished rest does not sell a fake combat substitute for stat growth");
+        const legacy = { ...rested.state, meals: { ...rested.state.meals, attackMeal: 1 } };
         const tavern = window.WellTavernModel.createState(sleep.endsAt + 3);
-        const eaten = model.eatMeal(meal.state, tavern, "attackMeal", sleep.endsAt + 3, () => 0.49);
-        assert(eaten.ok && eaten.tavern.satiety === 100 && eaten.buffTriggered &&
-          eaten.buff.stat === "attack" && eaten.buff.expiresAt === sleep.endsAt + 3 + 2 * hour,
-        "meal sets full satiety and the 50% proc stores an absolute two-hour attack buff expiry");
+        const eaten = model.eatMeal(legacy, tavern, "attackMeal", sleep.endsAt + 3, () => 0.49);
+        assert(eaten.ok && eaten.tavern.satiety === 100 && !eaten.buffTriggered &&
+          eaten.state.meals.attackMeal === 0,
+        "legacy portion remains consumable without inventing a stat growth bonus");
         const combatMeal = model.eatMeal(eaten.state, eaten.tavern, "grainBread", sleep.endsAt + 4,
           () => 0, true);
         assert(!combatMeal.ok, "food cannot be consumed during combat");
@@ -597,15 +595,21 @@
         assert(roomSaved.homestead.equippedBook === null &&
           roomSaved.homestead.books.some((book) => book.id === "book-equipped"),
         "library UI moves the equipped book into its inventory without loss");
-        roomClick('[data-room-section="kitchen"] [data-homestead-action="cook-meal"][data-meal-id="attackMeal"]');
+        assert(roomDoc.querySelector('[data-room-section="kitchen"] [data-homestead-action="cook-meal"][data-meal-id="attackMeal"]').disabled &&
+          roomDoc.querySelector('[data-room-section="kitchen"]').textContent.includes("нет системы роста"),
+          "special meal visibly deferred without proxy stats");
+        roomClick('[data-room-section="kitchen"] [data-homestead-action="cook-meal"][data-meal-id="grainBread"]');
+        await waitFor(() => roomApp.getCloudSaveSnapshot().meta.homestead.meals.grainBread === 1,
+          "grain cooking did not commit");
         roomSaved = JSON.parse(roomApp.localStorage.getItem("well-of-whispers-camp-progress"));
-        assert(roomSaved.homestead.meals.attackMeal === 1 && roomSaved.homestead.resources.seeds === 2,
-          "a completed sleep unlocks exactly one UI special meal and charges ingredients");
-        roomClick('[data-room-section="kitchen"] [data-homestead-action="eat-meal"][data-meal-id="attackMeal"]');
+        assert(roomSaved.homestead.meals.grainBread === 1 && roomSaved.homestead.resources.seeds === 2,
+          "grain cooking charges one ingredient");
+        roomClick('[data-room-section="kitchen"] [data-homestead-action="eat-meal"][data-meal-id="grainBread"]');
+        await waitFor(() => roomApp.getCloudSaveSnapshot().meta.homestead.meals.grainBread === 0,
+          "grain food did not commit");
         roomSaved = JSON.parse(roomApp.localStorage.getItem("well-of-whispers-camp-progress"));
-        assert(roomSaved.tavern.satiety === 100 && roomSaved.homestead.mealBuff.stat === "attack" &&
-          roomSaved.homestead.mealBuff.expiresAt > Date.now(),
-        "eating a cooked meal restores satiety and saves the actual two-hour combat effect");
+        assert(roomSaved.tavern.satiety === 100 && roomSaved.homestead.mealBuff === null,
+        "eating bread restores satiety without a proxy stat effect");
         roomClick('[data-homestead-action="clinic"]');
         roomSaved = JSON.parse(roomApp.localStorage.getItem("well-of-whispers-camp-progress"));
         assert(roomSaved.homestead.clinicAt > 0 && roomSaved.tavern.injuries === 0,
@@ -632,8 +636,8 @@
         await roomReload;
         roomSaved = JSON.parse(rooms.contentWindow.localStorage.getItem("well-of-whispers-camp-progress"));
         assert(roomSaved.homestead.clinicAt > 0 && roomSaved.homestead.basementPurchased &&
-          roomSaved.homestead.camouflage === 1 && roomSaved.homestead.mealBuff.expiresAt > Date.now(),
-        "clinic cooldown, basement, camouflage and absolute buff expiry survive reload");
+          roomSaved.homestead.camouflage === 1 && roomSaved.homestead.kitchenReceipts.length === 2,
+        "clinic cooldown, basement, camouflage and kitchen receipts survive reload");
         rooms.remove();
       }
 

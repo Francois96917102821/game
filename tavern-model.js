@@ -7,6 +7,13 @@
   const MAX_RECIPES = 3;
   const HOUR = 60 * 60 * 1000;
   const SATIETY_PER_HOUR = 5;
+  const FOOD_COOLDOWN = 4 * HOUR;
+  const MEALS = Object.freeze({
+    lunch: Object.freeze({ name: "Недорогой обед", pricePerLevel: 4, stat: null }),
+    meat: Object.freeze({ name: "Мясо", pricePerLevel: 12, stat: "выносливость" }),
+    snack: Object.freeze({ name: "Закуска", pricePerLevel: 12, stat: "ловкость" }),
+    drink: Object.freeze({ name: "Напиток", pricePerLevel: 12, stat: "сила" }),
+  });
   const RECIPE_LIST = [
     { id: "root-biscuit", name: "Корневое печенье", description: "+20 сытости", satiety: 20, ingredients: "Корни из нижних гротов и чистая вода." },
     { id: "spiced-meat", name: "Пряное мясо", description: "+20 сытости", satiety: 20, ingredients: "Мясо с портовыми травами." },
@@ -14,10 +21,20 @@
     { id: "pickled-mushrooms", name: "Маринованные грибы", description: "+30 сытости", satiety: 30, ingredients: "Два тёмных гриба, болотная зелень и вода." },
     { id: "boiled-oysters", name: "Варёные устрицы", description: "+30 сытости", satiety: 30, ingredients: "Морские устрицы и чистая вода." },
     { id: "fish-in-sauce", name: "Рыба в каменном соусе", description: "+30 сытости, лечит 1 травму", satiety: 30, injuries: -1, ingredients: "Рыба, масло и каменный цвет." },
-    { id: "hell-skewer", name: "Острый шашлык", description: "+30 сытости, наносит 1 травму", satiety: 30, injuries: 1, ingredients: "Жареное мясо с едкой приправой." },
+    { id: "hell-skewer", name: "Адский шашлык", description: "+30 сытости, наносит 1 травму", satiety: 30, injuries: 1, ingredients: "Жареное мясо с едкой приправой." },
     { id: "foul-sausage", name: "Копчёная колбаса", description: "+40 сытости, наносит 1 травму", satiety: 40, injuries: 1, ingredients: "Мясо, горькая зелень и корень." },
     { id: "strange-soup", name: "Суп из кладовой", description: "+40 сытости, наносит 1 травму", satiety: 40, injuries: 1, ingredients: "Коренья, вода и рыбий глаз." },
-    { id: "vital-water", name: "Живительная вода", description: "Лечит все травмы", satiety: 0, injuries: -MAX_INJURIES, ingredients: "Чистая вода и два каменных цветка." },
+    { id: "vital-water", name: "Вода из подземного целебного источника", description: "Лечит все травмы", satiety: 0, injuries: -MAX_INJURIES, ingredients: "Вода источника, настоянная на травах." },
+    { id: "unknown-herb", name: "Корни неизвестной подземной травы", description: "+10 сытости", satiety: 10, ingredients: "Печёные корни с травами." },
+    { id: "rice-stew", name: "Рисовая похлёбка", description: "+20 сытости", satiety: 20, ingredients: "Портовый рис и зелень." },
+    { id: "fried-mushrooms", name: "Жареные грибы", description: "+20 сытости", satiety: 20, ingredients: "Грибы с травами." },
+    { id: "boiled-shrimp", name: "Варёные креветки", description: "+20 сытости", satiety: 20, ingredients: "Креветки из портовой кухни." },
+    { id: "fried-shrimp", name: "Жареные креветки", description: "+25 сытости", satiety: 25, ingredients: "Креветки с зеленью." },
+    { id: "fried-oysters", name: "Жареные устрицы", description: "+25 сытости", satiety: 25, ingredients: "Устрицы с зерновой корочкой." },
+    { id: "meat-stew", name: "Рагу из мяса, картофеля и грибов", description: "+40 сытости", satiety: 40, ingredients: "Мясо, картофель и грибы из кухни таверны." },
+    { id: "onion-skewer", name: "Шашлык с луком и специями", description: "+30 сытости", satiety: 30, ingredients: "Мясо с портовым луком." },
+    { id: "ancient-soup", name: "Древний суп", description: "+35 сытости", satiety: 35, ingredients: "Зерно, рыба и травы по старому рецепту." },
+    { id: "mushroom-potato-soup", name: "Грибной суп с картофелем", description: "+30 сытости", satiety: 30, ingredients: "Картофель, грибы и зелень." },
   ];
   const RECIPES = Object.freeze(Object.fromEntries(RECIPE_LIST.map((recipe) => [recipe.id, Object.freeze(recipe)])));
   const JOBS = Object.freeze({
@@ -49,9 +66,12 @@
       gold: 0,
       satiety: 50,
       satietyAt: now,
+      satietyChangedAt: now,
       injuries: 0,
       characterLevel: 1,
       recipes: Object.fromEntries(RECIPE_LIST.map((recipe) => [recipe.id, 0])),
+      foodReceipts: [],
+      foodAvailableAt: 0,
       activeJob: null,
       jobReceipts: [],
       stash: [],
@@ -105,11 +125,18 @@
       Number.isFinite(state.updatedAt) && Number.isInteger(state.gold) && state.gold >= 0 && state.gold <= MAX_GOLD &&
       Number.isInteger(state.satiety) && state.satiety >= 0 && state.satiety <= 100 &&
       Number.isFinite(state.satietyAt) && Number.isInteger(state.injuries) && state.injuries >= 0 &&
+      (state.satietyChangedAt === undefined || Number.isFinite(state.satietyChangedAt)) &&
       state.injuries <= MAX_INJURIES && Number.isInteger(state.characterLevel) &&
       state.characterLevel >= 1 && state.characterLevel <= 10000 &&
-      state.recipes && Object.keys(state.recipes).length === RECIPE_LIST.length &&
-      RECIPE_LIST.every((recipe) => Number.isInteger(state.recipes[recipe.id]) &&
+      state.recipes && Object.keys(state.recipes).every((id) => Object.hasOwn(RECIPES, id)) &&
+      RECIPE_LIST.slice(0, 10).every((recipe) => Number.isInteger(state.recipes[recipe.id])) &&
+      RECIPE_LIST.every((recipe) => state.recipes[recipe.id] === undefined ||
+        Number.isInteger(state.recipes[recipe.id]) &&
         state.recipes[recipe.id] >= 0 && state.recipes[recipe.id] <= MAX_RECIPES) &&
+      (state.foodAvailableAt === undefined || Number.isFinite(state.foodAvailableAt) && state.foodAvailableAt >= 0) &&
+      (state.foodReceipts === undefined || Array.isArray(state.foodReceipts) &&
+        state.foodReceipts.length <= 100000 && state.foodReceipts.every(validFoodReceipt) &&
+        new Set(state.foodReceipts.map((receipt) => receipt.id)).size === state.foodReceipts.length) &&
       (state.activeJob === null || (
         state.activeJob && typeof state.activeJob === "object" &&
         typeof state.activeJob.id === "string" && Object.hasOwn(JOBS, state.activeJob.kind) &&
@@ -143,7 +170,80 @@
     const state = { ...createState(now), ...copy(value) };
     state.recipes = { ...createState(now).recipes, ...(value.recipes || {}) };
     state.bonuses = { ...createState(now).bonuses, ...(value.bonuses || {}) };
+    if (value.satietyChangedAt === undefined) state.satietyChangedAt = value.satietyAt;
     if (!isValidState(state)) return createState(now);
+    return state;
+  }
+
+  function validFoodReceipt(receipt) {
+    return Boolean(receipt && typeof receipt.id === "string" && receipt.id.length > 0 &&
+      receipt.id.length <= 160 && Number.isFinite(receipt.at) &&
+      Number.isInteger(receipt.goldDelta) && Math.abs(receipt.goldDelta) <= MAX_GOLD &&
+      (receipt.recipeId === null || Object.hasOwn(RECIPES, receipt.recipeId)) &&
+      [-1, 0, 1].includes(receipt.recipeDelta) &&
+      (receipt.recipeDelta === 0 || receipt.recipeId !== null) &&
+      Number.isInteger(receipt.injuryDelta) && Math.abs(receipt.injuryDelta) <= MAX_INJURIES);
+  }
+
+  function recordFood(state, receipt) {
+    if (!validFoodReceipt(receipt) || state.foodReceipts.length >= 100000 ||
+      state.foodReceipts.some((existing) => existing.id === receipt.id)) {
+      throw new Error("Не удалось сохранить уникальную квитанцию еды.");
+    }
+    state.foodReceipts.push(receipt);
+  }
+
+  function buyMeal(current, mealId, level, now = Date.now(), id = `food-${createId(now, Math.random)}`) {
+    const meal = MEALS[mealId];
+    if (!meal) throw new Error("Блюдо не найдено.");
+    if (meal.stat) throw new Error("Нет системы силы, ловкости, выносливости: усиленная еда пока недоступна.");
+    if (!Number.isInteger(level) || level < 1 || level > 10000) throw new Error("Не удалось проверить уровень.");
+    const state = updateSatiety(withDefaults(current, now), now);
+    if (now < state.foodAvailableAt) throw new Error("Общий перерыв между блюдами таверны — 4 часа.");
+    const cost = level * meal.pricePerLevel;
+    if (state.gold < cost) throw new Error(`Нужно ${cost} золотых.`);
+    recordFood(state, { id, at: now, goldDelta: -cost, recipeId: null, recipeDelta: 0, injuryDelta: 0 });
+    state.gold -= cost;
+    state.satiety = 100;
+    state.satietyAt = now;
+    state.satietyChangedAt = now;
+    state.foodAvailableAt = now + FOOD_COOLDOWN;
+    state.updatedAt = now;
+    state.revision = current.revision + 1;
+    return state;
+  }
+
+  function reconcileFood(selected, other) {
+    const state = withDefaults(selected);
+    const incoming = withDefaults(other);
+    const known = new Set(state.foodReceipts.map((receipt) => receipt.id));
+    const recipeDeltas = {};
+    let goldDelta = 0;
+    let injuryDelta = 0;
+    for (const receipt of incoming.foodReceipts) {
+      if (known.has(receipt.id)) continue;
+      goldDelta += receipt.goldDelta;
+      injuryDelta += receipt.injuryDelta;
+      if (receipt.recipeId) recipeDeltas[receipt.recipeId] =
+        (recipeDeltas[receipt.recipeId] || 0) + receipt.recipeDelta;
+      state.foodReceipts.push(copy(receipt));
+      known.add(receipt.id);
+    }
+    state.gold = Math.max(0, Math.min(MAX_GOLD, state.gold + goldDelta));
+    state.injuries = Math.max(0, Math.min(MAX_INJURIES, state.injuries + injuryDelta));
+    for (const [id, delta] of Object.entries(recipeDeltas)) {
+      state.recipes[id] = Math.max(0, Math.min(MAX_RECIPES, state.recipes[id] + delta));
+    }
+    state.foodAvailableAt = Math.max(state.foodAvailableAt, incoming.foodAvailableAt);
+    if (incoming.satietyChangedAt > state.satietyChangedAt ||
+      incoming.satietyChangedAt === state.satietyChangedAt && incoming.satietyAt > state.satietyAt) {
+      state.satiety = incoming.satiety;
+      state.satietyAt = incoming.satietyAt;
+      state.satietyChangedAt = incoming.satietyChangedAt;
+    }
+    state.jobReceipts = [...new Set([...state.jobReceipts, ...incoming.jobReceipts])];
+    if (state.activeJob && state.jobReceipts.includes(state.activeJob.id)) state.activeJob = null;
+    if (!isValidState(state)) throw new Error("Не удалось согласовать квитанции еды.");
     return state;
   }
 
@@ -160,7 +260,7 @@
   }
 
   function startJob(current, kind, options = {}, now = Date.now(), random = Math.random) {
-    const state = updateSatiety(current, now);
+    const state = updateSatiety(withDefaults(current, now), now);
     if (state.activeJob) throw new Error("Сначала заверши или получи награду за текущее дело.");
     const definition = JOBS[kind];
     if (!definition) throw new Error("Такого дела в таверне нет.");
@@ -211,7 +311,7 @@
   }
 
   function claimJob(current, now = Date.now()) {
-    const state = updateSatiety(current, now);
+    const state = updateSatiety(withDefaults(current, now), now);
     const job = state.activeJob;
     if (!job) throw new Error("Сейчас нет дела, за которое можно получить награду.");
     if (now < job.endsAt) throw new Error("Время дела ещё не истекло.");
@@ -227,7 +327,11 @@
     if (job.kind === "room") {
       state.injuries = 0;
     } else {
-      if (job.reward.recipeId) state.recipes[job.reward.recipeId] += 1;
+      if (job.reward.recipeId) {
+        recordFood(state, { id: `cook-${job.id}`, at: now, goldDelta: job.reward.gold,
+          recipeId: job.reward.recipeId, recipeDelta: 1, injuryDelta: 0 });
+        state.recipes[job.reward.recipeId] += 1;
+      }
       if (job.reward.item) state.stash.push(copy(job.reward.item));
       if (job.reward.bonus === "attack") state.bonuses.attack += 1;
       if (job.reward.bonus === "maxHp") state.bonuses.maxHp += 2;
@@ -243,12 +347,15 @@
   function useRecipe(current, recipeId, now = Date.now()) {
     const recipe = RECIPES[recipeId];
     if (!recipe) throw new Error("Рецепт не найден.");
-    const state = updateSatiety(current, now);
+    const state = updateSatiety(withDefaults(current, now), now);
     if (state.recipes[recipeId] < 1) throw new Error("Этого рецепта нет в запасе.");
     state.recipes[recipeId] -= 1;
     state.satiety = Math.min(100, state.satiety + recipe.satiety);
+    state.satietyChangedAt = now;
     if (recipe.injuries < 0) state.injuries = Math.max(0, state.injuries + recipe.injuries);
     if (recipe.injuries > 0) state.injuries = Math.min(MAX_INJURIES, state.injuries + recipe.injuries);
+    recordFood(state, { id: `eat-${createId(now, Math.random)}`, at: now, goldDelta: 0,
+      recipeId, recipeDelta: -1, injuryDelta: state.injuries - current.injuries });
     state.revision = current.revision + 1;
     state.updatedAt = now;
     return state;
@@ -425,6 +532,8 @@
     MAX_INJURIES,
     MAX_RECIPES,
     HOUR,
+    FOOD_COOLDOWN,
+    MEALS,
     RECIPE_LIST,
     RECIPES,
     JOBS,
@@ -435,6 +544,8 @@
     startJob,
     claimJob,
     useRecipe,
+    buyMeal,
+    reconcileFood,
     startGame,
     hit21,
     stand21,

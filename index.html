@@ -68,6 +68,12 @@
               <p class="inventory-empty">Рюкзак пуст. Экипировка иногда выпадает с врагов.</p>
             </div>
             <p class="inventory-empty">Обычную добычу можно продать между встречами: 3 золота за пункт бонуса. Золото остаётся в этом спуске; складские и особые вещи не продаются.</p>
+            <details id="food-panel">
+              <summary>Запас еды · сытость <span id="food-satiety">50 / 100</span></summary>
+              <p class="inventory-empty">Порции доступны в любой локации без таймера. Во время онлайн-боя и дуэли еда заблокирована.</p>
+              <p id="food-status" role="status" aria-live="polite"></p>
+              <div id="food-inventory" class="tavern-recipe-list"></div>
+            </details>
             <button class="service-button profile-crafting-button" id="profile-crafting-button" type="button">Ремесленный стол · открыть в доме</button>
             <button class="service-button profile-crafting-button" id="profile-soul-crafting-button" type="button">Души и R-ремесло</button>
           </section>
@@ -315,6 +321,11 @@
       </nav>
       <section class="tavern-pane" data-tavern-pane="food">
         <p class="tavern-note">Сытость убывает на 5 пунктов за каждый полный час реального времени, включая время вне игры. На нуле штрафа к бою нет. Рецепты хранятся по 3 порции; некоторые блюда также влияют на травмы.</p>
+        <div class="tavern-recipe-list" id="tavern-menu"></div>
+        <p class="tavern-note" id="tavern-food-cooldown"></p>
+        <p class="tavern-note">Премиальный перерыв 2 часа отложен: проверяемых премиальных прав в игре нет. Флаги сохранения не дают премиум. Усиленные блюда не продаются до появления настоящих характеристик.</p>
+        <h3>Готовые порции по рецептам</h3>
+        <p class="tavern-note">Готовка длится 1 час и гарантированно даёт одну порцию, если есть место. Ингредиенты ниже — описание кухни таверны, не скрытое списание из вашего дома.</p>
         <div class="tavern-recipe-list" id="tavern-recipes"></div>
         <h3>Склад находок</h3>
         <p class="tavern-note">Уборка приносит случайный предмет экипировки. Выбери один предмет, чтобы взять его в следующий новый спуск; предмет останется на складе, пока спуск не сохранится.</p>

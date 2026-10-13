@@ -4,6 +4,7 @@
   const VERSION = 1;
   const HOUR = 60 * 60 * 1000;
   const DAY = 24 * HOUR;
+  const REST_MEAL_WINDOW = 2 * HOUR;
   const HOME_TYPES = Object.freeze({
     cabin: Object.freeze({ id: "cabin", name: "Простая хижина", plots: 2, sleepMs: 160 * 60 * 1000, tier: 1 }),
     sturdy: Object.freeze({ id: "sturdy", name: "Добротный дом", plots: 4, sleepMs: 140 * 60 * 1000, tier: 2 }),
@@ -87,6 +88,8 @@
       lastRestMealAt: null,
       meals: Object.fromEntries(Object.keys(MEALS).map((id) => [id, 0])),
       mealBuff: null,
+      kitchenReceipts: [],
+      kitchenConflicts: [],
       pages: 0,
       books: [],
       equippedBook: null,
@@ -175,6 +178,13 @@
       (state.lastRestMealAt !== undefined && state.lastRestMealAt !== null && !Number.isFinite(state.lastRestMealAt)) ||
       (state.meals !== undefined && (!state.meals || Object.keys(state.meals).length !== Object.keys(MEALS).length ||
         !Object.keys(MEALS).every((id) => Number.isInteger(state.meals[id]) && state.meals[id] >= 0 && state.meals[id] <= 1000000))) ||
+      (state.kitchenReceipts !== undefined && (!Array.isArray(state.kitchenReceipts) ||
+        state.kitchenReceipts.length > 100000 || !state.kitchenReceipts.every(validKitchenReceipt) ||
+        new Set(state.kitchenReceipts.map((receipt) => receipt.id)).size !== state.kitchenReceipts.length)) ||
+      (state.kitchenConflicts !== undefined && (!Array.isArray(state.kitchenConflicts) ||
+        state.kitchenConflicts.length > 100000 ||
+        !state.kitchenConflicts.every((id) => typeof id === "string" && id.length > 0 && id.length <= 160) ||
+        new Set(state.kitchenConflicts).size !== state.kitchenConflicts.length)) ||
       (state.mealBuff !== undefined && state.mealBuff !== null && !(state.mealBuff && typeof state.mealBuff === "object" &&
         ["attack", "defense", "dodge"].includes(state.mealBuff.stat) &&
         Number.isFinite(state.mealBuff.startedAt) && Number.isFinite(state.mealBuff.expiresAt) &&
@@ -607,15 +617,16 @@
     if (!hasRoom(current, "cabin")) return fail(current, "Кухня доступна только дома.");
     const meal = MEALS[mealId];
     if (!meal) return fail(current, "Рецепт блюда не найден.");
-    if (meal.afterRest && (current.lastCompletedSleepAt === null ||
-      current.lastRestMealAt === current.lastCompletedSleepAt)) {
-      return fail(current, "Блюда после отдыха можно приготовить один раз после завершённого сна.");
-    }
+    if (meal.afterRest && !canUseRestMeal(current, now)) return fail(current,
+      "Для специального блюда нужен завершённый сон; окно после подтверждения отдыха — 2 часа.");
+    if (meal.afterRest) return fail(current,
+      "Нет системы роста силы, ловкости и выносливости. Блюда с +50% шансом роста пока недоступны; ресурсы не списаны.");
     const missing = Object.entries(meal.recipe).find(([key, amount]) => current.resources[key] < amount);
     if (missing) return fail(current, `Недостаточно ресурсов: нужно ${missing[1]} ед. ресурса «${missing[0]}».`);
-    const state = copy(current);
+    const state = withDefaults(current, now);
     for (const [key, amount] of Object.entries(meal.recipe)) state.resources[key] -= amount;
     state.meals[mealId] += 1;
+    recordKitchen(state, mealId, 1, meal.recipe, now);
     if (meal.afterRest) state.lastRestMealAt = current.lastCompletedSleepAt;
     return { ok: true, state: stamp(state, now), meal };
   }
@@ -628,15 +639,16 @@
     if (!tavern || !Number.isInteger(tavern.satiety) || !Number.isFinite(tavern.satietyAt)) {
       return fail(current, "Не удалось проверить сытость таверны.");
     }
-    const state = copy(current);
+    const state = withDefaults(current, now);
     const nextTavern = copy(tavern);
     state.meals[mealId] -= 1;
     nextTavern.satiety = meal.satiety;
     nextTavern.satietyAt = now;
+    nextTavern.satietyChangedAt = now;
     nextTavern.revision += 1;
     nextTavern.updatedAt = now;
-    const buffTriggered = Boolean(meal.stat && random() < 0.5);
-    if (buffTriggered) state.mealBuff = { stat: meal.stat, startedAt: now, expiresAt: now + 2 * HOUR };
+    recordKitchen(state, mealId, -1, {}, now);
+    const buffTriggered = false;
     return {
       ok: true,
       state: stamp(state, now),
@@ -645,6 +657,26 @@
       buffTriggered,
       buff: buffTriggered ? state.mealBuff : null,
     };
+  }
+
+  function canUseRestMeal(state, now = Date.now()) {
+    return state.lastCompletedSleepAt !== null && now >= state.lastCompletedSleepAt &&
+      now < state.lastCompletedSleepAt + REST_MEAL_WINDOW &&
+      state.lastRestMealAt !== state.lastCompletedSleepAt;
+  }
+
+  function validKitchenReceipt(receipt) {
+    return Boolean(receipt && typeof receipt.id === "string" && receipt.id.length > 0 &&
+      receipt.id.length <= 160 && Object.hasOwn(MEALS, receipt.mealId) &&
+      [1, -1].includes(receipt.delta) && receipt.resources && Number.isFinite(receipt.at) &&
+      Object.entries(receipt.resources).every(([key, amount]) =>
+        RESOURCE_KEYS.includes(key) && Number.isInteger(amount) && amount >= 0 && amount <= 1000000));
+  }
+
+  function recordKitchen(state, mealId, delta, resources, now) {
+    if (state.kitchenReceipts.length >= 100000) throw new Error("Журнал кухни заполнен; еда не списана.");
+    state.kitchenReceipts.push({ id: `kitchen-${now}-${Math.random().toString(36).slice(2)}`,
+      mealId, delta, resources: copy(resources), at: now });
   }
 
   function buyPages(current, count, gold, receiptId, now = Date.now()) {
@@ -758,6 +790,26 @@
     const latest = second.updatedAt > first.updatedAt ||
       (second.updatedAt === first.updatedAt && second.revision > first.revision) ? second : first;
     const result = copy(latest);
+    const other = latest === first ? second : first;
+    const kitchenIds = new Set(result.kitchenReceipts.map((receipt) => receipt.id));
+    const kitchenConflicts = new Set([...first.kitchenConflicts, ...second.kitchenConflicts]);
+    const mealDeltas = {};
+    for (const receipt of other.kitchenReceipts) {
+      if (kitchenIds.has(receipt.id)) continue;
+      const funded = Object.entries(receipt.resources).every(([key, amount]) => result.resources[key] >= amount);
+      if (receipt.delta < 0 || funded) {
+        mealDeltas[receipt.mealId] = (mealDeltas[receipt.mealId] || 0) + receipt.delta;
+      } else {
+        kitchenConflicts.add(receipt.id);
+      }
+      for (const [key, amount] of Object.entries(receipt.resources)) {
+        result.resources[key] = Math.max(0, result.resources[key] - amount);
+      }
+      result.kitchenReceipts.push(copy(receipt));
+      kitchenIds.add(receipt.id);
+    }
+    for (const [id, delta] of Object.entries(mealDeltas)) result.meals[id] = Math.max(0, result.meals[id] + delta);
+    result.kitchenConflicts = [...kitchenConflicts];
     const homes = new Map([...first.homes, ...second.homes].map((home) => [home.id, home]));
     result.homes = [...homes.values()].sort((left, right) =>
       HOME_TYPES[left.tier].tier - HOME_TYPES[right.tier].tier ||
@@ -786,6 +838,9 @@
     result.dummyHp = latest.dummyHp;
     result.mealBuff = [first.mealBuff, second.mealBuff]
       .filter(Boolean).sort((left, right) => right.expiresAt - left.expiresAt)[0] || null;
+    if (!isValidState(result) && result.kitchenReceipts.length > latest.kitchenReceipts.length) {
+      throw new Error("Не удалось согласовать квитанции кухни; облачное изменение не применено.");
+    }
     return isValidState(result) ? result : copy(latest);
   }
 
@@ -802,6 +857,8 @@
     canReplaceBuilding,
     DAY,
     HOUR,
+    REST_MEAL_WINDOW,
+    canUseRestMeal,
     HOME_TYPES,
     RESOURCE_KEYS,
     buyPlot,

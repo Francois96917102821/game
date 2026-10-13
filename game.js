@@ -612,6 +612,7 @@ let tavernStorageError = "";
 let tavernWriteConflict = false;
 let tavernMessage = "";
 let pendingTavernState = null;
+let pendingTavernRevision = null;
 let selectedTavernTab = "food";
 let harborMessage = "";
 let homesteadMessage = "";
@@ -847,7 +848,8 @@ function mergeMetaProgress(left, right) {
   const useSecondTavern = second.tavern.updatedAt > first.tavern.updatedAt ||
     (second.tavern.updatedAt === first.tavern.updatedAt && second.tavern.revision >= first.tavern.revision)
   const tavernSource = useSecondTavern ? second : first;
-  const tavern = JSON.parse(JSON.stringify(tavernSource.tavern));
+  const tavern = window.WellTavernModel.reconcileFood(tavernSource.tavern,
+    (useSecondTavern ? first : second).tavern);
   const harbor = window.WellExpeditionsModel.merge(first.harbor, second.harbor);
   const homestead = window.WellHomesteadModel.merge(first.homestead, second.homestead);
   const mailGearByMailId = new Map();
@@ -943,13 +945,14 @@ function persistMetaProgress() {
         .filter((receipt) => !currentReceipts.has(receipt.id))
         .reduce((total, receipt) => total + receipt[`${currency}Cost`], 0);
       const dungeonMerged = mergeMetaProgress(metaProgress, local);
-      const soulGearTavern = mergeSoulCraftedGear(metaProgress.tavern, dungeonMerged.souls);
+      const foodTavern = window.WellTavernModel.reconcileFood(metaProgress.tavern, local.tavern);
+      const soulGearTavern = mergeSoulCraftedGear(foodTavern, dungeonMerged.souls);
       metaProgress = {
         ...metaProgress,
         essence: Math.max(0, metaProgress.essence - missingDebits("essence")),
         tavern: {
           ...soulGearTavern,
-          gold: Math.max(0, metaProgress.tavern.gold - missingDebits("gold")),
+          gold: Math.max(0, foodTavern.gold - missingDebits("gold")),
         },
         homestead: window.WellHomesteadModel.merge(metaProgress.homestead, local.homestead),
         orderReputation: dungeonMerged.orderReputation,
@@ -1052,7 +1055,7 @@ async function commitTavernProgress(nextTavern) {
   if (!window.WellTavernModel.isValidState(committedTavern)) {
     throw new Error("Состояние таверны не прошло проверку и не было сохранено.");
   }
-  const nextMeta = { ...metaProgress, tavern: committedTavern };
+  let nextMeta = { ...metaProgress, tavern: committedTavern };
   let localSaved = false;
   let indexedDbSaved = false;
   tavernWriteConflict = false;
@@ -1082,6 +1085,8 @@ async function commitTavernProgress(nextTavern) {
     console.warn("Резерв IndexedDB не принял запись; проверяю основное хранилище.", error);
   }
   try {
+    const stored = JSON.parse(window.localStorage.getItem(META_SAVE_KEY) || "null");
+    if (stored !== null && isValidMetaProgress(stored)) nextMeta = mergeMetaProgress(nextMeta, stored);
     window.localStorage.setItem(META_SAVE_KEY, JSON.stringify(nextMeta));
     localSaved = true;
   } catch (error) {
@@ -2375,6 +2380,7 @@ function spawnSpecificEnemy(kind) {
   if (kind === "worldeater") {
     metaProgress.tavern.satiety = 10;
     metaProgress.tavern.satietyAt = Date.now();
+    metaProgress.tavern.satietyChangedAt = metaProgress.tavern.satietyAt;
     metaProgress.tavern.updatedAt = Date.now();
     metaProgress.tavern.revision += 1;
     persistMetaProgress();
@@ -2627,6 +2633,7 @@ function defeatEnemy() {
     ["wealth", "blood", "knowledge", "fate", "statPotion"].forEach(giveTrophy);
     metaProgress.tavern.satiety = 100;
     metaProgress.tavern.satietyAt = Date.now();
+    metaProgress.tavern.satietyChangedAt = metaProgress.tavern.satietyAt;
     metaProgress.tavern.updatedAt = Date.now();
     metaProgress.tavern.revision += 1;
   } else {
@@ -3576,18 +3583,21 @@ function renderHomestead() {
           Object.entries(recipe.recipe).some(([key, amount]) => homestead.resources[key] < amount))]));
   }
 
-  const kitchen = homeSection("Кухня", "Зерно — это семена из ежедневного домашнего сбора. Обычная лепёшка полностью насыщает; каждое блюдо после сна доступно один раз на завершённый отдых.");
+  const kitchen = homeSection("Кухня", "Лепёшка пока требует 1 семя (seeds) из домашнего сбора: отдельного снопа зерна в инвентаре нет. Это адаптация к существующему ингредиенту. Сытость 100%, без таймера и лимита. Окно специальной еды — 2 часа после подтверждения сна; выход и возвращение его не отменяют.");
   kitchen.dataset.roomSection = "kitchen";
+  if (homestead.kitchenConflicts.length) {
+    kitchen.append(homeCard("Конфликт офлайн-готовки",
+      `${homestead.kitchenConflicts.length} квитанций готовки не добавили порции: разные устройства потратили одни и те же ингредиенты. Уже съеденную еду отменить нельзя. Это не защита от одновременного офлайн-расхода.`));
+  }
   const buffLabels = { attack: "атаки", defense: "защиты", dodge: "уклонения" };
+  const growthLabels = { attack: "силы", defense: "выносливости", dodge: "ловкости" };
   for (const [mealId, meal] of Object.entries(model.MEALS)) {
     const ingredients = Object.entries(meal.recipe)
       .map(([key, amount]) => `${amount} ${HOME_RESOURCE_NAMES[key]}`).join(" + ");
     const afterRest = meal.afterRest;
-    const lockedByRest = afterRest &&
-      (homestead.lastCompletedSleepAt === null ||
-        homestead.lastRestMealAt === homestead.lastCompletedSleepAt);
+    const lockedByRest = afterRest && !model.canUseRestMeal(homestead, now);
     const effect = meal.stat
-      ? `После готовки блюда после сна даёт 50% шанс на +50% к ${buffLabels[meal.stat]} на 2 часа.`
+      ? `Недоступно: нет системы роста силы, ловкости и выносливости. Требуемый эффект — +50% к шансу роста ${growthLabels[meal.stat]} на 2 часа, не прямой боевой бонус. Старые порции можно съесть только для сытости.`
       : "Восстанавливает сытость до 100 без боевого усиления.";
     kitchen.append(homeCard(`${meal.name} · запас ${homestead.meals[mealId]}`,
       `Цена: ${ingredients}. ${effect}${afterRest && homestead.lastCompletedSleepAt !== null && !lockedByRest
@@ -3595,13 +3605,13 @@ function renderHomestead() {
         : afterRest ? " Сначала заверши сон." : ""}`,
       [
         homesteadButton(`Приготовить · ${ingredients}`, "cook-meal", { mealId },
-          lockedByRest || Object.entries(meal.recipe).some(([key, amount]) => homestead.resources[key] < amount)),
+          afterRest || lockedByRest || Object.entries(meal.recipe).some(([key, amount]) => homestead.resources[key] < amount)),
         homesteadButton("Съесть · сытость 100%", "eat-meal", { mealId }, homestead.meals[mealId] < 1),
       ]));
   }
   if (homestead.mealBuff) {
     const statName = buffLabels[homestead.mealBuff.stat] || homestead.mealBuff.stat;
-    kitchen.append(homeCard("Временный эффект еды",
+    kitchen.append(homeCard("Старый боевой эффект еды (не шанс роста характеристики)",
       homestead.mealBuff.expiresAt > now
         ? `+50% к ${statName} действует ещё ${formatHomeCountdown(homestead.mealBuff.expiresAt, now)}.`
         : `Эффект +50% к ${statName} завершился; время окончания ${new Date(homestead.mealBuff.expiresAt).toLocaleString("ru-RU")}.`));
@@ -4273,6 +4283,15 @@ function closeHomestead() {
 }
 
 async function handleHomesteadAction(action, data = {}) {
+  if (["cook-meal", "eat-meal"].includes(action) && !data.foodLockAcquired) {
+    if (!navigator.locks) {
+      homesteadMessage = "Браузер не поддерживает безопасную блокировку кухни. Еда не списана.";
+      renderHomestead();
+      return;
+    }
+    return navigator.locks.request("well-food", () =>
+      handleHomesteadAction(action, { ...data, foodLockAcquired: true }));
+  }
   if (homesteadBusy || !localMetaReadable) return;
   homesteadBusy = true;
   const model = window.WellHomesteadModel;
@@ -4425,18 +4444,19 @@ async function handleHomesteadAction(action, data = {}) {
       render();
       return;
     } else if (action === "cook-meal") {
+      latestHomesteadBalances();
+      current = metaProgress.homestead;
       result = model.cookMeal(current, data.mealId, now);
       message = result.ok ? `${result.meal.name} приготовлено и добавлено в запас.` : "";
     } else if (action === "eat-meal") {
+      latestHomesteadBalances();
+      current = metaProgress.homestead;
       result = model.eatMeal(current, metaProgress.tavern, data.mealId, now, Math.random,
-        Boolean(state.enemy && !state.gameOver));
+        Boolean(state.enemy && !state.gameOver) || foodCombatLocked());
       if (result.ok) {
-        const statName = { attack: "атаку", defense: "защиту", dodge: "уклонение" }[result.meal.stat];
-        message = result.buffTriggered
-          ? `Сытость восстановлена до 100. Сработал бонус: +50% к ${statName} до ${new Date(result.buff.expiresAt).toLocaleTimeString("ru-RU")}.`
-          : result.meal.stat
-            ? "Сытость восстановлена до 100; 50% шанс временного боевого бонуса не сработал."
-            : "Сытость восстановлена до 100.";
+        message = result.meal.stat
+          ? "Старая порция съедена: сытость 100%. Шанс роста характеристик недоступен; боевой бонус не подменяет его."
+          : "Сытость восстановлена до 100.";
       }
     } else if (action === "buy-pages") {
       const count = Number(data.count);
@@ -4748,6 +4768,47 @@ function tavernActionButton(label, action, data = {}, className = "action-button
   return button;
 }
 
+function foodCombatLocked() {
+  const battle = window.WellPlayerGroups?.getBattle();
+  return dungeonDuelLocked() || Boolean(battle && ["waiting", "active"].includes(battle.status));
+}
+
+function renderFoodInventory() {
+  const container = $("food-inventory");
+  renderRecipeList(container, false);
+  $("food-status").textContent = tavernStorageError || tavernMessage;
+  if (pendingTavernState) {
+    const retry = tavernActionButton("Повторить сохранение", "retry");
+    retry.disabled = tavernDialogBusy;
+    $("food-status").append(" ", retry);
+  }
+  $("food-satiety").textContent = `${window.WellTavernModel.updateSatiety(metaProgress.tavern).satiety} / 100`;
+}
+
+function renderRecipeList(container, showAll) {
+  const tavern = metaProgress.tavern;
+  const signature = JSON.stringify([tavern.recipes, tavernDialogBusy, tavernStorageReady,
+    tavernStorageError, Boolean(pendingTavernState), foodCombatLocked()]);
+  if (container.dataset.signature === signature) return;
+  container.dataset.signature = signature;
+  container.replaceChildren();
+  for (const recipe of window.WellTavernModel.RECIPE_LIST) {
+    if (!showAll && !tavern.recipes[recipe.id]) continue;
+    const row = document.createElement("article");
+    row.className = "tavern-recipe";
+    const details = document.createElement("div");
+    const title = document.createElement("strong");
+    title.textContent = `${recipe.name} · ${tavern.recipes[recipe.id]}/3`;
+    const description = document.createElement("span");
+    description.textContent = `${recipe.description}. ${recipe.ingredients}`;
+    details.append(title, description);
+    const button = tavernActionButton("Съесть", "eat", { recipeId: recipe.id });
+    button.disabled = button.disabled || tavern.recipes[recipe.id] < 1 || foodCombatLocked();
+    row.append(details, button);
+    container.append(row);
+  }
+}
+
 function openTavern() {
   if (state.started && !state.gameOver) return;
   selectedDistrict = "port";
@@ -4913,21 +4974,31 @@ function renderTavern() {
   for (const pane of ui.tavernDialog.querySelectorAll("[data-tavern-pane]")) {
     pane.hidden = pane.dataset.tavernPane !== selectedTavernTab;
   }
-  ui.tavernRecipes.replaceChildren();
-  for (const recipe of window.WellTavernModel.RECIPE_LIST) {
-    const row = document.createElement("article");
-    row.className = "tavern-recipe";
-    const details = document.createElement("div");
-    const title = document.createElement("strong");
-    title.textContent = `${recipe.name} · ${tavern.recipes[recipe.id]}/3`;
-    const description = document.createElement("span");
-    description.textContent = `${recipe.description}. ${recipe.ingredients}`;
-    details.append(title, description);
-    const button = tavernActionButton("Съесть", "eat", { recipeId: recipe.id });
-    button.disabled = button.disabled || tavern.recipes[recipe.id] < 1;
-    row.append(details, button);
-    ui.tavernRecipes.append(row);
+  renderRecipeList(ui.tavernRecipes, true);
+  const menu = $("tavern-menu");
+  const menuSignature = JSON.stringify([getTavernLevel(), tavern.gold,
+    Date.now() < tavern.foodAvailableAt, tavernDialogBusy, tavernStorageReady,
+    tavernStorageError, Boolean(pendingTavernState)]);
+  if (menu.dataset.signature !== menuSignature) {
+    menu.dataset.signature = menuSignature;
+    menu.replaceChildren();
+    for (const [mealId, meal] of Object.entries(window.WellTavernModel.MEALS)) {
+      const row = document.createElement("article");
+      row.className = "tavern-recipe";
+      const text = document.createElement("span");
+      const price = meal.pricePerLevel * getTavernLevel();
+      text.textContent = `${meal.name} · ${meal.pricePerLevel} × ${getTavernLevel()} = ${price} зол. · сытость 100%. ${
+        meal.stat ? `+20% (${meal.stat}) на 1 час — недоступно: системы этой характеристики нет.` : ""}`;
+      const button = tavernActionButton("Заказать", "buy-meal", { mealId });
+      button.disabled = button.disabled || Boolean(meal.stat) || tavern.gold < price ||
+        Date.now() < tavern.foodAvailableAt;
+      row.append(text, button);
+      menu.append(row);
+    }
   }
+  $("tavern-food-cooldown").textContent = Date.now() < tavern.foodAvailableAt
+    ? `Следующее блюдо через ${tavernTimeRemaining(tavern.foodAvailableAt)}.`
+    : "Блюдо доступно. Общий перерыв — 4 часа.";
   ui.tavernStash.replaceChildren();
   const availableStash = tavern.stash.filter((item) => !isTavernGearAlreadyInRun(item.id));
   if (availableStash.length === 0) {
@@ -5017,40 +5088,77 @@ async function persistTavernCandidate(candidate) {
     renderTavern();
     return false;
   }
+  const expectedRevision = metaProgress.tavern.revision;
   const saved = await commitTavernProgress(candidate);
   if (!saved) {
-    if (!tavernWriteConflict) pendingTavernState = JSON.parse(JSON.stringify(candidate));
+    if (!tavernWriteConflict) {
+      pendingTavernState = JSON.parse(JSON.stringify(candidate));
+      pendingTavernRevision = expectedRevision;
+    }
     renderTavern();
     return false;
   }
   pendingTavernState = null;
+  pendingTavernRevision = null;
   tavernMessage = "Изменение сохранено.";
   renderTavern();
   return true;
 }
 
 async function handleTavernAction(action, data = {}) {
+  if (["eat", "buy-meal", "claim-job", "retry"].includes(action) && !data.foodLockAcquired) {
+    if (!navigator.locks) {
+      tavernMessage = "Браузер не поддерживает безопасную блокировку еды. Ничего не списано.";
+      renderTavern();
+      renderFoodInventory();
+      return;
+    }
+    return navigator.locks.request("well-food", () =>
+      handleTavernAction(action, { ...data, foodLockAcquired: true }));
+  }
   if (tavernDialogBusy) return;
   if (action === "retry") {
     if (!pendingTavernState) return;
     tavernDialogBusy = true;
     renderTavern();
     try {
+      if (pendingTavernRevision !== metaProgress.tavern.revision) {
+        pendingTavernState = null;
+        pendingTavernRevision = null;
+        throw new Error("Сохранение изменилось после ошибки. Устаревшее действие отменено; перезагрузи игру для актуального запаса.");
+      }
+      const known = new Set(metaProgress.tavern.foodReceipts.map((receipt) => receipt.id));
+      const changes = pendingTavernState.foodReceipts.filter((receipt) => !known.has(receipt.id));
+      if (changes.some((receipt) => receipt.recipeDelta < 0) && foodCombatLocked()) {
+        throw new Error("Еда недоступна во время онлайн-боя или дуэли; повтори сохранение после боя.");
+      }
+      if (changes.some((receipt) => receipt.goldDelta < 0) && state.started && !state.gameOver) {
+        throw new Error("Сохранить заказ блюда таверны можно только в городе.");
+      }
       await persistTavernCandidate(pendingTavernState);
+    } catch (error) {
+      tavernStorageError = error.message;
     } finally {
       tavernDialogBusy = false;
       renderTavern();
+      renderFoodInventory();
     }
     return;
   }
   if (!tavernStorageReady || tavernStorageError || pendingTavernState) return;
   tavernDialogBusy = true;
   renderTavern();
+  renderFoodInventory();
   try {
     const now = Date.now();
+    if (action === "eat" && foodCombatLocked()) throw new Error("Еда недоступна во время онлайн-боя или дуэли.");
+    if (action === "buy-meal" && state.started && !state.gameOver) throw new Error("Блюда таверны доступны только в городе.");
+    if (["eat", "buy-meal", "claim-job"].includes(action)) latestHomesteadBalances();
     let candidate = window.WellTavernModel.withDefaults(metaProgress.tavern);
     if (action === "eat") {
       candidate = window.WellTavernModel.useRecipe(candidate, data.recipeId, now);
+    } else if (action === "buy-meal") {
+      candidate = window.WellTavernModel.buyMeal(candidate, data.mealId, getTavernLevel(), now);
     } else if (action === "start-job") {
       const kind = data.kind;
       const options = { level: getTavernLevel() };
@@ -5094,10 +5202,12 @@ async function handleTavernAction(action, data = {}) {
   } finally {
     tavernDialogBusy = false;
     renderTavern();
+    renderFoodInventory();
   }
 }
 
 function render() {
+  renderFoodInventory();
   const theme = getFloorTheme();
   const characterClass = state.classId ? getSelectedClassNodes().slice(-1)[0] : null;
   ui.level.textContent = `УР. ${state.level}`;
@@ -5407,6 +5517,10 @@ ui.buyArmor.addEventListener("click", () => merchantPurchase("armor"));
 ui.buyHealing.addEventListener("click", () => merchantPurchase("healing"));
 ui.buyFireSoul.addEventListener("click", () => merchantPurchase("fireSoul"));
 ui.leaveMerchant.addEventListener("click", leaveMerchant);
+$("food-panel").addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-tavern-action]");
+  if (button) handleTavernAction(button.dataset.tavernAction, button.dataset);
+});
 ui.inventory.addEventListener("click", (event) => {
   const sell = event.target.closest("button[data-sell-gear-id]");
   if (sell) {

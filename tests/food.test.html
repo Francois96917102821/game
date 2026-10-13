@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Food tests</title>
+<h1 id="result">RUNNING</h1>
+<pre id="log"></pre>
+<script src="../tavern-model.js"></script>
+<script src="../homestead-model.js"></script>
+<script>
+"use strict";
+(async () => {
+  const log = document.getElementById("log");
+  const failures = [];
+  const food = window.WellTavernModel;
+  const home = window.WellHomesteadModel;
+  const hour = food.HOUR;
+  const clone = (value) => JSON.parse(JSON.stringify(value));
+  function assert(condition, message) { if (!condition) throw new Error(message); }
+  function rejects(work, message) {
+    let rejected = false;
+    try { work(); } catch { rejected = true; }
+    assert(rejected, message);
+  }
+  function check(name, work) {
+    try { work(); log.textContent += `PASS ${name}\n`; }
+    catch (error) { failures.push(`${name}: ${error.stack}`); }
+  }
+  function house(tier = "cabin") {
+    return { ...home.createState(1000), atHome: true,
+      homes: [{ id: "owned", tier, purchasedAt: 1000 }] };
+  }
+  check("exact lunch price, shared cooldown, reload and premium flags ignored", () => {
+    for (const level of [1, 7, 10000]) {
+      const old = food.createState(1000);
+      old.gold = level * 4 - 1;
+      rejects(() => food.buyMeal(old, "lunch", level, 1000), "cannot pay one gold short");
+      assert(old.gold === level * 4 - 1 && old.satiety === 50, "failure is atomic");
+      old.gold += 1;
+      old.premium = true;
+      old.verifiedPremium = true;
+      const fed = food.buyMeal(old, "lunch", level, 1000, `lunch-${level}`);
+      assert(fed.gold === 0 && fed.satiety === 100 && fed.satietyAt === 1000, "exact price/full refill");
+      assert(fed.foodAvailableAt === 1000 + 4 * hour, "arbitrary premium flags cannot shorten cooldown");
+      const reloaded = clone(fed);
+      reloaded.gold = level * 4;
+      rejects(() => food.buyMeal(reloaded, "lunch", level, fed.foodAvailableAt - 1), "blocked until exact boundary");
+      rejects(() => food.buyMeal(reloaded, "lunch", level, 1000 + 2 * hour), "no two-hour premium");
+      assert(food.buyMeal(reloaded, "lunch", level, fed.foodAvailableAt).gold === 0, "exact boundary opens");
+      rejects(() => food.buyMeal(reloaded, "lunch", level, fed.foodAvailableAt, `lunch-${level}`), "duplicate receipt cannot debit");
+    }
+    for (const id of ["meat", "snack", "drink"]) {
+      const state = { ...food.createState(1000), gold: 100 };
+      assert(food.MEALS[id].pricePerLevel === 12, "stat meal intended price");
+      rejects(() => food.buyMeal(state, id, 1, 1000), "stat system missing; no proxy");
+      assert(state.gold === 100 && state.foodAvailableAt === 0, "blocked meal cannot debit or start cooldown");
+    }
+    for (const level of [0, -1, 1.5, 10001, NaN]) {
+      rejects(() => food.buyMeal(food.createState(1000), "lunch", level, 1000), "bad level rejected");
+    }
+  });
+  check("recipe copies, cap, cooking reward and legacy migration", () => {
+    const legacy = food.createState(1000);
+    for (const recipe of food.RECIPE_LIST.slice(10)) delete legacy.recipes[recipe.id];
+    delete legacy.foodReceipts;
+    delete legacy.foodAvailableAt;
+    legacy.recipes["root-biscuit"] = 3;
+    legacy.jobReceipts = ["old-claimed-job"];
+    assert(food.isValidState(legacy), "original ten-recipe save remains valid");
+    const migrated = food.withDefaults(clone(legacy));
+    assert(migrated.recipes["root-biscuit"] === 3 && migrated.jobReceipts[0] === "old-claimed-job",
+      "old portions and receipts kept");
+    assert(migrated.recipes["rice-stew"] === 0, "new portions never gifted at migration");
+    for (const recipe of food.RECIPE_LIST) {
+      const source = food.createState(1000);
+      source.recipes[recipe.id] = 3;
+      let eaten = source;
+      for (let i = 0; i < 3; i += 1) eaten = food.useRecipe(clone(eaten), recipe.id, 1000 + i);
+      assert(eaten.recipes[recipe.id] === 0 && eaten.satiety >= 0 && eaten.satiety <= 100,
+        `${recipe.id} exactly three consumable portions`);
+      rejects(() => food.useRecipe(eaten, recipe.id, 1004), "no free fourth portion");
+    }
+    const cooking = food.startJob(food.createState(1000), "cook", {}, 1000, () => 0);
+    rejects(() => food.claimJob(cooking, cooking.activeJob.endsAt - 1), "cooking cannot complete early");
+    const claimed = food.claimJob(clone(cooking), cooking.activeJob.endsAt);
+    assert(claimed.recipes[cooking.activeJob.reward.recipeId] === 1, "100 percent cooking reward");
+    rejects(() => food.claimJob(claimed, cooking.activeJob.endsAt), "no duplicate cooking reward");
+    const full = food.createState(1000);
+    for (const recipe of food.RECIPE_LIST) full.recipes[recipe.id] = 3;
+    rejects(() => food.startJob(full, "cook", {}, 1000), "cannot exceed three of each");
+    const atCap = clone(cooking);
+    atCap.recipes[cooking.activeJob.reward.recipeId] = 3;
+    rejects(() => food.claimJob(atCap, cooking.activeJob.endsAt), "claim cannot silently discard fourth portion");
+  });
+  check("satiety clock exact boundaries, clamp and recipe independence", () => {
+    const old = food.createState(1000);
+    assert(food.updateSatiety(old, 1000 + hour - 1).satiety === 50, "not before full hour");
+    assert(food.updateSatiety(old, 1000 + hour).satiety === 45, "at full hour");
+    assert(food.updateSatiety(old, 1000 - hour).satiety === 50, "backward clock not a reward");
+    assert(food.updateSatiety(old, 1000 + 100 * hour).satiety === 0, "floor zero");
+    const full = { ...old, satiety: 99, recipes: { ...old.recipes, "meat-stew": 1 },
+      foodAvailableAt: 1000 + 4 * hour };
+    const used = food.useRecipe(full, "meat-stew", 1000);
+    assert(used.satiety === 100 && used.foodAvailableAt === full.foodAvailableAt,
+      "recipe clamps ceiling, ignores and does not change food cooldown");
+  });
+  check("food debit and consumptions survive stale-cloud merges and repeated merges", () => {
+    const old = { ...food.createState(1000), gold: 100 };
+    old.recipes["fish-fillet"] = 1;
+    const fed = food.buyMeal(old, "lunch", 7, 1001, "paid-food");
+    const eaten = food.useRecipe(fed, "fish-fillet", 1002);
+    const stale = { ...clone(old), updatedAt: 9999999, revision: 100 };
+    const merged = food.reconcileFood(stale, eaten);
+    assert(merged.gold === 72 && merged.recipes["fish-fillet"] === 0 && merged.satiety === 100 &&
+      merged.foodAvailableAt === 1001 + 4 * hour, "newer stale snapshot cannot resurrect debit or portion");
+    const again = food.reconcileFood(merged, eaten);
+    assert(again.gold === 72 && again.recipes["fish-fillet"] === 0 &&
+      again.foodReceipts.length === 2, "repeated merge is idempotent");
+    const cooking = food.startJob(old, "cook", {}, 1000, () => 0);
+    const reward = food.claimJob(cooking, cooking.activeJob.endsAt);
+    const recovered = food.reconcileFood(cooking, reward);
+    assert(recovered.activeJob === null && recovered.gold === reward.gold &&
+      recovered.recipes["root-biscuit"] === 1, "stale active job cannot pay twice");
+    rejects(() => food.claimJob(recovered, cooking.activeJob.endsAt), "merged job already claimed");
+  });
+  check("real home sleep accounting and finite rest window survive departure and reload", () => {
+    for (const [tier, minutes] of [["cabin", 160], ["sturdy", 140], ["mansion", 120]]) {
+      const sleeping = home.startSleep(house(tier), 2000);
+      assert(sleeping.endsAt === 2000 + minutes * 60000, "exact sleep duration");
+      assert(!home.completeSleep(sleeping.state, sleeping.endsAt - 1).ok, "no early confirmation");
+      const canceled = home.leaveHome(sleeping.state, sleeping.endsAt - 1);
+      assert(!home.completeSleep(home.enterHome(canceled.state).state, sleeping.endsAt).ok, "leaving cancels unfinished sleep");
+      const rested = home.completeSleep(clone(sleeping.state), sleeping.endsAt);
+      const returned = home.enterHome(home.leaveHome(rested.state, sleeping.endsAt + 1).state,
+        sleeping.endsAt + 2).state;
+      assert(home.canUseRestMeal(clone(returned), sleeping.endsAt + 2 * hour - 1), "departure preserves window");
+      assert(!home.canUseRestMeal(returned, sleeping.endsAt + 2 * hour), "expires exactly at two hours");
+      assert(!home.canUseRestMeal(returned, sleeping.endsAt - 1), "clock rollback no permission");
+      const supplied = { ...returned, resources: { ...returned.resources, seeds: 1, fish: 2, herbs: 2, bait: 1 } };
+      for (const id of ["attackMeal", "defenseMeal", "dodgeMeal"]) {
+        const blocked = home.cookMeal(supplied, id, sleeping.endsAt + 3);
+        assert(!blocked.ok && blocked.reason.includes("системы роста") && blocked.state.resources.seeds === 1,
+          "cannot pay for a fake stat buff");
+      }
+    }
+  });
+  check("independent devices spending the last gold, portion or seed cannot mint merged balances", () => {
+    const lastGold = { ...food.createState(1000), gold: 4 };
+    const a = food.buyMeal(lastGold, "lunch", 1, 1001, "device-a-lunch");
+    const b = food.buyMeal(lastGold, "lunch", 1, 1002, "device-b-lunch");
+    assert(a.satiety === 100 && b.satiety === 100, "offline effects can occur twice; not claimed prevented");
+    const mergedGold = food.reconcileFood(b, a);
+    assert(mergedGold.gold === 0 && mergedGold.foodReceipts.length === 2 &&
+      food.reconcileFood(mergedGold, a).gold === 0, "no minted or resurrected gold");
+    const lastPortion = food.createState(1000);
+    lastPortion.recipes["fish-fillet"] = 1;
+    const ateA = food.useRecipe(lastPortion, "fish-fillet", 1001);
+    const ateB = food.useRecipe(lastPortion, "fish-fillet", 1002);
+    const mergedFood = food.reconcileFood(ateB, ateA);
+    assert(mergedFood.recipes["fish-fillet"] === 0 && mergedFood.foodReceipts.length === 2 &&
+      food.reconcileFood(mergedFood, ateA).recipes["fish-fillet"] === 0, "no fourth/returned portion from double spend");
+    const lastSeed = house();
+    lastSeed.resources.seeds = 1;
+    const bakedA = home.cookMeal(lastSeed, "grainBread", 1001).state;
+    const bakedB = home.cookMeal(lastSeed, "grainBread", 1002).state;
+    const mergedBake = home.merge(bakedB, bakedA);
+    assert(mergedBake.resources.seeds === 0 && mergedBake.meals.grainBread === 1 &&
+      mergedBake.kitchenReceipts.length === 2 && mergedBake.kitchenConflicts.length === 1,
+      "one seed cannot produce two merged stored portions; conflict is explicit");
+    const again = home.merge(mergedBake, bakedA);
+    assert(again.meals.grainBread === 1 && again.kitchenConflicts.length === 1, "repeated conflicting merge stable");
+    const ateBreadA = home.eatMeal(bakedA, lastGold, "grainBread", 1003).state;
+    const ateBreadB = home.eatMeal(bakedB, lastGold, "grainBread", 1004).state;
+    const mergedAteBread = home.merge(ateBreadB, ateBreadA);
+    assert(mergedAteBread.meals.grainBread === 0 && mergedAteBread.resources.seeds === 0,
+      "even conflicting consumed bakes cannot resurrect stored bread");
+    const twoSeeds = { ...house(), resources: { ...house().resources, seeds: 2 } };
+    const validA = home.cookMeal(twoSeeds, "grainBread", 1001).state;
+    const validB = home.cookMeal(twoSeeds, "grainBread", 1002).state;
+    assert(home.merge(validB, validA).meals.grainBread === 2 && home.merge(validB, validA).resources.seeds === 0,
+      "independent funded bakes retained");
+  });
+  check("grain ingredient limit only, kitchen stale merges and legacy buff expiry", () => {
+    let current = house();
+    current.resources.seeds = 3;
+    const baseline = clone(current);
+    for (let i = 0; i < 3; i += 1) current = home.cookMeal(current, "grainBread", 2000 + i).state;
+    assert(current.resources.seeds === 0 && current.meals.grainBread === 3, "three grain, three portions, no cooldown");
+    assert(!home.cookMeal(current, "grainBread", 2003).ok, "no free fourth bake");
+    const eaten = home.eatMeal(current, food.createState(2004), "grainBread", 2004);
+    assert(eaten.ok && eaten.tavern.satiety === 100 && eaten.state.meals.grainBread === 2, "bread consumed atomically");
+    const stale = { ...baseline, updatedAt: 999999, revision: 100 };
+    const merged = home.merge(stale, eaten.state);
+    assert(merged.resources.seeds === 0 && merged.meals.grainBread === 2, "stale home cannot restore grain/food");
+    const again = home.merge(merged, eaten.state);
+    assert(again.resources.seeds === 0 && again.meals.grainBread === 2, "kitchen receipts idempotent");
+    const oldBuff = { ...house(), mealBuff: { stat: "attack", startedAt: 2000, expiresAt: 2000 + 2 * hour } };
+    assert(home.withDefaults(clone(oldBuff)).mealBuff.expiresAt === 2000 + 2 * hour, "legacy buff expiry preserved, not extended");
+    const legacy = { ...house(), meals: { ...house().meals, attackMeal: 1 } };
+    const legacyEaten = home.eatMeal(legacy, food.createState(2000), "attackMeal", 2000, () => 0);
+    assert(legacyEaten.ok && !legacyEaten.buffTriggered && !legacyEaten.state.mealBuff,
+      "legacy portion not erased and does not create a proxy stat buff");
+  });
+  async function waitFor(predicate, message) {
+    for (let i = 0; i < 200; i += 1) {
+      if (predicate()) return;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    throw new Error(message);
+  }
+  try {
+    const now = Date.now();
+    const tavern = { ...food.createState(now), gold: 100, characterLevel: 7 };
+    tavern.recipes["fish-fillet"] = 3;
+    localStorage.setItem("well-of-whispers-camp-progress", JSON.stringify({
+      essence: 0, upgrades: { vitality: 0, power: 0, supplies: 0 }, bossesDefeated: 0,
+      secretsFound: [], groupInboxReceipts: [], tavern,
+    }));
+    const frame = document.createElement("iframe");
+    const load = () => new Promise((resolve) => frame.addEventListener("load", resolve, { once: true }));
+    let loaded = load();
+    frame.src = "../index.html?food-test=1";
+    document.body.append(frame);
+    await loaded;
+    let app = frame.contentWindow;
+    let doc = app.document;
+    await waitFor(() => !doc.querySelector('#food-inventory button').disabled, "food services did not initialize");
+    doc.querySelector('[data-district="port"]').click();
+    doc.querySelector('[data-city-action="tavern"]').click();
+    const lunch = doc.querySelector('[data-meal-id="lunch"]');
+    assert(doc.querySelector("#tavern-menu").textContent.includes("4 × 7 = 28"), "exact price in UI");
+    assert(["meat", "snack", "drink"].every((id) => doc.querySelector(`[data-meal-id="${id}"]`).disabled),
+      "unsupported stat meals visible and disabled");
+    lunch.click();
+    await waitFor(() => app.getCloudSaveSnapshot().meta.tavern.gold === 72, "lunch not committed");
+    const paid = app.getCloudSaveSnapshot().meta.tavern;
+    assert(paid.satiety === 100 && paid.foodAvailableAt - paid.satietyAt === 4 * hour, "atomic paid UI state");
+    assert(doc.querySelector('[data-meal-id="lunch"]').disabled, "UI respects shared cooldown");
+    const list = doc.querySelector("#tavern-recipes");
+    const stableNode = list.firstChild;
+    app.renderTavern();
+    assert(list.firstChild === stableNode, "unchanged recipes do not rebuild every timer tick");
+    loaded = load();
+    frame.src = "../index.html?food-test=reload";
+    await loaded;
+    app = frame.contentWindow;
+    doc = app.document;
+    await waitFor(() => !doc.querySelector('#food-inventory button').disabled, "food reload services");
+    assert(app.getCloudSaveSnapshot().meta.tavern.gold === 72 &&
+      app.getCloudSaveSnapshot().meta.tavern.foodAvailableAt === paid.foodAvailableAt, "debit and cooldown survive reload");
+    app.startGameWithClass("knight");
+    app.spawnSpecificEnemy("keeper");
+    const beforeRecipe = app.getCloudSaveSnapshot().meta.tavern.recipes["fish-fillet"];
+    doc.querySelector('#food-inventory [data-recipe-id="fish-fillet"]').click();
+    await waitFor(() => app.getCloudSaveSnapshot().meta.tavern.recipes["fish-fillet"] === beforeRecipe - 1,
+      "recipe not available in dungeon/PvE");
+    app.eval('state.liveDuelId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";');
+    const beforeDuel = app.getCloudSaveSnapshot().meta.tavern.recipes["fish-fillet"];
+    await app.handleTavernAction("eat", { recipeId: "fish-fillet" });
+    assert(app.getCloudSaveSnapshot().meta.tavern.recipes["fish-fillet"] === beforeDuel &&
+      doc.querySelector("#food-status").textContent.includes("онлайн"), "online duel food forbidden even direct action");
+    app.eval("state.liveDuelId = null;");
+    const commit = app.commitTavernToIndexedDb;
+    const setItem = app.Storage.prototype.setItem;
+    const beforeFailure = app.getCloudSaveSnapshot().meta.tavern;
+    app.commitTavernToIndexedDb = async () => { throw new Error("Injected IndexedDB write failure"); };
+    app.Storage.prototype.setItem = () => { throw new Error("Injected localStorage write failure"); };
+    await app.handleTavernAction("eat", { recipeId: "fish-fillet" });
+    assert(app.getCloudSaveSnapshot().meta.tavern.recipes["fish-fillet"] === beforeDuel &&
+      doc.querySelector('#food-status [data-tavern-action="retry"]'), "failed food save applies nothing and offers dungeon retry");
+    const pendingId = app.eval("pendingTavernState.foodReceipts.at(-1).id");
+    app.commitTavernToIndexedDb = commit;
+    app.Storage.prototype.setItem = setItem;
+    app.eval('state.liveDuelId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";');
+    await app.handleTavernAction("retry");
+    assert(app.getCloudSaveSnapshot().meta.tavern.recipes["fish-fillet"] === beforeDuel,
+      "retry cannot bypass online food lock");
+    app.eval("state.liveDuelId = null;");
+    await app.handleTavernAction("retry");
+    const retried = app.getCloudSaveSnapshot().meta.tavern;
+    assert(retried.recipes["fish-fillet"] === beforeDuel - 1 &&
+      retried.foodReceipts.length === beforeFailure.foodReceipts.length + 1 &&
+      retried.foodReceipts.at(-1).id === pendingId, "retry saves same prepared consumption exactly once");
+    await app.handleTavernAction("retry");
+    assert(app.getCloudSaveSnapshot().meta.tavern.recipes["fish-fillet"] === beforeDuel - 1, "second retry cannot consume again");
+    app.eval("state.liveDuelId = null; state.enemy = null; state.floor = 4;");
+    app.spawnSpecificEnemy("worldeater");
+    assert(app.getCloudSaveSnapshot().meta.tavern.satiety === 10, "World Eater encounter leaves exactly ten");
+    app.defeatEnemy();
+    assert(app.getCloudSaveSnapshot().meta.tavern.satiety === 100, "World Eater victory fully refills");
+    const recipeNow = app.getCloudSaveSnapshot().meta.tavern.recipes["fish-fillet"];
+    const fresh = app.getCloudSaveSnapshot().meta;
+    const stale = clone(fresh);
+    stale.tavern = { ...clone(tavern), updatedAt: Date.now() + hour, revision: 1000 };
+    const merged = app.mergeMetaProgress(stale, fresh);
+    assert(merged.tavern.gold === 72 && merged.tavern.recipes["fish-fillet"] === recipeNow,
+      "actual cloud merge retains food debit and consumption");
+    app.eval("metaProgress.homestead.mealBuff = { stat: 'attack', startedAt: 1000, expiresAt: 1000 + 7200000 };");
+    assert(app.hasActiveMealBuff("attack", 1000 + 2 * hour - 1) &&
+      !app.hasActiveMealBuff("attack", 1000 + 2 * hour), "legacy gameplay buff exact expiry");
+    frame.remove();
+    log.textContent += "PASS browser menu, purchase/reload, stable render, dungeon food, PvP gate, World Eater, cloud merge, legacy expiry\n";
+  } catch (error) { failures.push(`browser integration: ${error.stack}`); }
+  log.textContent += failures.join("\n");
+  const result = document.getElementById("result");
+  result.textContent = failures.length ? "FAIL" : "PASS";
+  result.dataset.result = failures.length ? "fail" : "pass";
+})();
+</script>

@@ -321,6 +321,7 @@ declare
   v_guild_id uuid;
   v_nickname text;
   v_body text := btrim(p_body);
+  v_existing_body text;
   v_message_id bigint;
   v_reply text;
 begin
@@ -329,6 +330,13 @@ begin
   end if;
   select guild_id, nickname into v_guild_id, v_nickname from public.guild_members where user_id = v_user_id;
   if v_guild_id is null then raise exception 'Ты не состоишь в гильдии.'; end if;
+  perform 1 from public.guilds where id = v_guild_id for update;
+  select body into v_existing_body from public.guild_chat_messages
+    where guild_id = v_guild_id and user_id = v_user_id and request_id = p_request_id;
+  if found then
+    if v_existing_body <> v_body then raise exception 'Квитанция чата уже использована для другого сообщения.'; end if;
+    return public.guild_state();
+  end if;
   if exists (select 1 from public.guild_chat_messages where guild_id = v_guild_id and user_id = v_user_id
     and created_at > now() - interval '2 seconds') then
     raise exception 'Подожди немного перед следующим сообщением.';

@@ -53,6 +53,7 @@ declare
   v_response jsonb;
   v_repeat jsonb;
   v_item_id bigint;
+  v_error text;
 begin
   if has_function_privilege('anon', 'public.guild_state()', 'execute') or
     not has_function_privilege('authenticated', 'public.guild_state()', 'execute') or
@@ -80,6 +81,13 @@ begin
   v_response := public.guild_chat_send('Проверка связи.', 'a1111111-1111-4111-8111-111111111111');
   v_repeat := public.guild_chat_send('Проверка связи.', 'a1111111-1111-4111-8111-111111111111');
   if v_response <> v_repeat then raise exception 'Chat retry duplicated or changed its receipt.'; end if;
+  v_error := null;
+  begin
+    perform public.guild_chat_send('Подмена текста.', 'a1111111-1111-4111-8111-111111111111');
+  exception when others then
+    get stacked diagnostics v_error = message_text;
+  end;
+  if v_error is null then raise exception 'A chat request UUID must not be reusable with another body.'; end if;
 
   perform set_config('request.jwt.claim.sub', v_owner::text, true);
   perform public.guild_contribute(

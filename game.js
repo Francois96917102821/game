@@ -961,7 +961,7 @@ function advanceQuest(questId) {
   progress.progress = Math.min(definition.target, progress.progress + 1);
   if (progress.progress < definition.target) return;
   progress.completed = true;
-  state.gold += definition.reward;
+  addGold(definition.reward);
   const rewardMessage = `Задание «${definition.title}» выполнено. Награда: ${definition.reward} монет.`;
   setEvent("ЗАДАНИЕ ВЫПОЛНЕНО", rewardMessage, definition.icon, `+${definition.reward} МОНЕТ`);
   addJournal("Награда за задание", rewardMessage, definition.icon);
@@ -1207,7 +1207,7 @@ function explore() {
     spawnEnemy(false);
   } else if (roll < 0.55) {
     const reward = randomInt(5, 12) + state.floor;
-    state.gold += reward;
+    addGold(reward);
     const foundPotion = Math.random() < 0.28 && state.potions < getPotionLimit();
     if (foundPotion) state.potions += 1;
     const loot = `Под осыпавшимися камнями нашлось ${reward} монет${foundPotion ? " и зелье" : ""}.`;
@@ -1258,8 +1258,24 @@ function explore() {
 }
 
 function addEventEssence(amount) {
-  metaProgress.essence = Math.min(1000000000, metaProgress.essence + amount);
+  addEssence(amount);
+}
+
+function addGold(amount) {
+  const reward = window.WellPlayerGroups
+    ? window.WellPlayerGroups.splitReward("gold", amount)
+    : amount;
+  state.gold = Math.min(1000000000, state.gold + reward);
+  return reward;
+}
+
+function addEssence(amount) {
+  const reward = window.WellPlayerGroups
+    ? window.WellPlayerGroups.splitReward("essence", amount)
+    : amount;
+  metaProgress.essence = Math.min(1000000000, metaProgress.essence + reward);
   persistMetaProgress();
+  return reward;
 }
 
 function damageFromEvent(minimum, maximum) {
@@ -1271,7 +1287,7 @@ function damageFromEvent(minimum, maximum) {
 function claimEventGear(type) {
   if (state.inventory.length >= MAX_GEAR) {
     const fallbackGold = 8 + state.floor;
-    state.gold += fallbackGold;
+    addGold(fallbackGold);
     return ` Рюкзак полон — заготовку обменяли на ${fallbackGold} монет.`;
   }
   const gear = createGear(type);
@@ -1320,49 +1336,49 @@ function resolveDungeonEvent(action) {
   }
   if (action === "goblin-bribe") {
     state.gold -= 3;
-    state.gold += 8 + state.floor;
+    addGold(8 + state.floor);
     finishDungeonEvent("ВОЗВРАЩЁННЫЙ КОШЕЛЬ", `Ты отдал 3 монеты и забрал кошель с ${8 + state.floor} монетами.`, "♟", "Сделка с гоблином");
   } else if (action === "find-careful") {
     const gold = 5 + state.floor;
-    state.gold += gold;
+    addGold(gold);
     const potion = state.potions < getPotionLimit() && Math.random() < 0.35;
     if (potion) state.potions += 1;
     finishDungeonEvent("ЛАРЕЦ ОТКРЫТ", `Внутри ${gold} монет${potion ? " и зелье" : ""}; печать удалось не повредить.`, "✧", "Ценная находка");
   } else if (action === "find-break") {
     const damage = damageFromEvent(4, 7);
     const gold = 12 + state.floor;
-    state.gold += gold;
+    addGold(gold);
     const gear = claimEventGear(randomInt(0, 1) ? "weapon" : "armor");
     finishDungeonEvent("ПЕЧАТЬ РАЗБИТА", `Осколки задели тебя на ${damage} здоровья. В ларце ${gold} монет.${gear}`, "✧", "Разбитая печать");
   } else if (action === "rubble-clear") {
     const damage = damageFromEvent(3, 6);
     const gold = 4 + state.floor;
-    state.gold += gold;
+    addGold(gold);
     const gear = claimEventGear("armor");
     finishDungeonEvent("ПРОХОД РАСЧИЩЕН", `Завал поддался, но камни отняли ${damage} здоровья. За ними было ${gold} монет.${gear}`, "⚒", "Разобранный завал");
   } else if (action === "rubble-squeeze") {
     const gold = 3 + state.floor;
-    state.gold += gold;
+    addGold(gold);
     finishDungeonEvent("ЛАЗ НАЙДЕН", `Ты протиснулся между камнями и подобрал ${gold} монет, не рискуя здоровьем.`, "⌕", "Лаз между камнями");
   } else if (action === "dive-deep") {
     const damage = damageFromEvent(4, 8);
     const gold = 4 + state.floor;
-    state.gold += gold;
+    addGold(gold);
     addEventEssence(1);
     finishDungeonEvent("ОСКОЛОК ИЗ ГЛУБИНЫ", `Ты нырнул за сияющим осколком, потерял ${damage} здоровья и нашёл ${gold} монет. Лагерь получил 1 осколок.`, "♆", "Погружение за осколком");
   } else if (action === "dive-shallow") {
     const gold = 4 + state.floor;
-    state.gold += gold;
+    addGold(gold);
     finishDungeonEvent("НАХОДКА У БЕРЕГА", `У самой кромки воды ты собрал ${gold} монет и сохранил силы.`, "♆", "Находка у берега");
   } else if (action === "ore-careful") {
     const gold = 4 + state.floor;
-    state.gold += gold;
+    addGold(gold);
     state.attack += 1;
     finishDungeonEvent("РУДНАЯ ЗАГОТОВКА", `Ты аккуратно добыл ${gold} монет ценного металла. Сила удара выросла на 1.`, "⚒", "Добыта руда");
   } else if (action === "ore-force") {
     const damage = damageFromEvent(4, 8);
     const gold = 14 + state.floor;
-    state.gold += gold;
+    addGold(gold);
     finishDungeonEvent("БОГАТАЯ ЖИЛА", `Сильный удар расколол жилу: ты получил ${gold} монет, но потерял ${damage} здоровья.`, "⚒", "Богатая рудная жила");
   } else if (action === "fish-net") {
     if (state.hp < state.maxHp) {
@@ -1374,17 +1390,17 @@ function resolveDungeonEvent(action) {
       finishDungeonEvent("УЛОВ", "В сети оказалась целебная рыба; ты приготовил из неё зелье.", "≋", "Подземный улов", "heal");
     } else {
       const gold = 6 + state.floor;
-      state.gold += gold;
+      addGold(gold);
       finishDungeonEvent("УЛОВ", `Рыбу обменяли на ${gold} монет — запас зелий уже полон.`, "≋", "Подземный улов");
     }
   } else if (action === "fish-shiny") {
     const gold = 8 + state.floor;
-    state.gold += gold;
+    addGold(gold);
     addEventEssence(1);
     finishDungeonEvent("БЛЕСК НА ДНЕ", `Среди камней нашлись жемчужина и ${gold} монет. Её сияние укрепило лагерь на 1 осколок.`, "✧", "Жемчужина из ручья");
   } else if (action === "door-listen") {
     const gold = 5 + state.floor;
-    state.gold += gold;
+    addGold(gold);
     const healing = Math.min(3, state.maxHp - state.hp);
     state.hp += healing;
     finishDungeonEvent("ТИХИЙ ЩЕЛЧОК", `Ты уловил ритм замка и избежал ловушки. За дверью ${gold} монет${healing ? ` и восстановлено ${healing} здоровья` : ""}.`, "⚿", "Открытая дверь");
@@ -1403,7 +1419,7 @@ function resolveDungeonEvent(action) {
     return;
   } else if (action === "hunt-bait") {
     const gold = 6 + state.floor;
-    state.gold += gold;
+    addGold(gold);
     const healing = Math.min(randomInt(4, 7), state.maxHp - state.hp);
     state.hp += healing;
     finishDungeonEvent("ДОБЫЧА У ЛОГОВА", `Зверь не вышел, но приманка отвлекла его: найдено ${gold} монет${healing ? ` и восстановлено ${healing} здоровья` : ""}.`, "♧", "След охотника");
@@ -1429,11 +1445,11 @@ function resolveDungeonEvent(action) {
   } else if (action === "smuggler-catch") {
     const damage = damageFromEvent(2, 5);
     const gold = 12 + state.floor;
-    state.gold += gold;
+    addGold(gold);
     finishDungeonEvent("ПОТЕРЯННЫЙ ТАЙНИК", `Контрабандист скрылся, оставив ${gold} монет. В суматохе ты потерял ${damage} здоровья.`, "♜", "Тайник контрабандиста");
   } else if (action === "maze-mark") {
     const gold = 4 + state.floor;
-    state.gold += gold;
+    addGold(gold);
     finishDungeonEvent("ВЫХОД НАЙДЕН", `Отмечая повороты, ты нашёл короткий путь и ${gold} монет без единой царапины.`, "⌘", "Выход из лабиринта");
   } else if (action === "maze-dash") {
     const damage = damageFromEvent(4, 8);
@@ -1445,7 +1461,7 @@ function resolveDungeonEvent(action) {
     finishDungeonEvent("ЛАВКА УЕХАЛА", `За 12 монет хозяин лавки продал тебе реликвию и покатил дальше.${gear}`, "♙", "Покупка в блуждающей лавке", "merchant");
   } else if (action === "roaming-pass") {
     const gold = 3 + state.floor;
-    state.gold += gold;
+    addGold(gold);
     finishDungeonEvent("ЛЁГКОЕ РАССТАВАНИЕ", `Ты отказался от товара, а хозяин оставил ${gold} монет за добрую беседу.`, "♙", "Блуждающая лавка");
   } else if (action === "hermit-rest") {
     const healing = Math.min(randomInt(8, 12), state.maxHp - state.hp);
@@ -1475,7 +1491,7 @@ function resolveDungeonEvent(action) {
     finishDungeonEvent("ЗАПОМНЕННАЯ ГЛАВА", "Ты успел разобрать один боевой приём до того, как чернила поблёкли. Сила удара навсегда выросла на 1.", "▤", "Страница из истлевшей книги", "rune");
   } else if (action === "book-seal") {
     const gold = 7 + state.floor;
-    state.gold += gold;
+    addGold(gold);
     const damage = damageFromEvent(1, 3);
     finishDungeonEvent("КНИГА ЗАПЕЧАТАНА", `Чернила погасли: найдено ${gold} монет, но едкий пар отнял ${damage} здоровья.`, "▤", "Запечатанная книга");
   } else if (action === "ruins-search") {
@@ -1484,7 +1500,7 @@ function resolveDungeonEvent(action) {
     finishDungeonEvent("РЕЛИКВИЯ РУИН", `Ты поднял пыль и получил ${damage} урона, но нашёл уцелевшую броню.${gear}`, "⌂", "Осмотр заброшенных руин");
   } else if (action === "ruins-salvage") {
     const gold = 8 + state.floor;
-    state.gold += gold;
+    addGold(gold);
     const potion = state.potions < getPotionLimit();
     if (potion) state.potions += 1;
     finishDungeonEvent("ПОЛЕЗНЫЙ ХЛАМ", `Из руин вынесено ${gold} монет${potion ? " и зелье" : ""}.`, "⌂", "Находки в руинах");
@@ -1512,17 +1528,17 @@ function resolveDungeonEvent(action) {
     finishDungeonEvent("ЧУДО КРИСТАЛЛОВ", `Сияние обожгло на ${damage} здоровья, но подарило реликвию и 1 осколок.${gear}`, "✦", "Дар пещеры чудес", "rune");
   } else if (action === "wonder-gather") {
     const gold = 9 + state.floor;
-    state.gold += gold;
+    addGold(gold);
     finishDungeonEvent("САМОЦВЕТЫ У ВХОДА", `Ты собрал самоцветы на ${gold} монет и не потревожил кристаллы.`, "✦", "Самоцветы пещеры");
   } else if (action === "wreck-dive") {
     const damage = damageFromEvent(5, 9);
     const gold = 12 + state.floor;
-    state.gold += gold;
+    addGold(gold);
     addEventEssence(1);
     finishDungeonEvent("ДОБЫЧА ИЗ ТРЮМА", `В трюме нашлось ${gold} монет. Погружение отняло ${damage} здоровья; лагерь получил 1 осколок.`, "⚓", "Затонувший груз", "rune");
   } else if (action === "wreck-scavenge") {
     const gold = 7 + state.floor;
-    state.gold += gold;
+    addGold(gold);
     const potion = state.potions < getPotionLimit();
     if (potion) state.potions += 1;
     finishDungeonEvent("НАХОДКА НА ПАЛУБЕ", `Среди снастей нашлось ${gold} монет${potion ? " и зелье" : ""}.`, "⚓", "Обыск затонувшей палубы");
@@ -1539,14 +1555,15 @@ function revealSecret() {
   }
   const firstDiscovery = !metaProgress.secretsFound.includes(secret.id);
   let discoveryText = secret.text;
+  if (window.WellPlayerGroups) window.WellPlayerGroups.hint("secret", state.floor);
   if (firstDiscovery) {
     metaProgress.secretsFound.push(secret.id);
-    metaProgress.essence += 1;
+    addEssence(1);
     discoveryText += " Ты сохранил знак в летописи лагеря и получил 1 осколок.";
     persistMetaProgress();
   } else {
     const reward = 8 + state.floor;
-    state.gold += reward;
+    addGold(reward);
     discoveryText += ` Этот знак уже знаком; в тайнике осталось ${reward} монет.`;
   }
   setEvent(firstDiscovery ? "ТАЙНЫЙ ЗАЛ" : "ЗНАК ИЗ ЛЕТОПИСИ", `${secret.title}. ${discoveryText}`, "ᛟ", firstDiscovery ? "+1 ОСКОЛОК" : "СЕКРЕТ");
@@ -1556,6 +1573,7 @@ function revealSecret() {
 }
 
 function spawnEnemy(isBoss, isElite = false, eventEnemy = null) {
+  if (isElite && window.WellPlayerGroups) window.WellPlayerGroups.hint("rare", state.floor);
   const theme = getFloorTheme();
   const roomEnemies = getRoomEnemies();
   const cycle = Math.floor((state.floor - 1) / FLOOR_THEMES.length);
@@ -1706,8 +1724,7 @@ function runEssenceReward() {
 function awardRunEssence() {
   if (state.runRewardClaimed) return;
   state.runRewardClaimed = true;
-  metaProgress.essence = Math.min(1000000000, metaProgress.essence + runEssenceReward());
-  persistMetaProgress();
+  addEssence(runEssenceReward());
 }
 
 function useClassAbility() {
@@ -1730,7 +1747,7 @@ function defeatEnemy() {
   state.enemy = null;
   state.abilityGuarding = false;
   state.abilityDodge = false;
-  state.gold += enemy.gold;
+  addGold(enemy.gold);
   gainXp(enemy.xp);
   advanceQuest("defeat");
   let gearMessage = "";
@@ -2219,6 +2236,9 @@ function render() {
   renderMetaProgress();
   renderRunQuests();
   saveActiveRun();
+  if (window.WellPlayerGroups) {
+    window.WellPlayerGroups.setPlayerState(state.level, state.started && !state.gameOver);
+  }
   if (state.started && state.pendingClassLevels.length) renderSubclassChoices();
 }
 
@@ -2350,4 +2370,28 @@ window.WellCloudSave.initialize({
   mergeMeta: mergeMetaProgress,
   refresh: render,
   restore: restoreCloudSave,
+});
+window.WellPlayerGroups.initialize({
+  getLevel: () => state.level,
+  isInDungeon: () => state.started && !state.gameOver,
+  onSharedGold: (amount) => {
+    if (!state.started || state.gameOver) return;
+    state.gold = Math.min(1000000000, state.gold + amount);
+    render();
+  },
+  onSharedEssence: (amount) => {
+    metaProgress.essence = Math.min(1000000000, metaProgress.essence + amount);
+    persistMetaProgress();
+    render();
+  },
+  onUnsharedReward: (kind, amount) => {
+    if (kind === "gold" && state.started && !state.gameOver) {
+      state.gold = Math.min(1000000000, state.gold + amount);
+      render();
+    } else if (kind === "essence" && amount > 0) {
+      metaProgress.essence = Math.min(1000000000, metaProgress.essence + amount);
+      persistMetaProgress();
+      render();
+    }
+  },
 });

@@ -38,14 +38,15 @@
   let busy = false;
   let saveTimer = null;
   let syncQueue = Promise.resolve();
+  const authListeners = new Set();
 
   function isConfigured() {
     try {
-      return Boolean(
-        config.supabaseUrl &&
-        new URL(config.supabaseUrl).protocol === "https:" &&
-        config.supabaseAnonKey,
-      );
+      const url = new URL(config.supabaseUrl);
+      const secureProtocol = url.protocol === "https:";
+      const localMock = url.protocol === "http:" &&
+        ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+      return Boolean((secureProtocol || localMock) && config.supabaseAnonKey);
     } catch {
       return false;
     }
@@ -91,7 +92,9 @@
       Authorization: `Bearer ${token || session?.access_token || config.supabaseAnonKey}`,
     };
     if (body !== undefined) headers["Content-Type"] = "application/json";
-    if (service === "rest") headers.Prefer = "resolution=merge-duplicates,return=minimal";
+    if (service === "rest" && !path.startsWith("rpc/")) {
+      headers.Prefer = "resolution=merge-duplicates,return=minimal";
+    }
     const response = await fetch(`${root}/${service === "auth" ? "auth/v1" : "rest/v1"}/${path}`, {
       method,
       headers,
@@ -187,6 +190,10 @@
 
   function currentUserId() {
     return session?.user?.id;
+  }
+
+  function notifyAuthListeners() {
+    for (const listener of authListeners) listener(session?.user || null);
   }
 
   function localSnapshot() {
@@ -391,6 +398,7 @@
     ui.authForm.hidden = true;
     ui.account.hidden = false;
     ui.accountEmail.textContent = session.user?.email || "Аккаунт подключён";
+    notifyAuthListeners();
     await syncFromCloud();
   }
 
@@ -412,6 +420,7 @@
       storeSession();
       ui.account.hidden = true;
       ui.authForm.hidden = false;
+      notifyAuthListeners();
       setStatus("Выход выполнен. Локальный забег сохранён на этом устройстве.");
     } catch (error) {
       setStatus(`Не удалось завершить выход: ${error.message}`, true);
@@ -615,9 +624,21 @@
     });
   }
 
+  function groupRpc(name, args = {}) {
+    if (!/^[a-z_]+$/.test(name)) throw new Error("Недопустимая операция группы.");
+    return authenticatedRequest(`rpc/${name}`, { method: "POST", body: args });
+  }
+
   window.WellCloudSave = {
     initialize,
     scheduleSave,
     isConfigured,
+    getCurrentUser: () => session?.user || null,
+    groupRpc,
+    onAuthChange(listener) {
+      authListeners.add(listener);
+      listener(session?.user || null);
+      return () => authListeners.delete(listener);
+    },
   };
 })();

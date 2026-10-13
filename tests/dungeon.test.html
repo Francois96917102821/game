@@ -1,0 +1,329 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Dungeon model tests</title>
+  </head>
+  <body>
+    <h1 id="result">RUNNING</h1>
+    <pre id="log"></pre>
+    <script src="../dungeon-model.js"></script>
+    <script>
+      "use strict";
+      const model = window.DungeonModel;
+      const output = document.getElementById("log");
+      const failures = [];
+      function assert(condition, message) {
+        if (!condition) throw new Error(message);
+      }
+      function equal(actual, expected, message) {
+        assert(JSON.stringify(actual) === JSON.stringify(expected), `${message}: ${JSON.stringify(actual)}`);
+      }
+      function rejects(action, message) {
+        let rejected = false;
+        try { action(); } catch { rejected = true; }
+        assert(rejected, message);
+      }
+      function check(name, action) {
+        try {
+          action();
+          output.textContent += `PASS ${name}\n`;
+        } catch (error) {
+          failures.push(`${name}: ${error.message}`);
+          output.textContent += `FAIL ${name}: ${error.message}\n`;
+        }
+      }
+      function fighter(values = {}) {
+        return model.createFighter({ hp: 100, maxHp: 100, attack: 10, accuracy: 0.8, ...values });
+      }
+      function sequence(...values) {
+        let index = 0;
+        return () => {
+          assert(index < values.length, "unexpected random draw");
+          return values[index++];
+        };
+      }
+      function seeded(seed) {
+        return () => {
+          seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+          return seed / 4294967296;
+        };
+      }
+
+      check("normalization is bounded and preserves optional passives", () => {
+        const input = { hp: 200, maxHp: 100, armor: 9, accuracy: -1, attack: Infinity,
+          offhand: "axe", infection: 2.9, cooldowns: { shield: 4, torch: -2 },
+          skillType: "blast", skillDamage: 12, skillCooldown: 2, skillCooldownMax: 4,
+          revivalUsed: true, criticalChance: 0.3, executeChance: 0.2, lifesteal: 0.1,
+          poisonDamage: 2, barrier: 10, firstTurnBarrier: 5, barrierAttack: 0.2, damageMultiplier: 1.5 };
+        const before = JSON.stringify(input);
+        const normalized = model.createFighter(input);
+        assert(normalized.hp === 100 && normalized.armor === 1 && normalized.accuracy === 0, "fractions and hp clamp");
+        assert(normalized.attack === 10 && normalized.offhand === "none" && normalized.infection === 2, "safe fallback");
+        assert(normalized.cooldowns.shield === 4 && normalized.cooldowns.torch === 0, "cooldowns normalize");
+        for (const key of ["skillType", "skillDamage", "skillCooldown", "skillCooldownMax", "revivalUsed",
+          "criticalChance", "executeChance", "lifesteal", "poisonDamage", "barrier", "firstTurnBarrier",
+          "barrierAttack", "damageMultiplier"]) equal(normalized[key], input[key], `${key} persists`);
+        assert(before === JSON.stringify(input), "normalization does not mutate input");
+        assert(model.isValidFighter(normalized), "normalized fighter validates");
+        assert(model.createFighter({ maxHp: 1e10 }).maxHp === 1e6, "max HP bound");
+      });
+      check("strict validation rejects corrupt persisted fighters", () => {
+        for (const value of [null, [], {}, { ...fighter(), hp: NaN }, { ...fighter(), hp: 101 },
+          { ...fighter(), maxHp: 1000001 }, { ...fighter(), armor: 50 },
+          { ...fighter(), potions: 1.5 }, { ...fighter(), skillType: "unknown" },
+          { ...fighter(), revivalUsed: 1 }, { ...fighter(), cooldowns: { shield: 0, torch: 0 } },
+          { ...fighter(), skillDamage: -1 }, { ...fighter(), damageMultiplier: Infinity }]) {
+          assert(!model.isValidFighter(value), "invalid fighter is rejected without normalization");
+        }
+        assert(model.isValidFighter(JSON.parse(JSON.stringify(fighter()))), "JSON persistence round trip");
+      });
+      check("attack and concentration formulas have exact clamps", () => {
+        assert(Math.abs(model.hitChance(fighter({ accuracy: 0.8 }), fighter({ evasion: 0.2 })) - 0.6) < 1e-12, "accuracy minus evasion");
+        assert(model.hitChance(fighter({ accuracy: 0 }), fighter({ evasion: 1 })) === 0.05, "hit lower bound");
+        assert(model.hitChance(fighter({ accuracy: 1 }), fighter()) === 0.95, "hit upper bound");
+        assert(Math.abs(model.skillChance(fighter({ concentration: 0.6, agility: 0.4 }), fighter({ concentration: 0.4 })) - 0.48) < 1e-12, "concentration comparison plus agility and accuracy");
+        assert(model.skillChance(fighter({ concentration: 0 }), fighter({ concentration: 1 })) === 0.05, "skill lower bound");
+        assert(model.skillChance(fighter({ concentration: 1, agility: 1 }), fighter({ concentration: 0 })) === 0.95, "skill upper bound");
+      });
+      check("attack has one hit roll, no independent dodge, immutable inputs", () => {
+        const actor = fighter();
+        const target = fighter({ evasion: 0.5, armor: 0.2 });
+        const before = JSON.stringify([actor, target]);
+        const hit = model.pvpTurn(actor, target, "attack", sequence(0.29));
+        assert(hit.target.hp === 92, "successful single roll deals armor-reduced damage");
+        assert(hit.actor.turns === 1 && !hit.finished && hit.winner === null, "turn advances");
+        assert(model.pvpTurn(actor, target, "attack", sequence(0.31)).target.hp === 100, "miss above hit chance");
+        assert(before === JSON.stringify([actor, target]), "inputs are immutable");
+      });
+      check("offensive skills include a regular attack", () => {
+        for (const [action, damage] of [["heavy", 25], ["torch", 20], ["staff", 23]]) {
+          const actor = fighter({ offhand: action, concentration: 0.9 });
+          const turn = model.pvpTurn(actor, fighter(), action, sequence(0, 0));
+          assert(turn.target.hp === 100 - damage, `${action} skill plus normal hit`);
+          if (action === "torch") assert(turn.target.bleeding === 2 && turn.actor.bleeding === 0, "torch attaches bleed to target");
+          const missed = model.pvpTurn(actor, fighter(), action, sequence(0.99, 0));
+          assert(missed.target.hp === 90, `${action} skill miss still attacks`);
+        }
+      });
+      check("invalid action and unavailable items consume nothing", () => {
+        const actor = fighter({ offhand: "torch", cooldowns: { torch: 2, shield: 4, staff: 4 } });
+        const before = JSON.stringify(actor);
+        const noRandom = () => { throw new Error("RNG must not run"); };
+        for (const action of ["bad", "shield", "staff", "torch", "potion"]) {
+          rejects(() => model.pvpTurn(actor, fighter(), action, noRandom), `${action} rejected`);
+        }
+        assert(JSON.stringify(actor) === before, "invalid actions do not consume own turns or cooldowns");
+        rejects(() => model.pvpTurn(fighter({ hp: 0 }), fighter(), "attack"), "finished combat rejected");
+      });
+      check("type-keyed cooldowns tick at own turn start across equipment changes", () => {
+        let actor = model.pvpTurn(fighter({ offhand: "shield" }), fighter(), "shield", () => 0).actor;
+        assert(actor.cooldowns.shield === 4, "shield cooldown four");
+        actor = model.pvpTurn(actor, fighter(), "equip-torch", () => 0).actor;
+        assert(actor.offhand === "torch" && actor.cooldowns.shield === 3, "equip consumes turn and retains old cooldown");
+        actor = model.pvpTurn(actor, fighter(), "torch", () => 0).actor;
+        assert(actor.cooldowns.torch === 2 && actor.cooldowns.shield === 2, "torch own type cooldown two");
+        actor = model.pvpTurn(actor, fighter(), "equip-shield", () => 0).actor;
+        assert(actor.cooldowns.shield === 1 && actor.cooldowns.torch === 1, "replacement does not reset timers");
+        actor = model.pvpTurn(actor, fighter(), "shield", () => 0).actor;
+        assert(actor.cooldowns.shield === 4 && actor.cooldowns.torch === 0, "cooldown one is ready after beginning tick");
+        const staff = model.pvpTurn(fighter({ offhand: "staff" }), fighter(), "staff", () => 0).actor;
+        assert(staff.cooldowns.staff === 4, "staff cooldown four");
+        const enemy = fighter({ cooldowns: { staff: 3 } });
+        assert(model.pvpTurn(fighter(), enemy, "skip").target.cooldowns.staff === 3, "opponent timers do not tick");
+      });
+      check("guard and shield absorb one hit, potion is thirty percent", () => {
+        const guarded = model.pvpTurn(fighter(), fighter(), "guard").actor;
+        assert(guarded.guarded && guarded.focus === 1, "guard prepares block and focus");
+        const blocked = model.pvpTurn(fighter(), guarded, "attack", () => 0);
+        assert(blocked.target.hp === 95 && !blocked.target.guarded, "one hit half damage");
+        const shield = model.pvpTurn(fighter({ offhand: "shield" }), fighter(), "shield", () => 0).actor;
+        assert(shield.guarded, "shield proc guards");
+        const potion = model.pvpTurn(fighter({ hp: 90, potions: 1 }), fighter(), "potion").actor;
+        assert(potion.hp === 100 && potion.potions === 0, "healing caps and consumes potion");
+        assert(model.pvpTurn(fighter({ hp: 20, potions: 1 }), fighter(), "potion").actor.hp === 50, "exact healing");
+      });
+      check("own regeneration and target attached DOT tick without critical multiplier", () => {
+        const actor = fighter({ hp: 50, regeneration: 4, bleeding: 3, infection: 2, criticalChance: 1 });
+        const opponent = fighter({ bleeding: 3, infection: 2, poisonDamage: 1 });
+        const turn = model.pvpTurn(actor, opponent, "attack", sequence(0, 0));
+        assert(turn.actor.hp === 54, "own regeneration four, actor DOT does not tick");
+        assert(turn.target.hp === 72, "critical damage twenty plus target bleed three infection four poison one");
+        const skip = model.pvpTurn(actor, fighter({ regeneration: 50 }), "skip");
+        assert(skip.target.hp === 100 && skip.actor.hp === 54, "actor bleeding waits until opponent acts");
+        const reply = model.pvpTurn(turn.target, turn.actor, "skip");
+        assert(reply.actor.hp === 72 && reply.target.hp === 47, "previous actor attached DOT ticks when targeted");
+        const exact = model.pvpTurn(fighter({ hp: 20, bleeding: 3 }),
+          fighter({ hp: 20, bleeding: 5 }), "guard");
+        assert(exact.actor.hp === 20 && exact.target.hp === 15, "exact guard example: target bleeding only");
+      });
+      check("three consecutive own skips defeat; valid non-skip resets", () => {
+        let actor = fighter({ revivalChance: 1 });
+        for (let i = 0; i < 2; i += 1) actor = model.pvpTurn(actor, fighter(), "skip").actor;
+        assert(actor.skips === 2, "skips accumulate");
+        const reset = model.pvpTurn(actor, fighter(), "guard").actor;
+        assert(reset.skips === 0, "other action resets");
+        const lost = model.pvpTurn(actor, fighter(), "skip", sequence());
+        assert(lost.finished && lost.winner === "target" && lost.actor.hp === 0, "third skip cannot revive");
+      });
+      check("PvP revival chance is halved and cannot repeat", () => {
+        const victim = fighter({ hp: 1, revivalChance: 0.8 });
+        const success = model.pvpTurn(fighter(), victim, "attack", sequence(0, 0.39));
+        assert(success.target.hp === 50 && success.target.revivalUsed && !success.finished, "39 percent succeeds");
+        const failure = model.pvpTurn(fighter(), victim, "attack", sequence(0, 0.41));
+        assert(failure.finished && failure.winner === "actor", "41 percent exceeds half chance");
+        const repeated = model.pvpTurn(fighter(), { ...success.target, hp: 1 }, "attack", sequence(0));
+        assert(repeated.finished, "revival used flag prevents another roll");
+      });
+      check("PvE skill chance defaults to thirty-five percent", () => {
+        const actor = fighter({ skillType: "blast", skillDamage: 15 });
+        const success = model.pveRound(actor, fighter(), sequence(0.34, 0.99, 0.99));
+        assert(success.target.hp === 85 && success.actor.skillCooldown === 3, "base auto skill success");
+        const miss = model.pveRound(actor, fighter(), sequence(0.36, 0.99, 0.99));
+        assert(miss.target.hp === 100 && !miss.actor.skillCooldown, "above base chance fails");
+      });
+      check("PvE order is player skill, enemy skill, enemy hit, player hit, periodic", () => {
+        const actor = fighter({ skillType: "blast", skillDamage: 3, bleeding: 1 });
+        const enemy = fighter({ skillType: "shadow", skillDamage: 4, infection: 1 });
+        const before = JSON.stringify([actor, enemy]);
+        const turn = model.pveRound(actor, enemy, sequence(0, 0, 0, 0));
+        equal(turn.log, ["actor: blast skill 3", "target: shadow skill 4", "target: hit 10",
+          "actor: hit 10", "actor: periodic 1", "target: periodic 2"], "exact round order");
+        assert(turn.actor.hp === 85 && turn.target.hp === 85, "each fighter takes its own attached DOT");
+        assert(JSON.stringify([actor, enemy]) === before, "PvE immutable");
+      });
+      check("lethal player skill aborts every later PvE stage", () => {
+        const turn = model.pveRound(fighter({ skillType: "blast", skillDamage: 100 }),
+          fighter({ hp: 2, skillType: "shadow", skillDamage: 100 }), sequence(0));
+        assert(turn.finished && turn.winner === "actor" && turn.actor.hp === 100, "skill victory before enemy acts");
+        assert(turn.log.length === 1, "no extra RNG or later hit");
+      });
+      check("fatal enemy strike still permits player hit, simultaneous death is defeat", () => {
+        const turn = model.pveRound(fighter({ hp: 5 }), fighter({ hp: 5 }), sequence(0, 0));
+        assert(turn.log.includes("actor: hit 10"), "player hit occurs despite fatal enemy strike");
+        assert(turn.actor.hp === 0 && turn.target.hp === 0 && turn.winner === "target" && turn.finished, "simultaneous defeat");
+      });
+      check("PvE periodic effects are attached to each afflicted fighter", () => {
+        const turn = model.pveRound(fighter({ hp: 20, bleeding: 3, infection: 2, poisonDamage: 1 }),
+          fighter({ hp: 20, bleeding: 5, infection: 1, poisonDamage: 2 }), sequence(0.99, 0.99));
+        assert(turn.actor.hp === 12 && turn.target.hp === 11, "own bleeding infection and poison damage own HP");
+      });
+      check("shadow skill guarantees evasion of the next normal enemy strike", () => {
+        const turn = model.pveRound(fighter({ skillType: "shadow", skillDamage: 3 }),
+          fighter(), sequence(0, 0.99));
+        assert(turn.actor.hp === 100 && turn.actor.shadowEvade === false, "shadow protects one enemy strike");
+        assert(turn.log.includes("target: shadow evaded") && turn.target.hp === 97, "shadow damage and evade retained");
+        const saved = fighter({ shadowEvade: true });
+        assert(model.isValidFighter(saved), "evade flag survives persistence");
+        const blocked = model.pvpTurn(fighter(), saved, "attack", sequence());
+        assert(blocked.target.hp === 100 && !blocked.target.shadowEvade, "one evade consumed without independent dodge RNG");
+      });
+      check("PvE revival uses full player chance; regeneration cannot revive", () => {
+        const turn = model.pveRound(fighter({ hp: 1, revivalChance: 0.8, regeneration: 20 }),
+          fighter(), sequence(0, 0.99, 0.7));
+        assert(turn.actor.hp === 50 && turn.actor.revivalUsed && !turn.finished, "full .8 chance");
+        const dead = model.pveRound(fighter({ hp: 1, regeneration: 100 }), fighter(), sequence(0, 0.99));
+        assert(dead.finished && dead.actor.hp === 0, "regen cannot undo death");
+      });
+      check("PvE skill cooldown ticks and passives persist", () => {
+        const actor = fighter({ skillType: "guard", skillDamage: 8, skillCooldown: 2, skillCooldownMax: 4,
+          firstTurnBarrier: 5, damageMultiplier: 2, criticalChance: 0.2 });
+        const turn = model.pveRound(actor, fighter(), sequence(0, 0.99));
+        assert(turn.actor.skillCooldown === 1 && turn.actor.barrier === 0 && turn.actor.hp === 95, "cooldown and initial barrier");
+        const next = model.pveRound(turn.actor, fighter(), sequence(0, 0, 0.99));
+        assert(next.actor.skillCooldown === 4 && next.actor.hp === 93, "skill available after tick and first barrier not repeated");
+        assert(next.actor.damageMultiplier === 2 && next.actor.criticalChance === 0.2, "passives carried");
+      });
+      check("elite modifiers are temporary and defensive piercing keeps armor", () => {
+        const actor = fighter({ armor: 0.4, concentration: 0.6, accuracy: 0.8 });
+        const before = JSON.stringify(actor);
+        for (const [type, key, expected] of [["curse", "concentration", 0.05], ["ghost", "accuracy", 0.05],
+          ["piercing", "armor", 0]]) {
+          const enemy = model.createElite(fighter(), type);
+          assert(model.pveModifiers(actor, enemy)[key] === expected, `${type} modifier`);
+          const turn = model.pveRound(actor, enemy, () => 0.99);
+          assert(turn.actor[key] === actor[key], `${type} not permanently saved`);
+        }
+        assert(model.pveModifiers(actor, model.createElite(fighter(), "piercing"), true).armor === 0.4, "defensive exception");
+        const world = model.pveModifiers(actor, model.createElite(fighter(), "worldeater"));
+        assert(world.armor === 0.2 && world.concentration === 0.3 && world.accuracy === 0.4, "worldeater halves three stats");
+        assert(model.createElite(fighter(), "warlike").attack === 15, "warlike attack");
+        const experienced = model.createElite(fighter({ skillType: "blast", skillCooldown: 5 }), "experienced");
+        assert(experienced.concentration === 1.1 && experienced.skillCooldownMax === 1, "experienced concentration over 100 percent");
+        let skilled = model.pveRound(fighter(), experienced, sequence(0.99, 0.99, 0.99));
+        assert(skilled.log[0].startsWith("target: blast skill"), "experienced guaranteed skill");
+        skilled = model.pveRound(fighter(), skilled.target, sequence(0.99, 0.99, 0.99));
+        assert(skilled.log[0].startsWith("target: blast skill"), "experienced skill every turn");
+        assert(model.createElite(fighter(), "punisher").accuracy === 0.95, "punisher accuracy");
+        const wounded = model.createElite(fighter(), "wounded");
+        assert(wounded.hp === 50 && wounded.attack === 20, "wounded health and attack");
+        assert(model.createElite(fighter(), "protected").armor === 0.75, "protected armor");
+        rejects(() => model.createElite(fighter(), "unknown"), "unknown elite rejected");
+        assert(JSON.stringify(actor) === before, "modifiers immutable");
+      });
+      check("integration aliases and forced abilities retain their intended effects", () => {
+        const actor = fighter({ concentration: 2, skillType: "blast", skillDamage: 3, damageMultiplier: 1.5 });
+        assert(model.isValidFighter(actor), "over-100-percent concentration valid up to two");
+        const forced = model.pveRound(actor, fighter(), sequence(0.999, 0.99, 0));
+        assert(forced.target.hp === 82, "forced skill guaranteed plus damageMultiplier on normal attack");
+        assert(model.pveModifiers(actor, { trait: "curse" }).concentration === 0.05, "trait alias");
+        assert(model.pveModifiers(actor, { special: "worldeater" }).concentration === 1, "special alias");
+        const cursed = model.pveRound(actor, fighter({ trait: "curse" }), sequence(0.1, 0.99, 0.99));
+        assert(!cursed.log.some((line) => line.includes("skill")), "trait survives round normalization");
+        const unskilled = model.pveRound(fighter(), fighter({ concentration: 0, skillType: "blast" }), sequence(0, 0.99, 0.99));
+        assert(!unskilled.log.some((line) => line.includes("skill")), "zero concentration never triggers skill");
+      });
+      check("Monty has no initial reveal and host always exposes an unselected goat", () => {
+        for (let prizeDoor = 0; prizeDoor < 3; prizeDoor += 1) {
+          const state = model.createMonty(() => (prizeDoor + 0.5) / 3);
+          assert(state.prizeDoor === prizeDoor && state.selected === null && state.revealed === null, "prize persists with no reveal");
+          rejects(() => model.finishMonty(state, true), "must select first");
+          for (let selected = 0; selected < 3; selected += 1) {
+            for (const roll of [0, 0.99]) {
+              const chosen = model.chooseMonty(state, selected, () => roll);
+              assert(chosen.revealed !== prizeDoor && chosen.revealed !== selected, "host knows prize");
+              assert(state.selected === null && state.revealed === null, "choice is immutable");
+              rejects(() => model.chooseMonty(chosen, selected), "cannot select again");
+            }
+          }
+        }
+      });
+      check("actual three prizes by three selections: switch wins 6/9, stay 3/9", () => {
+        let switched = 0;
+        let stayed = 0;
+        for (let prize = 0; prize < 3; prize += 1) {
+          for (let selected = 0; selected < 3; selected += 1) {
+            const chosen = model.chooseMonty(model.createMonty(() => (prize + 0.5) / 3), selected, () => 0);
+            switched += Number(model.finishMonty(chosen, true).won);
+            stayed += Number(model.finishMonty(chosen, false).won);
+            assert(model.finishMonty(chosen, true).door !== selected, "switch chooses remaining closed door");
+          }
+        }
+        assert(switched === 6 && stayed === 3, "exhaustive distribution from actual game APIs");
+      });
+      check("seeded Monty sample converges to two-thirds vs one-third", () => {
+        const rng = seeded(123456789);
+        let switched = 0;
+        let stayed = 0;
+        for (let trial = 0; trial < 12000; trial += 1) {
+          const state = model.createMonty(rng);
+          const chosen = model.chooseMonty(state, Math.floor(rng() * 3), rng);
+          switched += Number(model.finishMonty(chosen, true).won);
+          stayed += Number(model.finishMonty(chosen, false).won);
+        }
+        assert(Math.abs(switched / 12000 - 2 / 3) < 0.02, "switch sample near two-thirds");
+        assert(Math.abs(stayed / 12000 - 1 / 3) < 0.02 && stayed + switched === 12000, "stay sample complementary");
+      });
+      check("Monty validates door choice state and injected RNG", () => {
+        for (const rng of [() => 1, () => -1, () => NaN, null]) rejects(() => model.createMonty(rng), "invalid RNG rejected");
+        const state = model.createMonty(() => 0);
+        for (const door of [-1, 3, 0.5, "1"]) rejects(() => model.chooseMonty(state, door), "invalid selection");
+        rejects(() => model.finishMonty({ prizeDoor: 0, selected: 1, revealed: 0 }, true), "cannot reveal prize");
+        rejects(() => model.finishMonty(model.chooseMonty(state, 1), "yes"), "boolean switch required");
+      });
+      document.getElementById("result").textContent = failures.length ? "FAIL" : "PASS";
+      document.body.dataset.result = failures.length ? "fail" : "pass";
+      if (failures.length) console.error(failures.join("\n"));
+    </script>
+  </body>
+</html>

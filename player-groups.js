@@ -332,7 +332,7 @@
 
   function canStartBattle() {
     return Boolean(
-      isGroupActive() && playerState.inDungeon && group?.members?.length === 2 &&
+      !window.WellPvp?.isBusy() && isGroupActive() && playerState.inDungeon && group?.members?.length === 2 &&
       options?.getBossEncounter?.()
     );
   }
@@ -1038,5 +1038,11 @@
     getBattle: () => battle,
     getMailboxContext,
     mailboxRpc,
+    getPvpContext: () => ({
+      userId: user?.id || null,
+      groupId: group?.id || null,
+      active: isGroupActive(),
+      members: (group?.members || []).map((member) => ({ ...member })),
+    }),
   };
 })();

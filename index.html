@@ -76,6 +76,8 @@
             <p>Осколки за забеги и найденные тайны усиливают следующие спуски.</p>
             <div class="meta-upgrades" id="meta-upgrades"></div>
             <div class="meta-secrets"><strong>Летопись глубин</strong><span id="meta-secrets">0/4 записей · исследуй тайные залы</span></div>
+            <div class="meta-secrets"><strong>Репутация ордена: <span id="order-reputation">0</span></strong><span id="dungeon-trophies">Трофеев пока нет.</span></div>
+            <p class="inventory-empty">Коллекционные трофеи сохраняются между спусками. Обмен и использование манускриптов пока недоступны.</p>
             <button class="service-button profile-homes-button" id="homestead-open-button" type="button">Магазин · Дома</button>
           </section>
           <p class="save-note"><span aria-hidden="true">●</span> Прогресс сохраняется автоматически</p>
@@ -170,10 +172,61 @@
             <button class="action-button attack-action" id="attack-button" type="button"><span aria-hidden="true">⚔</span> Ударить</button>
             <button class="action-button heavy-action" id="heavy-button" type="button" disabled><span aria-hidden="true">✦</span> Сокрушительный · 2 ✦</button>
             <button class="action-button secondary-action" id="combat-potion-button" type="button"><span aria-hidden="true">⚗</span> Зелье <span id="combat-potion-count">2</span></button>
-            <button class="action-button guard-action" id="guard-button" type="button"><span aria-hidden="true">⬡</span> Защищаться</button>
+            <button class="action-button guard-action" id="guard-button" type="button"><span aria-hidden="true">⬡</span> Сменить стойку</button>
             <button class="action-button ability-action" id="class-ability-button" type="button"><span id="class-ability-icon" aria-hidden="true">✦</span><span id="class-ability-label">Способность</span></button>
+            <button class="action-button secondary-action" id="offhand-button" type="button">Особенность доп. предмета</button>
+            <button class="action-button secondary-action" id="escape-button" type="button">Побег</button>
+            <p class="combat-rules" id="combat-extra-status"></p>
             <button class="action-button secondary-action" id="camouflage-run-button" type="button" hidden>Маскировка · уйти от обычного врага</button>
           </div>
+          <div class="dungeon-kit" id="dungeon-kit" hidden>
+            <label for="offhand-select">Дополнительный предмет походного набора</label>
+            <select id="offhand-select">
+              <option value="shield">Щит · барьер · откат 4 хода</option>
+              <option value="torch">Факел · ожог · откат 2 хода</option>
+              <option value="staff">Посох · лечение · откат 4 хода</option>
+            </select>
+          </div>
+          <section class="ghost-panel" id="ghost-panel" aria-label="Бой с призраком, не онлайн-игроком" hidden>
+            <h3>Призрак · ИИ по снимку героя</h3>
+            <p id="ghost-status" role="status"></p>
+            <div class="coop-actions">
+              <button class="action-button" type="button" data-ghost-action="attack">Ударить</button>
+              <button class="action-button" type="button" data-ghost-action="heavy">Сокрушительный</button>
+              <button class="action-button" type="button" data-ghost-action="potion">Зелье</button>
+              <button class="action-button" type="button" data-ghost-action="shield">Щит</button>
+              <button class="action-button" type="button" data-ghost-action="torch">Факел</button>
+              <button class="action-button" type="button" data-ghost-action="staff">Посох</button>
+            </div>
+          </section>
+          <form class="gang-form" id="gang-form" hidden>
+            <label for="gang-command">Команда подземелья</label>
+            <input id="gang-command" value="!ганг" maxlength="16" autocomplete="off" spellcheck="false">
+            <button class="action-button" type="submit">Выполнить</button>
+            <button class="action-button" id="gang-button" type="button">Вызвать напарника · !ганг</button>
+          </form>
+          <p id="pvp-status" role="status" aria-live="polite"></p>
+          <section class="pvp-panel" id="pvp-panel" aria-label="Онлайн PvP" hidden>
+            <h3>Поединок с напарником</h3>
+            <p id="pvp-players"></p>
+            <p id="pvp-turn" role="status"></p>
+            <div class="coop-log" id="pvp-log" aria-label="Журнал дуэли"></div>
+            <button class="action-button" id="pvp-join-button" type="button" hidden>Принять вызов</button>
+            <div class="coop-actions">
+              <button class="action-button" type="button" data-pvp-action="attack">Ударить</button>
+              <button class="action-button" type="button" data-pvp-action="heavy">Сокрушительный</button>
+              <button class="action-button" type="button" data-pvp-action="potion">Зелье</button>
+              <button class="action-button" type="button" data-pvp-action="shield">Щит</button>
+              <button class="action-button" type="button" data-pvp-action="torch">Факел</button>
+              <button class="action-button" type="button" data-pvp-action="staff">Посох</button>
+              <button class="action-button" type="button" data-pvp-action="equip-shield">Взять щит</button>
+              <button class="action-button" type="button" data-pvp-action="equip-torch">Взять факел</button>
+              <button class="action-button" type="button" data-pvp-action="equip-staff">Взять посох</button>
+              <button class="action-button" id="pvp-leave-button" type="button">Сдаться / отменить вызов</button>
+              <button class="action-button" id="pvp-retry-button" type="button" hidden>Повторить отправку</button>
+              <button class="action-button" id="pvp-close-button" type="button" hidden>Закрыть результат</button>
+            </div>
+          </section>
           <button class="action-button coop-start-button" id="coop-start-button" type="button" hidden>Позвать напарника на совместный бой</button>
           <section class="coop-battle-panel" id="coop-battle-panel" aria-label="Совместный бой" hidden>
             <div class="coop-boss-card">
@@ -440,6 +493,8 @@
     <script src="tavern-model.js"></script>
     <script src="expeditions-model.js"></script>
     <script src="homestead-model.js"></script>
+    <script src="dungeon-model.js"></script>
+    <script src="pvp-client.js"></script>
     <script src="game.js"></script>
   </body>
 </html>

@@ -833,6 +833,12 @@ begin
   for update;
   if v_group_id is null then raise exception 'Для совместного боя оба игрока должны быть в подземелье.'; end if;
   perform 1 from public.player_groups where id = v_group_id for update;
+  if exists (
+    select 1 from public.pvp_battles
+    where group_id = v_group_id and status in ('waiting', 'active')
+  ) then
+    raise exception 'Заверши PvP-дуэль перед началом совместного боя.';
+  end if;
   select count(*) into v_group_size
   from public.player_group_members
   where group_id = v_group_id and in_dungeon and heartbeat_at > now() - interval '75 seconds';
@@ -937,6 +943,12 @@ begin
   for update;
   if v_group_id is null then raise exception 'Для совместного боя оба игрока должны быть в подземелье.'; end if;
   perform 1 from public.player_groups where id = v_group_id for update;
+  if exists (
+    select 1 from public.pvp_battles
+    where group_id = v_group_id and status in ('waiting', 'active')
+  ) then
+    raise exception 'Заверши PvP-дуэль перед присоединением к совместному бою.';
+  end if;
   select count(*) into v_live_member_count
   from public.player_group_members
   where group_id = v_group_id and in_dungeon and heartbeat_at > now() - interval '75 seconds';
@@ -1439,3 +1451,804 @@ grant execute on function public.player_mailbox_sender_removed(uuid) to authenti
 grant execute on function public.player_mailbox_list() to authenticated;
 grant execute on function public.player_mailbox_claim(uuid) to authenticated;
 grant execute on function public.player_mailbox_ack_claim(uuid) to authenticated;
+
+-- Real-player PvP uses its own server-owned state. The fighter snapshot is
+-- accepted from the browser at invitation time; no character record exists
+-- server-side, so those initial stats are necessarily client-authoritative.
+create table if not exists public.pvp_battles (
+  id uuid primary key default gen_random_uuid(),
+  group_id uuid not null references public.player_groups (id) on delete cascade,
+  status text not null default 'waiting' check (status in ('waiting', 'active', 'finished')),
+  turn integer not null default 1 check (turn > 0),
+  current_user_id uuid references auth.users (id) on delete set null,
+  deadline_at timestamptz,
+  winner_id uuid references auth.users (id) on delete set null,
+  reason text,
+  log jsonb not null default '[]'::jsonb check (jsonb_typeof(log) = 'array'),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  check ((status = 'active') = (current_user_id is not null and deadline_at is not null))
+);
+
+create unique index if not exists pvp_one_waiting_duel_per_group_idx
+  on public.pvp_battles (group_id) where status = 'waiting';
+
+create table if not exists public.pvp_fighters (
+  battle_id uuid not null references public.pvp_battles (id) on delete cascade,
+  user_id uuid not null references auth.users (id) on delete cascade,
+  seat smallint not null check (seat in (1, 2)),
+  nickname text not null,
+  hp integer not null check (hp between 1 and 1000000),
+  max_hp integer not null check (max_hp between 1 and 1000000),
+  attack integer not null check (attack between 1 and 1000000),
+  armor numeric not null check (armor between 0 and 0.75),
+  accuracy numeric not null check (accuracy between 0 and 1),
+  concentration numeric not null check (concentration between 0 and 1.5),
+  agility numeric not null check (agility between 0 and 1),
+  evasion numeric not null check (evasion between 0 and 0.5),
+  regeneration integer not null check (regeneration between 0 and 1000000),
+  bleeding integer not null check (bleeding between 0 and 1000000),
+  infection integer not null check (infection between 0 and 1000000),
+  potions integer not null check (potions between 0 and 100),
+  revival_chance numeric not null check (revival_chance between 0 and 1),
+  offhand text not null check (offhand in ('shield', 'torch', 'staff', 'none')),
+  focus integer not null check (focus between 0 and 3),
+  extra_stats jsonb not null default '{}'::jsonb check (jsonb_typeof(extra_stats) = 'object'),
+  skip_count integer not null default 0 check (skip_count between 0 and 3),
+  revival_used boolean not null default false,
+  shielded boolean not null default false,
+  shield_cooldown integer not null default 0 check (shield_cooldown between 0 and 1000000),
+  torch_cooldown integer not null default 0 check (torch_cooldown between 0 and 1000000),
+  staff_cooldown integer not null default 0 check (staff_cooldown between 0 and 1000000),
+  joined_at timestamptz not null default now(),
+  primary key (battle_id, user_id),
+  unique (battle_id, seat),
+  check (hp <= max_hp)
+);
+
+create table if not exists public.pvp_request_receipts (
+  user_id uuid not null references auth.users (id) on delete cascade,
+  request_id uuid not null,
+  battle_id uuid not null references public.pvp_battles (id) on delete cascade,
+  payload jsonb not null,
+  response jsonb not null,
+  created_at timestamptz not null default now(),
+  primary key (user_id, request_id)
+);
+
+alter table public.pvp_battles enable row level security;
+alter table public.pvp_fighters enable row level security;
+alter table public.pvp_request_receipts enable row level security;
+revoke all on public.pvp_battles, public.pvp_fighters, public.pvp_request_receipts
+  from public, anon, authenticated;
+
+create or replace function public.pvp_validate_player(p_player jsonb)
+returns jsonb
+language plpgsql
+immutable
+security definer
+set search_path = ''
+set row_security = off
+as $$
+declare
+  v_hp numeric;
+  v_max_hp numeric;
+  v_attack numeric;
+  v_regeneration numeric;
+  v_bleeding numeric;
+  v_infection numeric;
+  v_potions numeric;
+  v_focus numeric;
+  v_armor numeric;
+  v_accuracy numeric;
+  v_concentration numeric;
+  v_agility numeric;
+  v_evasion numeric;
+  v_revival numeric;
+begin
+  if p_player is null or jsonb_typeof(p_player) <> 'object' then
+    raise exception 'Fighter snapshot must be a JSON object.';
+  end if;
+  if exists (
+    select 1 from unnest(array[
+      'hp', 'max_hp', 'attack', 'armor', 'accuracy', 'concentration', 'agility',
+      'evasion', 'regeneration', 'bleeding', 'infection', 'potions',
+      'revivalChance', 'focus'
+    ]) as required(key)
+    where jsonb_typeof(p_player -> required.key) is distinct from 'number'
+  ) or jsonb_typeof(p_player -> 'offhand') is distinct from 'string' or
+    exists (
+      select 1 from jsonb_object_keys(p_player) as provided(key)
+      where provided.key not in (
+        'hp', 'max_hp', 'attack', 'armor', 'accuracy', 'concentration', 'agility',
+        'evasion', 'regeneration', 'bleeding', 'infection', 'potions',
+        'revivalChance', 'offhand', 'focus', 'skillType', 'skillDamage',
+        'skillCooldownMax', 'revivalUsed', 'criticalChance',
+        'executeChance', 'lifesteal'
+      )
+    ) then
+    raise exception 'Fighter snapshot is missing a numeric stat or offhand.';
+  end if;
+  if (p_player ? 'skillType' and
+      (jsonb_typeof(p_player -> 'skillType') <> 'string' or p_player ->> 'skillType' not in ('guard', 'blast', 'shadow'))) or
+    exists (
+      select 1 from unnest(array[
+        'skillDamage', 'skillCooldownMax', 'criticalChance',
+        'executeChance', 'lifesteal'
+      ]) as optional(key)
+      where p_player ? optional.key and jsonb_typeof(p_player -> optional.key) <> 'number'
+    ) or
+    (p_player ? 'revivalUsed' and jsonb_typeof(p_player -> 'revivalUsed') <> 'boolean') then
+    raise exception 'Optional fighter snapshot stat has an invalid type or value.';
+  end if;
+  v_hp := (p_player ->> 'hp')::numeric;
+  v_max_hp := (p_player ->> 'max_hp')::numeric;
+  v_attack := (p_player ->> 'attack')::numeric;
+  v_regeneration := (p_player ->> 'regeneration')::numeric;
+  v_bleeding := (p_player ->> 'bleeding')::numeric;
+  v_infection := (p_player ->> 'infection')::numeric;
+  v_potions := (p_player ->> 'potions')::numeric;
+  v_focus := (p_player ->> 'focus')::numeric;
+  v_armor := (p_player ->> 'armor')::numeric;
+  v_accuracy := (p_player ->> 'accuracy')::numeric;
+  v_concentration := (p_player ->> 'concentration')::numeric;
+  v_agility := (p_player ->> 'agility')::numeric;
+  v_evasion := (p_player ->> 'evasion')::numeric;
+  v_revival := (p_player ->> 'revivalChance')::numeric;
+  if v_hp <> trunc(v_hp) or v_max_hp <> trunc(v_max_hp) or
+    v_attack <> trunc(v_attack) or v_regeneration <> trunc(v_regeneration) or
+    v_bleeding <> trunc(v_bleeding) or v_infection <> trunc(v_infection) or
+    v_potions <> trunc(v_potions) or v_focus <> trunc(v_focus) or
+    v_max_hp not between 1 and 1000000 or v_hp not between 1 and v_max_hp or
+    v_attack not between 1 and 1000000 or
+    v_regeneration not between 0 and 1000000 or v_bleeding not between 0 and 1000000 or
+    v_infection not between 0 and 1000000 or v_potions not between 0 and 100 or
+    v_focus not between 0 and 3 or v_armor not between 0 and 0.75 or
+    v_accuracy not between 0 and 1 or v_concentration not between 0 and 1.5 or
+    v_agility not between 0 and 1 or v_evasion not between 0 and 0.5 or
+    v_revival not between 0 and 1 or
+    p_player ->> 'offhand' not in ('shield', 'torch', 'staff', 'none') then
+    raise exception 'Fighter snapshot stat is outside its allowed bounds.';
+  end if;
+  if (p_player ? 'skillDamage' and ((p_player ->> 'skillDamage')::numeric not between 0 and 1000000 or
+      (p_player ->> 'skillDamage')::numeric <> trunc((p_player ->> 'skillDamage')::numeric))) or
+    (p_player ? 'skillCooldownMax' and ((p_player ->> 'skillCooldownMax')::numeric not between 0 and 1000000 or
+      (p_player ->> 'skillCooldownMax')::numeric <> trunc((p_player ->> 'skillCooldownMax')::numeric))) or
+    (p_player ? 'criticalChance' and (p_player ->> 'criticalChance')::numeric not between 0 and 1) or
+    (p_player ? 'executeChance' and (p_player ->> 'executeChance')::numeric not between 0 and 1) or
+    (p_player ? 'lifesteal' and (p_player ->> 'lifesteal')::numeric not between 0 and 1) then
+    raise exception 'Optional fighter snapshot stat is outside its allowed bounds.';
+  end if;
+  return jsonb_build_object(
+    'hp', v_hp, 'max_hp', v_max_hp, 'attack', v_attack, 'armor', v_armor,
+    'accuracy', v_accuracy, 'concentration', v_concentration, 'agility', v_agility,
+    'evasion', v_evasion, 'regeneration', v_regeneration, 'bleeding', v_bleeding,
+    'infection', v_infection, 'potions', v_potions, 'revivalChance', v_revival,
+    'offhand', p_player ->> 'offhand', 'focus', v_focus,
+    'skillType', p_player ->> 'skillType',
+    'skillDamage', coalesce((p_player ->> 'skillDamage')::numeric, 0),
+    'skillCooldownMax', coalesce((p_player ->> 'skillCooldownMax')::integer, 0),
+    'skillCooldown', 0,
+    'criticalChance', coalesce((p_player ->> 'criticalChance')::numeric, 0),
+    'executeChance', coalesce((p_player ->> 'executeChance')::numeric, 0),
+    'lifesteal', coalesce((p_player ->> 'lifesteal')::numeric, 0),
+    'revivalUsed', coalesce((p_player ->> 'revivalUsed')::boolean, false)
+  );
+end;
+$$;
+
+create or replace function public.pvp_snapshot(p_battle_id uuid)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+set row_security = off
+as $$
+declare
+  v_user_id uuid := (select auth.uid());
+  v_battle public.pvp_battles%rowtype;
+  v_players jsonb;
+begin
+  select * into v_battle from public.pvp_battles where id = p_battle_id;
+  if not found or v_user_id is null or not exists (
+    select 1 from public.pvp_fighters where battle_id = p_battle_id and user_id = v_user_id
+  ) then
+    raise exception 'PvP battle is unavailable to this account.';
+  end if;
+  select coalesce(jsonb_agg(jsonb_build_object(
+    'user_id', fighter.user_id, 'nickname', fighter.nickname,
+    'hp', fighter.hp, 'max_hp', fighter.max_hp, 'attack', fighter.attack,
+    'armor', fighter.armor, 'accuracy', fighter.accuracy,
+    'concentration', fighter.concentration, 'agility', fighter.agility,
+    'evasion', fighter.evasion, 'regeneration', fighter.regeneration,
+    'bleeding', fighter.bleeding, 'infection', fighter.infection,
+    'potions', fighter.potions, 'revivalChance', fighter.revival_chance,
+    'offhand', fighter.offhand, 'focus', fighter.focus,
+    'skip_count', fighter.skip_count, 'shield_cooldown', fighter.shield_cooldown,
+    'torch_cooldown', fighter.torch_cooldown, 'staff_cooldown', fighter.staff_cooldown,
+    'revival_used', fighter.revival_used,
+    'revivalUsed', fighter.revival_used,
+    'fighter', jsonb_build_object(
+      'hp', fighter.hp, 'max_hp', fighter.max_hp, 'attack', fighter.attack,
+      'armor', fighter.armor, 'accuracy', fighter.accuracy,
+      'concentration', fighter.concentration, 'agility', fighter.agility,
+      'evasion', fighter.evasion, 'regeneration', fighter.regeneration,
+      'bleeding', fighter.bleeding, 'infection', fighter.infection,
+      'potions', fighter.potions, 'revivalChance', fighter.revival_chance,
+      'offhand', fighter.offhand, 'focus', fighter.focus
+    ) || fighter.extra_stats || jsonb_build_object('revivalUsed', fighter.revival_used)
+  ) || fighter.extra_stats || jsonb_build_object('revivalUsed', fighter.revival_used)
+  order by fighter.seat), '[]'::jsonb)
+  into v_players
+  from public.pvp_fighters fighter
+  where fighter.battle_id = p_battle_id;
+  return jsonb_build_object(
+    'id', v_battle.id, 'group_id', v_battle.group_id, 'status', v_battle.status,
+    'turn', v_battle.turn, 'current_user_id', v_battle.current_user_id,
+    'deadline_at', v_battle.deadline_at, 'winner_id', v_battle.winner_id,
+    'reason', v_battle.reason, 'players', v_players, 'log', v_battle.log
+  );
+end;
+$$;
+
+create or replace function public.pvp_skill_chance(
+  p_actor_concentration numeric,
+  p_target_concentration numeric,
+  p_actor_agility numeric,
+  p_actor_accuracy numeric
+)
+returns numeric
+language sql
+immutable
+set search_path = ''
+as $$
+  select greatest(0.05, least(0.95,
+    p_actor_concentration - p_target_concentration * 0.5 +
+    p_actor_agility * 0.1 + p_actor_accuracy * 0.05
+  ));
+$$;
+
+create or replace function public.pvp_tick_expired(p_battle_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+set row_security = off
+as $$
+declare
+  v_battle public.pvp_battles%rowtype;
+  v_actor public.pvp_fighters%rowtype;
+  v_target public.pvp_fighters%rowtype;
+  v_fighter public.pvp_fighters%rowtype;
+  v_skip_count integer;
+  v_revival boolean;
+  v_loops integer := 0;
+begin
+  loop
+    v_loops := v_loops + 1;
+    select * into v_battle from public.pvp_battles where id = p_battle_id for update;
+    if not found or v_battle.status <> 'active' or v_battle.deadline_at > now() or v_loops > 100 then
+      return;
+    end if;
+    select * into v_actor from public.pvp_fighters
+    where battle_id = p_battle_id and user_id = v_battle.current_user_id for update;
+    select * into v_target from public.pvp_fighters
+    where battle_id = p_battle_id and user_id <> v_battle.current_user_id for update;
+    update public.pvp_fighters set skip_count = skip_count + 1
+    where battle_id = p_battle_id and user_id = v_actor.user_id
+    returning skip_count into v_skip_count;
+    update public.pvp_fighters
+    set hp = least(max_hp, hp + regeneration),
+        shield_cooldown = greatest(0, shield_cooldown - 1),
+        torch_cooldown = greatest(0, torch_cooldown - 1),
+        staff_cooldown = greatest(0, staff_cooldown - 1),
+        extra_stats = case when extra_stats ? 'skillCooldown'
+          then jsonb_set(extra_stats, '{skillCooldown}', to_jsonb(greatest(
+            0, (extra_stats ->> 'skillCooldown')::integer - 1
+          )))
+          else extra_stats end
+    where battle_id = p_battle_id and user_id = v_actor.user_id and hp > 0;
+    update public.pvp_fighters
+    set hp = greatest(0, hp - bleeding - 2 * infection -
+      coalesce((extra_stats ->> 'poisonDamage')::integer, 0))
+    where battle_id = p_battle_id and user_id = v_target.user_id;
+    update public.pvp_battles
+    set log = log || jsonb_build_array(v_actor.nickname || ' пропустил ход по тайм-ауту.'),
+        updated_at = now()
+    where id = p_battle_id;
+    if v_skip_count >= 3 then
+      update public.pvp_battles
+      set status = 'finished', current_user_id = null, deadline_at = null,
+          winner_id = v_target.user_id, reason = 'afk', updated_at = now(),
+          log = log || jsonb_build_array(v_actor.nickname || ' проиграл из-за трёх пропущенных ходов.')
+      where id = p_battle_id;
+      return;
+    end if;
+    for v_fighter in
+      select * from public.pvp_fighters where battle_id = p_battle_id for update
+    loop
+      if v_fighter.hp = 0 and not v_fighter.revival_used then
+        v_revival := random() < v_fighter.revival_chance / 2;
+        if v_revival then
+          update public.pvp_fighters
+          set hp = greatest(1, ceil(max_hp * 0.5)::integer), revival_used = true
+          where battle_id = p_battle_id and user_id = v_fighter.user_id;
+        end if;
+      end if;
+    end loop;
+    if exists (select 1 from public.pvp_fighters where battle_id = p_battle_id and hp = 0) then
+      update public.pvp_battles
+      set status = 'finished', current_user_id = null, deadline_at = null,
+          winner_id = v_actor.user_id, reason = 'defeat', updated_at = now()
+      where id = p_battle_id;
+      return;
+    end if;
+    update public.pvp_battles
+    set current_user_id = v_target.user_id, turn = turn + 1,
+        deadline_at = v_battle.deadline_at + interval '40 seconds', updated_at = now()
+    where id = p_battle_id;
+  end loop;
+end;
+$$;
+
+create or replace function public.pvp_start(p_player jsonb, p_request_id uuid)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+set row_security = off
+as $$
+declare
+  v_user_id uuid := (select auth.uid());
+  v_group_id uuid;
+  v_partner_id uuid;
+  v_nickname text;
+  v_live_count integer;
+  v_player jsonb;
+  v_battle_id uuid;
+  v_battle public.pvp_battles%rowtype;
+  v_response jsonb;
+  v_payload jsonb;
+  v_stored_payload jsonb;
+begin
+  if v_user_id is null or p_request_id is null then raise exception 'Authentication and request UUID required.'; end if;
+  v_player := public.pvp_validate_player(p_player);
+  v_payload := jsonb_build_object('rpc', 'pvp_start', 'player', v_player);
+  select response, payload into v_response, v_stored_payload
+  from public.pvp_request_receipts where user_id = v_user_id and request_id = p_request_id;
+  if found then
+    if v_stored_payload ->> 'rpc' <> 'pvp_start' or v_stored_payload -> 'player' <> v_player then
+      raise exception 'Request UUID was already used with a different payload.';
+    end if;
+    return v_response;
+  end if;
+  select member.group_id, member.nickname into v_group_id, v_nickname
+  from public.player_group_members member
+  where member.user_id = v_user_id and member.in_dungeon
+    and member.heartbeat_at > now() - interval '75 seconds';
+  if v_group_id is null then raise exception 'Both group partners must be online in the dungeon.'; end if;
+  perform 1 from public.player_groups where id = v_group_id for update;
+  perform 1 from public.player_group_members
+  where group_id = v_group_id order by user_id for update;
+  select response, payload into v_response, v_stored_payload
+  from public.pvp_request_receipts where user_id = v_user_id and request_id = p_request_id;
+  if found then
+    if v_stored_payload ->> 'rpc' <> 'pvp_start' or v_stored_payload -> 'player' <> v_player then
+      raise exception 'Request UUID was already used with a different payload.';
+    end if;
+    return v_response;
+  end if;
+  select count(*) into v_live_count from public.player_group_members
+  where group_id = v_group_id and in_dungeon and heartbeat_at > now() - interval '75 seconds';
+  if v_live_count <> 2 then raise exception 'Both group partners must be online in the dungeon.'; end if;
+  select user_id into v_partner_id from public.player_group_members
+  where group_id = v_group_id and user_id <> v_user_id;
+  if v_partner_id is null then raise exception 'This group has no PvP partner.'; end if;
+  perform 1 from public.player_group_members
+  where group_id = v_group_id and user_id = v_partner_id for update;
+  if to_regclass('public.player_group_battles') is not null and exists (
+    select 1 from public.player_group_battles
+    where group_id = v_group_id and status in ('waiting', 'active')
+  ) then
+    raise exception 'Finish the cooperative group battle before starting PvP.';
+  end if;
+  select id into v_battle_id from public.pvp_battles
+  where group_id = v_group_id and status = 'waiting' for update;
+  if v_battle_id is null then
+    if exists (select 1 from public.pvp_battles where group_id = v_group_id and status = 'active') then
+      raise exception 'This group already has an active PvP duel.';
+    end if;
+    insert into public.pvp_battles (group_id) values (v_group_id) returning id into v_battle_id;
+  end if;
+  select * into v_battle from public.pvp_battles where id = v_battle_id for update;
+  if not exists (select 1 from public.pvp_fighters where battle_id = v_battle_id and user_id = v_user_id) then
+    if v_battle.status <> 'waiting' then raise exception 'This PvP invitation is no longer waiting.'; end if;
+    insert into public.pvp_fighters (
+      battle_id, user_id, seat, nickname, hp, max_hp, attack, armor, accuracy,
+      concentration, agility, evasion, regeneration, bleeding, infection,
+      potions, revival_chance, offhand, focus, extra_stats, revival_used
+    ) values (
+      v_battle_id, v_user_id,
+      coalesce((select max(seat) + 1 from public.pvp_fighters where battle_id = v_battle_id), 1),
+      v_nickname, (v_player ->> 'hp')::integer,
+      (v_player ->> 'max_hp')::integer, (v_player ->> 'attack')::integer,
+      (v_player ->> 'armor')::numeric, (v_player ->> 'accuracy')::numeric,
+      (v_player ->> 'concentration')::numeric, (v_player ->> 'agility')::numeric,
+      (v_player ->> 'evasion')::numeric, (v_player ->> 'regeneration')::integer,
+      (v_player ->> 'bleeding')::integer, (v_player ->> 'infection')::integer,
+      (v_player ->> 'potions')::integer, (v_player ->> 'revivalChance')::numeric,
+      v_player ->> 'offhand', (v_player ->> 'focus')::integer,
+      (v_player - array[
+        'hp', 'max_hp', 'attack', 'armor', 'accuracy', 'concentration', 'agility',
+        'evasion', 'regeneration', 'bleeding', 'infection', 'potions',
+        'revivalChance', 'offhand', 'focus', 'revivalUsed', 'skillCooldown'
+      ]) || jsonb_build_object('skillCooldown', 0),
+      coalesce((v_player ->> 'revivalUsed')::boolean, false)
+    );
+  end if;
+  if (select count(*) from public.pvp_fighters where battle_id = v_battle_id) = 2 then
+    select user_id into v_partner_id from public.pvp_fighters
+    where battle_id = v_battle_id order by seat limit 1;
+    update public.pvp_battles
+    set status = 'active', turn = 1, current_user_id = v_partner_id,
+        deadline_at = now() + interval '40 seconds', updated_at = now()
+    where id = v_battle_id;
+    update public.pvp_battles
+    set log = log || jsonb_build_array('Дуэль началась. Первый ход: ' ||
+      (select nickname from public.pvp_fighters where battle_id = v_battle_id and user_id = v_partner_id) || '.')
+    where id = v_battle_id;
+  end if;
+  v_response := public.pvp_snapshot(v_battle_id);
+  insert into public.pvp_request_receipts (user_id, request_id, battle_id, payload, response)
+  values (v_user_id, p_request_id, v_battle_id, jsonb_build_object('rpc', 'pvp_start', 'player', v_player), v_response);
+  return v_response;
+end;
+$$;
+
+create or replace function public.pvp_get(p_battle_id uuid)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+set row_security = off
+as $$
+begin
+  if auth.uid() is null or p_battle_id is null then raise exception 'Authentication and battle UUID required.'; end if;
+  perform 1 from public.pvp_battles where id = p_battle_id for update;
+  if not found or not exists (
+    select 1 from public.pvp_fighters where battle_id = p_battle_id and user_id = auth.uid()
+  ) then raise exception 'PvP battle is unavailable to this account.'; end if;
+  perform public.pvp_tick_expired(p_battle_id);
+  return public.pvp_snapshot(p_battle_id);
+end;
+$$;
+
+create or replace function public.pvp_find()
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+set row_security = off
+as $$
+declare
+  v_user_id uuid := (select auth.uid());
+  v_group_id uuid;
+  v_live_count integer;
+  v_battle public.pvp_battles%rowtype;
+begin
+  if v_user_id is null then raise exception 'Authentication required.'; end if;
+  select group_id into v_group_id from public.player_group_members
+  where user_id = v_user_id and in_dungeon and heartbeat_at > now() - interval '75 seconds';
+  if v_group_id is null then return null; end if;
+  select count(*) into v_live_count from public.player_group_members
+  where group_id = v_group_id and in_dungeon and heartbeat_at > now() - interval '75 seconds';
+  if v_live_count <> 2 then return null; end if;
+  select * into v_battle from public.pvp_battles
+  where group_id = v_group_id and status in ('waiting', 'active')
+  order by created_at desc limit 1;
+  if not found then return null; end if;
+  if exists (
+    select 1 from public.pvp_fighters where battle_id = v_battle.id and user_id = v_user_id
+  ) then
+    return public.pvp_snapshot(v_battle.id);
+  end if;
+  return jsonb_build_object(
+    'id', v_battle.id, 'group_id', v_battle.group_id, 'status', v_battle.status,
+    'turn', v_battle.turn, 'deadline_at', v_battle.deadline_at
+  );
+end;
+$$;
+
+create or replace function public.pvp_action(
+  p_battle_id uuid,
+  p_expected_turn integer,
+  p_action text,
+  p_request_id uuid
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+set row_security = off
+as $$
+declare
+  v_user_id uuid := (select auth.uid());
+  v_battle public.pvp_battles%rowtype;
+  v_player public.pvp_fighters%rowtype;
+  v_target public.pvp_fighters%rowtype;
+  v_receipt public.pvp_request_receipts%rowtype;
+  v_payload jsonb;
+  v_response jsonb;
+  v_chance numeric;
+  v_damage integer := 0;
+  v_skill_damage integer := 0;
+  v_attack_damage integer := 0;
+  v_target_hp integer;
+  v_healing integer := 0;
+  v_hit boolean := false;
+  v_attack_hit boolean := false;
+  v_target_shielded boolean := false;
+  v_revival boolean;
+  v_factor numeric := 1;
+  v_text text;
+  v_loser uuid;
+  v_was_expired boolean := false;
+begin
+  if v_user_id is null or p_battle_id is null or p_expected_turn is null or
+    p_expected_turn < 1 or p_request_id is null or p_action is null or
+    p_action not in (
+      'attack', 'heavy', 'potion', 'shield', 'torch', 'staff', 'guard',
+      'equip-shield', 'equip-torch', 'equip-staff'
+    ) then
+    raise exception 'PvP action or request is invalid.';
+  end if;
+  v_payload := jsonb_build_object('rpc', 'pvp_action', 'battle_id', p_battle_id,
+    'expected_turn', p_expected_turn, 'action', p_action);
+  select * into v_battle from public.pvp_battles where id = p_battle_id for update;
+  if not found or not exists (
+    select 1 from public.pvp_fighters where battle_id = p_battle_id and user_id = v_user_id
+  ) then raise exception 'PvP battle is unavailable to this account.'; end if;
+  select * into v_receipt from public.pvp_request_receipts
+  where user_id = v_user_id and request_id = p_request_id;
+  if found then
+    if v_receipt.payload <> v_payload then raise exception 'Request UUID was already used with a different payload.'; end if;
+    return v_receipt.response;
+  end if;
+  v_was_expired := v_battle.status = 'active' and v_battle.deadline_at <= now();
+  perform public.pvp_tick_expired(p_battle_id);
+  select * into v_battle from public.pvp_battles where id = p_battle_id;
+  if v_battle.status = 'active' and v_battle.turn = p_expected_turn
+    and v_battle.current_user_id = v_user_id then
+    select * into v_player from public.pvp_fighters
+    where battle_id = p_battle_id and user_id = v_user_id for update;
+    update public.pvp_fighters set
+      shield_cooldown = greatest(0, shield_cooldown - 1),
+      torch_cooldown = greatest(0, torch_cooldown - 1),
+      staff_cooldown = greatest(0, staff_cooldown - 1),
+      extra_stats = case when extra_stats ? 'skillCooldown'
+        then jsonb_set(extra_stats, '{skillCooldown}', to_jsonb(greatest(
+          0, (extra_stats ->> 'skillCooldown')::integer - 1
+        )))
+        else extra_stats end
+    where battle_id = p_battle_id and user_id = v_user_id;
+    select * into v_player from public.pvp_fighters
+    where battle_id = p_battle_id and user_id = v_user_id;
+    select * into v_target from public.pvp_fighters
+    where battle_id = p_battle_id and user_id <> v_user_id for update;
+    if p_action = 'potion' then
+      if v_player.potions = 0 or v_player.hp = v_player.max_hp then raise exception 'Potion cannot be used now.'; end if;
+      v_healing := least(v_player.max_hp - v_player.hp, greatest(1, ceil(v_player.max_hp * 0.3)::integer));
+      update public.pvp_fighters set hp = hp + v_healing, potions = potions - 1,
+        skip_count = 0, focus = least(3, focus + 1)
+      where battle_id = p_battle_id and user_id = v_user_id;
+      v_text := v_player.nickname || ' выпил зелье и восстановил ' || v_healing || ' HP.';
+    elsif p_action = 'guard' then
+      update public.pvp_fighters set shielded = true, focus = least(3, focus + 1), skip_count = 0
+      where battle_id = p_battle_id and user_id = v_user_id;
+      v_text := v_player.nickname || ' приготовился блокировать следующую атаку.';
+    elsif p_action = 'shield' then
+      if v_player.offhand <> 'shield' or v_player.shield_cooldown > 0 then
+        raise exception 'Shield is unavailable or cooling down.';
+      end if;
+      v_chance := public.pvp_skill_chance(
+        v_player.concentration, v_target.concentration, v_player.agility, v_player.accuracy
+      );
+      v_hit := random() < v_chance;
+      update public.pvp_fighters
+      set shielded = v_hit, shield_cooldown = 4, skip_count = 0
+      where battle_id = p_battle_id and user_id = v_user_id;
+      v_text := case when v_hit then v_player.nickname || ' поднял щит.'
+        else v_player.nickname || ' не успел поднять щит.' end;
+    elsif p_action in ('equip-shield', 'equip-torch', 'equip-staff') then
+      update public.pvp_fighters
+      set offhand = case p_action
+          when 'equip-shield' then 'shield'
+          when 'equip-torch' then 'torch'
+          else 'staff'
+        end,
+        skip_count = 0
+      where battle_id = p_battle_id and user_id = v_user_id;
+      v_text := v_player.nickname || ' сменил снаряжение: ' ||
+        case p_action when 'equip-shield' then 'shield' when 'equip-torch' then 'torch' else 'staff' end || '.';
+    else
+      if p_action = 'heavy' then
+        if v_player.focus < 1 then raise exception 'Heavy attack requires focus.'; end if;
+        v_chance := public.pvp_skill_chance(
+          v_player.concentration, v_target.concentration, v_player.agility, v_player.accuracy
+        );
+        v_factor := 1.5;
+      elsif p_action = 'torch' then
+        if v_player.offhand <> 'torch' or v_player.torch_cooldown > 0 then
+          raise exception 'Torch is unavailable or cooling down.';
+        end if;
+        v_chance := public.pvp_skill_chance(
+          v_player.concentration, v_target.concentration, v_player.agility, v_player.accuracy
+        );
+        v_factor := 0.75;
+      elsif p_action = 'staff' then
+        if v_player.offhand <> 'staff' or v_player.staff_cooldown > 0 then
+          raise exception 'Staff is unavailable or cooling down.';
+        end if;
+        v_chance := public.pvp_skill_chance(
+          v_player.concentration, v_target.concentration, v_player.agility, v_player.accuracy
+        );
+        v_factor := 1.25;
+      else
+        v_chance := greatest(0.05, least(0.95, v_player.accuracy - v_target.evasion));
+      end if;
+      v_target_hp := v_target.hp;
+      v_target_shielded := v_target.shielded;
+      if p_action in ('heavy', 'torch', 'staff') then
+        v_hit := random() < v_chance;
+        if v_hit then
+          v_skill_damage := greatest(1, round(v_player.attack * v_factor * (1 - v_target.armor))::integer);
+          if v_target_shielded then
+            v_skill_damage := greatest(1, ceil(v_skill_damage * 0.5)::integer);
+            v_target_shielded := false;
+          end if;
+          v_target_hp := greatest(0, v_target_hp - v_skill_damage);
+          v_damage := v_damage + v_skill_damage;
+        end if;
+        if v_target_hp > 0 then
+          v_attack_hit := random() < greatest(0.05, least(0.95, v_player.accuracy - v_target.evasion));
+        end if;
+      else
+        v_attack_hit := random() < v_chance;
+      end if;
+      if v_attack_hit then
+        v_attack_damage := greatest(1, round(v_player.attack *
+          coalesce((v_player.extra_stats ->> 'damageMultiplier')::numeric, 1) *
+          (1 - v_target.armor))::integer);
+        if random() < coalesce((v_player.extra_stats ->> 'criticalChance')::numeric, 0) then
+          v_attack_damage := v_attack_damage * 2;
+        end if;
+        if v_target_hp <= ceil(v_target.max_hp * 0.25)::integer and
+          random() < coalesce((v_player.extra_stats ->> 'executeChance')::numeric, 0) then
+          v_attack_damage := v_target_hp;
+        end if;
+        if v_target_shielded then
+          v_attack_damage := greatest(1, ceil(v_attack_damage * 0.5)::integer);
+          v_target_shielded := false;
+        end if;
+        v_target_hp := greatest(0, v_target_hp - v_attack_damage);
+        v_damage := v_damage + v_attack_damage;
+      end if;
+      if v_hit or v_attack_hit then
+        update public.pvp_fighters
+        set hp = v_target_hp, shielded = v_target_shielded
+        where battle_id = p_battle_id and user_id = v_target.user_id;
+      end if;
+      if p_action = 'torch' and v_hit then
+        update public.pvp_fighters
+        set bleeding = least(1000000, bleeding + 1)
+        where battle_id = p_battle_id and user_id = v_target.user_id;
+      end if;
+      update public.pvp_fighters
+      set focus = case when p_action = 'heavy' then focus - 1 else least(3, focus + 1) end,
+          hp = least(max_hp, hp + case when v_attack_hit then round(
+            v_attack_damage * coalesce((extra_stats ->> 'lifesteal')::numeric, 0)
+          )::integer else 0 end),
+          skip_count = 0,
+          torch_cooldown = case when p_action = 'torch' then 2 else torch_cooldown end,
+          staff_cooldown = case when p_action = 'staff' then 4 else staff_cooldown end
+      where battle_id = p_battle_id and user_id = v_user_id;
+      v_text := case when v_hit or v_attack_hit then v_player.nickname || ' нанёс ' || v_damage || ' урона (' || p_action || ').'
+        else v_player.nickname || ' промахнулся (' || p_action || ').' end;
+    end if;
+    update public.pvp_battles set log = log || jsonb_build_array(v_text), updated_at = now()
+    where id = p_battle_id;
+    select * into v_player from public.pvp_fighters
+    where battle_id = p_battle_id and user_id = v_user_id;
+    select * into v_target from public.pvp_fighters
+    where battle_id = p_battle_id and user_id <> v_user_id;
+    update public.pvp_fighters
+    set hp = least(max_hp, hp + regeneration)
+    where battle_id = p_battle_id and user_id = v_user_id and hp > 0;
+    update public.pvp_fighters
+    set hp = greatest(0, hp - bleeding - 2 * infection -
+      coalesce((extra_stats ->> 'poisonDamage')::integer, 0))
+    where battle_id = p_battle_id and user_id = v_target.user_id;
+    for v_player in select * from public.pvp_fighters where battle_id = p_battle_id for update loop
+      if v_player.hp = 0 and not v_player.revival_used then
+        v_revival := random() < v_player.revival_chance / 2;
+        if v_revival then
+          update public.pvp_fighters set hp = greatest(1, ceil(max_hp * 0.5)::integer), revival_used = true
+          where battle_id = p_battle_id and user_id = v_player.user_id;
+        end if;
+      end if;
+    end loop;
+    if exists (select 1 from public.pvp_fighters where battle_id = p_battle_id and hp = 0) then
+      select user_id into v_loser from public.pvp_fighters
+      where battle_id = p_battle_id and hp = 0 limit 1;
+      update public.pvp_battles
+      set status = 'finished', current_user_id = null, deadline_at = null,
+          winner_id = (select user_id from public.pvp_fighters
+            where battle_id = p_battle_id and user_id <> v_loser),
+          reason = 'defeat', updated_at = now()
+      where id = p_battle_id;
+    else
+      update public.pvp_battles
+      set current_user_id = v_target.user_id, turn = turn + 1,
+          deadline_at = now() + interval '40 seconds', updated_at = now()
+      where id = p_battle_id;
+    end if;
+  else
+    if not v_was_expired then
+      if v_battle.status <> 'active' then
+        raise exception 'PvP battle is not accepting actions.';
+      end if;
+      raise exception 'It is not this player''s expected turn.';
+    end if;
+  end if;
+  v_response := public.pvp_snapshot(p_battle_id);
+  insert into public.pvp_request_receipts (user_id, request_id, battle_id, payload, response)
+  values (v_user_id, p_request_id, p_battle_id, v_payload, v_response);
+  return v_response;
+end;
+$$;
+
+create or replace function public.pvp_leave(p_battle_id uuid)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+set row_security = off
+as $$
+declare
+  v_user_id uuid := (select auth.uid());
+  v_battle public.pvp_battles%rowtype;
+  v_winner uuid;
+begin
+  if v_user_id is null or p_battle_id is null then raise exception 'Authentication and battle UUID required.'; end if;
+  select * into v_battle from public.pvp_battles where id = p_battle_id for update;
+  if not found or not exists (
+    select 1 from public.pvp_fighters where battle_id = p_battle_id and user_id = v_user_id
+  ) then raise exception 'PvP battle is unavailable to this account.'; end if;
+  if v_battle.status = 'finished' then return public.pvp_snapshot(p_battle_id); end if;
+  select user_id into v_winner from public.pvp_fighters
+  where battle_id = p_battle_id and user_id <> v_user_id;
+  update public.pvp_battles
+  set status = 'finished', current_user_id = null, deadline_at = null,
+      winner_id = case when v_battle.status = 'active' then v_winner else null end,
+      reason = 'surrender', updated_at = now(),
+      log = log || jsonb_build_array((select nickname from public.pvp_fighters
+        where battle_id = p_battle_id and user_id = v_user_id) || ' сдался.')
+  where id = p_battle_id;
+  return public.pvp_snapshot(p_battle_id);
+end;
+$$;
+
+revoke all on function public.pvp_validate_player(jsonb) from public, anon, authenticated;
+revoke all on function public.pvp_snapshot(uuid) from public, anon, authenticated;
+revoke all on function public.pvp_skill_chance(numeric, numeric, numeric, numeric) from public, anon, authenticated;
+revoke all on function public.pvp_tick_expired(uuid) from public, anon, authenticated;
+revoke all on function public.pvp_start(jsonb, uuid) from public, anon, authenticated;
+revoke all on function public.pvp_get(uuid) from public, anon, authenticated;
+revoke all on function public.pvp_find() from public, anon, authenticated;
+revoke all on function public.pvp_action(uuid, integer, text, uuid) from public, anon, authenticated;
+revoke all on function public.pvp_leave(uuid) from public, anon, authenticated;
+grant execute on function public.pvp_start(jsonb, uuid) to authenticated;
+grant execute on function public.pvp_get(uuid) to authenticated;
+grant execute on function public.pvp_find() to authenticated;
+grant execute on function public.pvp_action(uuid, integer, text, uuid) to authenticated;
+grant execute on function public.pvp_leave(uuid) to authenticated;

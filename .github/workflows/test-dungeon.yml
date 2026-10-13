@@ -1,0 +1,58 @@
+name: Test dungeon combat and Monty Hall
+
+on:
+  pull_request:
+    paths:
+      - "dungeon-model.js"
+      - "game.js"
+      - "pvp-client.js"
+      - "index.html"
+      - "styles.css"
+      - "tests/*.html"
+      - ".github/workflows/test-dungeon.yml"
+  push:
+    paths:
+      - "dungeon-model.js"
+      - "game.js"
+      - "pvp-client.js"
+      - "index.html"
+      - "styles.css"
+      - "tests/*.html"
+      - ".github/workflows/test-dungeon.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  browser:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out game
+        uses: actions/checkout@v4
+      - name: Set up Chrome
+        uses: browser-actions/setup-chrome@v1
+      - name: Run dungeon browser tests
+        run: |
+          set -euo pipefail
+          mkdir -p .dungeon-ci
+          python3 -m http.server 8765 --bind 127.0.0.1 > .dungeon-ci/server.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid"; rm -rf .dungeon-ci' EXIT
+          for attempt in {1..30}; do
+            if curl --silent --fail http://127.0.0.1:8765/tests/dungeon.test.html > /dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          for test in dungeon dungeon-integration pvp-client tavern expeditions homestead; do
+            chrome --headless --no-sandbox --disable-gpu --disable-dev-shm-usage \
+              --user-data-dir="$PWD/.dungeon-ci/game-${test}-profile" \
+              --disable-extensions --dump-dom --virtual-time-budget=120000 \
+              "http://127.0.0.1:8765/tests/${test}.test.html" > ".dungeon-ci/${test}.html"
+            if ! grep -q 'data-result="pass"' ".dungeon-ci/${test}.html"; then
+              cat ".dungeon-ci/${test}.html"
+              exit 1
+            fi
+            grep -o 'PASS [^<]*' ".dungeon-ci/${test}.html"
+          done

@@ -119,6 +119,52 @@ const RUN_QUESTS = [
   { id: "gear", title: "Собиратель реликвий", text: "Найди экипировку", target: 2, reward: 20, icon: "✧" },
   { id: "secret", title: "Слушатель шёпота", text: "Открой тайные знаки", target: 1, reward: 18, icon: "ᛟ" },
 ];
+const DUNGEON_EVENT_ACTIONS = new Map([
+  ["goblin-chase", "Погнаться за вором"],
+  ["goblin-bribe", "Выкупить кошель · 3 монеты"],
+  ["find-careful", "Открыть осторожно"],
+  ["find-break", "Разбить печать"],
+  ["rubble-clear", "Разобрать завал"],
+  ["rubble-squeeze", "Протиснуться сбоку"],
+  ["dive-deep", "Нырнуть глубже"],
+  ["dive-shallow", "Собрать у берега"],
+  ["ore-careful", "Добыть жилу"],
+  ["ore-force", "Ударить сильнее"],
+  ["fish-net", "Закинуть сеть"],
+  ["fish-shiny", "Искать блеск на дне"],
+]);
+const DUNGEON_EVENTS = [
+  {
+    minFloor: 1, title: "ГОБЛИН-ВОР", icon: "♟",
+    text: "Мелкий вор юркнул в щель, унося чей-то кошель. Можно настичь его или выкупить добычу.",
+    actions: ["goblin-chase", "goblin-bribe"],
+  },
+  {
+    minFloor: 1, title: "ЦЕННАЯ НАХОДКА", icon: "✧",
+    text: "Под плитой мерцает запечатанный ларец. Тихое открытие безопаснее, но печать обещает больше добычи.",
+    actions: ["find-careful", "find-break"],
+  },
+  {
+    minFloor: 2, title: "РАЗБОР ЗАВАЛОВ", icon: "⚒",
+    text: "Камни перекрыли старый проход. Можно расчистить путь или поискать лаз между обломками.",
+    actions: ["rubble-clear", "rubble-squeeze"],
+  },
+  {
+    minFloor: 2, title: "ОСКОЛКИ ПОД ВОДОЙ", icon: "♆",
+    text: "В затопленной нише видны сияющие осколки. Глубокое погружение опасно, зато у кромки тоже что-то блестит.",
+    actions: ["dive-deep", "dive-shallow"],
+  },
+  {
+    minFloor: 3, title: "РУДНАЯ ЖИЛА", icon: "⚒",
+    text: "В стене проступила богатая жила. Точный удар даст надёжную заготовку, сильный может расколоть больше руды.",
+    actions: ["ore-careful", "ore-force"],
+  },
+  {
+    minFloor: 4, title: "ПОДЗЕМНАЯ РЫБАЛКА", icon: "≋",
+    text: "В тёмном ручье мелькнула рыба. Сеть пригодится для еды, а у дна, похоже, лежит что-то блестящее.",
+    actions: ["fish-net", "fish-shiny"],
+  },
+];
 const FLOOR_THEMES = [
   {
     id: "well",
@@ -303,6 +349,7 @@ const ui = {
   eventKicker: $("event-kicker"),
   eventText: $("event-text"),
   eventTag: $("event-tag"),
+  eventActions: $("event-actions"),
   explore: $("explore-button"),
   potion: $("potion-button"),
   combatActions: $("combat-actions"),
@@ -392,6 +439,7 @@ function createState() {
       text: "Старый колодец давно молчит. Но сегодня из темноты донёсся зов.",
       icon: "☼",
       tag: "ЭТАЖ 1",
+      actions: [],
     },
     journal: [],
   };
@@ -610,7 +658,12 @@ function isValidRun(run) {
     typeof saved.event.kicker === "string" && saved.event.kicker.length <= 100 &&
     typeof saved.event.text === "string" && saved.event.text.length <= 300 &&
     typeof saved.event.icon === "string" && saved.event.icon.length <= 8 &&
-    typeof saved.event.tag === "string" && saved.event.tag.length <= 100;
+    typeof saved.event.tag === "string" && saved.event.tag.length <= 100 &&
+    (saved.event.actions === undefined || (
+      Array.isArray(saved.event.actions) && saved.event.actions.length <= 2 &&
+      saved.event.actions.every((action) => DUNGEON_EVENT_ACTIONS.has(action)) &&
+      new Set(saved.event.actions).size === saved.event.actions.length
+    ));
 }
 
 function isValidGear(item, expectedType) {
@@ -816,8 +869,8 @@ function advanceQuest(questId) {
   addJournal("Награда за задание", rewardMessage, definition.icon);
 }
 
-function setEvent(kicker, text, icon, tag) {
-  state.event = { kicker, text, icon, tag: tag || `ЭТАЖ ${state.floor}` };
+function setEvent(kicker, text, icon, tag, actions = []) {
+  state.event = { kicker, text, icon, tag: tag || `ЭТАЖ ${state.floor}`, actions };
   ui.eventKicker.textContent = state.event.kicker;
   ui.eventText.textContent = state.event.text;
   ui.eventIcon.textContent = state.event.icon;
@@ -1031,6 +1084,17 @@ function explore() {
     return;
   }
 
+  const eventChance = Math.min(0.28, 0.1 + (state.floor - 1) * 0.04);
+  if (Math.random() < eventChance) {
+    const availableEvents = DUNGEON_EVENTS.filter((event) => event.minFloor <= state.floor);
+    const dungeonEvent = availableEvents[randomInt(0, availableEvents.length - 1)];
+    setEvent(dungeonEvent.title, dungeonEvent.text, dungeonEvent.icon, "ВЫБЕРИ ДЕЙСТВИЕ", dungeonEvent.actions);
+    setCaption("Решение за тобой");
+    addJournal(dungeonEvent.title, dungeonEvent.text, dungeonEvent.icon);
+    render();
+    return;
+  }
+
   const roll = Math.random();
   if (roll < 0.37) {
     spawnEnemy(false);
@@ -1086,6 +1150,123 @@ function explore() {
   render();
 }
 
+function addEventEssence(amount) {
+  metaProgress.essence = Math.min(1000000000, metaProgress.essence + amount);
+  persistMetaProgress();
+}
+
+function damageFromEvent(minimum, maximum) {
+  const damage = Math.min(randomInt(minimum, maximum), state.hp - 1);
+  state.hp -= damage;
+  return damage;
+}
+
+function claimEventGear(type) {
+  if (state.inventory.length >= MAX_GEAR) {
+    const fallbackGold = 8 + state.floor;
+    state.gold += fallbackGold;
+    return ` Рюкзак полон — заготовку обменяли на ${fallbackGold} монет.`;
+  }
+  const gear = createGear(type);
+  state.inventory.push(gear);
+  advanceQuest("gear");
+  addJournal("Найдена экипировка", `${gear.name}: +${gear.bonus} ${type === "weapon" ? "к силе" : "к защите"}.`, type === "weapon" ? "⚔" : "⬡");
+  return ` Найдено: ${gear.name} (+${gear.bonus} ${type === "weapon" ? "к силе" : "к защите"}), предмет в рюкзаке.`;
+}
+
+function finishDungeonEvent(kicker, text, icon, journalTitle, sound = "loot") {
+  setEvent(kicker, text, icon);
+  addJournal(journalTitle, text, icon);
+  setCaption("Зал снова затих");
+  playSound(sound);
+  render();
+}
+
+function resolveDungeonEvent(action) {
+  if (
+    !state.started || state.gameOver || state.enemy || state.merchantAvailable ||
+    !state.event.actions?.includes(action) ||
+    (action === "goblin-bribe" && state.gold < 3)
+  ) return;
+  state.event.actions = [];
+
+  if (action === "goblin-chase") {
+    const scale = 1 + (state.floor - 1) * 0.12;
+    spawnEnemy(false, false, {
+      name: "Гоблин-вор", icon: "♟", skin: "stone",
+      hp: Math.round((13 + state.floor) * scale),
+      damage: Math.ceil((4 + Math.floor(state.floor / 3)) * scale),
+      xp: 10 + state.floor, gold: 9 + state.floor,
+    });
+    return;
+  }
+  if (action === "goblin-bribe") {
+    state.gold -= 3;
+    state.gold += 8 + state.floor;
+    finishDungeonEvent("ВОЗВРАЩЁННЫЙ КОШЕЛЬ", `Ты отдал 3 монеты и забрал кошель с ${8 + state.floor} монетами.`, "♟", "Сделка с гоблином");
+  } else if (action === "find-careful") {
+    const gold = 5 + state.floor;
+    state.gold += gold;
+    const potion = state.potions < getPotionLimit() && Math.random() < 0.35;
+    if (potion) state.potions += 1;
+    finishDungeonEvent("ЛАРЕЦ ОТКРЫТ", `Внутри ${gold} монет${potion ? " и зелье" : ""}; печать удалось не повредить.`, "✧", "Ценная находка");
+  } else if (action === "find-break") {
+    const damage = damageFromEvent(4, 7);
+    const gold = 12 + state.floor;
+    state.gold += gold;
+    const gear = claimEventGear(randomInt(0, 1) ? "weapon" : "armor");
+    finishDungeonEvent("ПЕЧАТЬ РАЗБИТА", `Осколки задели тебя на ${damage} здоровья. В ларце ${gold} монет.${gear}`, "✧", "Разбитая печать");
+  } else if (action === "rubble-clear") {
+    const damage = damageFromEvent(3, 6);
+    const gold = 4 + state.floor;
+    state.gold += gold;
+    const gear = claimEventGear("armor");
+    finishDungeonEvent("ПРОХОД РАСЧИЩЕН", `Завал поддался, но камни отняли ${damage} здоровья. За ними было ${gold} монет.${gear}`, "⚒", "Разобранный завал");
+  } else if (action === "rubble-squeeze") {
+    const gold = 3 + state.floor;
+    state.gold += gold;
+    finishDungeonEvent("ЛАЗ НАЙДЕН", `Ты протиснулся между камнями и подобрал ${gold} монет, не рискуя здоровьем.`, "⌕", "Лаз между камнями");
+  } else if (action === "dive-deep") {
+    const damage = damageFromEvent(4, 8);
+    const gold = 4 + state.floor;
+    state.gold += gold;
+    addEventEssence(1);
+    finishDungeonEvent("ОСКОЛОК ИЗ ГЛУБИНЫ", `Ты нырнул за сияющим осколком, потерял ${damage} здоровья и нашёл ${gold} монет. Лагерь получил 1 осколок.`, "♆", "Погружение за осколком");
+  } else if (action === "dive-shallow") {
+    const gold = 4 + state.floor;
+    state.gold += gold;
+    finishDungeonEvent("НАХОДКА У БЕРЕГА", `У самой кромки воды ты собрал ${gold} монет и сохранил силы.`, "♆", "Находка у берега");
+  } else if (action === "ore-careful") {
+    const gold = 4 + state.floor;
+    state.gold += gold;
+    state.attack += 1;
+    finishDungeonEvent("РУДНАЯ ЗАГОТОВКА", `Ты аккуратно добыл ${gold} монет ценного металла. Сила удара выросла на 1.`, "⚒", "Добыта руда");
+  } else if (action === "ore-force") {
+    const damage = damageFromEvent(4, 8);
+    const gold = 14 + state.floor;
+    state.gold += gold;
+    finishDungeonEvent("БОГАТАЯ ЖИЛА", `Сильный удар расколол жилу: ты получил ${gold} монет, но потерял ${damage} здоровья.`, "⚒", "Богатая рудная жила");
+  } else if (action === "fish-net") {
+    if (state.hp < state.maxHp) {
+      const healing = Math.min(randomInt(8, 13), state.maxHp - state.hp);
+      state.hp += healing;
+      finishDungeonEvent("УЛОВ", `В сети оказалась светлая рыба. Она восстановила ${healing} здоровья.`, "≋", "Подземный улов", "heal");
+    } else if (state.potions < getPotionLimit()) {
+      state.potions += 1;
+      finishDungeonEvent("УЛОВ", "В сети оказалась целебная рыба; ты приготовил из неё зелье.", "≋", "Подземный улов", "heal");
+    } else {
+      const gold = 6 + state.floor;
+      state.gold += gold;
+      finishDungeonEvent("УЛОВ", `Рыбу обменяли на ${gold} монет — запас зелий уже полон.`, "≋", "Подземный улов");
+    }
+  } else if (action === "fish-shiny") {
+    const gold = 8 + state.floor;
+    state.gold += gold;
+    addEventEssence(1);
+    finishDungeonEvent("БЛЕСК НА ДНЕ", `Среди камней нашлись жемчужина и ${gold} монет. Её сияние укрепило лагерь на 1 осколок.`, "✧", "Жемчужина из ручья");
+  }
+}
+
 function revealSecret() {
   const secret = SECRET_LORE.find((item) => item.id === getFloorTheme().id);
   if (!secret) return;
@@ -1112,11 +1293,11 @@ function revealSecret() {
   playSound("rune");
 }
 
-function spawnEnemy(isBoss, isElite = false) {
+function spawnEnemy(isBoss, isElite = false, eventEnemy = null) {
   const theme = getFloorTheme();
   const roomEnemies = getRoomEnemies();
   const cycle = Math.floor((state.floor - 1) / FLOOR_THEMES.length);
-  const base = isBoss ? {
+  const base = eventEnemy || (isBoss ? {
     name: theme.guardian,
     icon: theme.guardianIcon,
     skin: "guardian",
@@ -1127,7 +1308,7 @@ function spawnEnemy(isBoss, isElite = false) {
     boss: true,
   } : isElite
     ? { ...ELITE_TYPES.find((enemy) => enemy.theme === theme.id), elite: true }
-    : roomEnemies[randomInt(0, roomEnemies.length - 1)];
+    : roomEnemies[randomInt(0, roomEnemies.length - 1)]);
   const scale = 1 + (state.floor - 1) * 0.12;
   state.enemy = {
     name: base.name,
@@ -1690,6 +1871,18 @@ function render() {
   ui.eventText.textContent = state.event.text;
   ui.eventIcon.textContent = state.event.icon;
   ui.eventTag.textContent = state.event.tag;
+  const eventActions = state.event.actions || [];
+  ui.eventActions.replaceChildren();
+  for (const action of eventActions) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "action-button";
+    button.dataset.eventAction = action;
+    button.textContent = DUNGEON_EVENT_ACTIONS.get(action);
+    button.disabled = action === "goblin-bribe" && state.gold < 3;
+    ui.eventActions.append(button);
+  }
+  ui.eventActions.hidden = eventActions.length === 0;
   ui.scene.classList.toggle("in-combat", Boolean(state.enemy));
   ui.scene.classList.toggle("has-merchant", state.merchantAvailable);
   for (const floorTheme of FLOOR_THEMES) {
@@ -1711,14 +1904,14 @@ function render() {
     characterClass ? characterClass.name : "Искатель",
     "scene-art",
   ));
-  ui.explore.disabled = !state.started || Boolean(state.enemy) || state.gameOver || state.merchantAvailable || state.waitingToDescend;
+  ui.explore.disabled = !state.started || Boolean(state.enemy) || state.gameOver || state.merchantAvailable || state.waitingToDescend || eventActions.length > 0;
   ui.potion.disabled = !state.started || state.potions === 0 || state.hp >= state.maxHp || state.gameOver;
   $("combat-potion-button").disabled = state.potions === 0 || state.hp >= state.maxHp || state.gameOver;
   ui.combatPotionCount.textContent = String(state.potions);
   ui.explore.textContent = state.room === 0 ? "Войти в первый зал" : "Исследовать зал";
   ui.explore.replaceChildren(Object.assign(document.createElement("span"), { textContent: "⌕" }), document.createTextNode(` ${state.room === 0 ? "Войти в первый зал" : "Исследовать зал"}`));
-  ui.explore.hidden = !state.started || Boolean(state.enemy) || state.gameOver || state.merchantAvailable || state.waitingToDescend;
-  ui.potion.hidden = !state.started || Boolean(state.enemy) || state.gameOver || state.merchantAvailable || state.waitingToDescend;
+  ui.explore.hidden = !state.started || Boolean(state.enemy) || state.gameOver || state.merchantAvailable || state.waitingToDescend || eventActions.length > 0;
+  ui.potion.hidden = !state.started || Boolean(state.enemy) || state.gameOver || state.merchantAvailable || state.waitingToDescend || eventActions.length > 0;
   ui.combatActions.hidden = !state.enemy || state.gameOver;
   ui.merchantActions.hidden = !state.merchantAvailable || state.gameOver;
   ui.buyPotion.disabled = state.potions >= getPotionLimit() || state.gold < MERCHANT_PRICES.potion;
@@ -1847,6 +2040,10 @@ ui.subclassChoices.addEventListener("click", (event) => {
   if (option) chooseSubclass(option.dataset.classNodeId);
 });
 ui.explore.addEventListener("click", explore);
+ui.eventActions.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-event-action]");
+  if (button) resolveDungeonEvent(button.dataset.eventAction);
+});
 ui.abilityButton.addEventListener("click", useClassAbility);
 ui.potion.addEventListener("click", () => drinkPotion(false));
 $("attack-button").addEventListener("click", () => attackEnemy());

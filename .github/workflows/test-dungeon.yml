@@ -10,15 +10,6 @@ on:
       - "styles.css"
       - "tests/*.html"
       - ".github/workflows/test-dungeon.yml"
-  push:
-    paths:
-      - "dungeon-model.js"
-      - "game.js"
-      - "pvp-client.js"
-      - "index.html"
-      - "styles.css"
-      - "tests/*.html"
-      - ".github/workflows/test-dungeon.yml"
   workflow_dispatch:
 
 permissions:

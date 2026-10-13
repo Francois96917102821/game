@@ -2321,7 +2321,7 @@ function getDungeonFighter() {
     accuracy: 0.9, concentration: state.stance === "offensive" ? 0.5 : 0.35,
     agility: Math.min(1, getDodgeChance() * 2), evasion: Math.min(0.5, getDodgeChance()),
     potions: state.potions, focus: state.focus, offhand: state.offhand,
-    skillType: ability.type, skillDamage: Math.ceil(attack * 0.8),
+    skillType: ability.type, skillDamage: ability.type === "guard" ? Math.ceil(state.maxHp * 0.25) : Math.ceil(attack * 0.8),
     skillCooldown: state.abilityCooldown, skillCooldownMax: 3,
     revivalChance: getClassStat("extraLife") ? 1 : 0, revivalUsed: state.extraLifeUsed,
     criticalChance: getClassStat("criticalChance"), executeChance: getClassStat("executeChance"),
@@ -2454,7 +2454,12 @@ function applyPvpBattle(battle, userId) {
   state.focus = own.focus;
   state.offhand = own.offhand;
   state.combatProgress = window.DungeonModel.createFighter({
-    ...own, maxHp: own.max_hp ?? own.maxHp,
+    ...(own.fighter || own), maxHp: own.max_hp ?? own.maxHp,
+    cooldowns: {
+      shield: own.shield_cooldown ?? own.cooldowns?.shield ?? 0,
+      torch: own.torch_cooldown ?? own.cooldowns?.torch ?? 0,
+      staff: own.staff_cooldown ?? own.cooldowns?.staff ?? 0,
+    },
   });
   state.extraLifeUsed = Boolean(own.revivalUsed);
   if (battle.status === "finished") {
@@ -2791,7 +2796,7 @@ function createGear(type) {
 }
 
 function equipGear(gearId) {
-  if (!state.started || state.gameOver || state.enemy) return;
+  if (!state.started || state.gameOver || state.enemy || dungeonDuelLocked()) return;
   const index = state.inventory.findIndex((item) => item.id === gearId);
   if (index < 0) return;
   const gear = state.inventory[index];
@@ -2997,7 +3002,7 @@ function renderEquipment() {
     equip.type = "button";
     equip.dataset.gearId = gear.id;
     equip.textContent = "Надеть";
-    equip.disabled = Boolean(state.enemy) || state.gameOver;
+    equip.disabled = Boolean(state.enemy) || state.gameOver || dungeonDuelLocked();
     item.append(icon, details, equip);
     ui.inventory.append(item);
   }
@@ -4847,7 +4852,7 @@ function render() {
   $("gang-form").querySelector('button[type="submit"]').disabled = !canRequestDungeonDuel();
   $("dungeon-kit").hidden = !state.started || state.gameOver || Boolean(state.liveDuelId);
   $("offhand-select").value = state.offhand || "shield";
-  $("offhand-select").disabled = Boolean(state.enemy && state.extraActionUsed) || inGroupBattle;
+  $("offhand-select").disabled = Boolean(state.enemy && state.extraActionUsed) || inGroupBattle || window.WellPvp?.isBusy();
   const cooldown = state.combatProgress?.cooldowns?.[state.offhand] || 0;
   $("offhand-button").disabled = state.extraActionUsed || cooldown > 0;
   $("offhand-button").textContent = `${{ shield: "Щит", torch: "Факел", staff: "Посох" }[state.offhand]} · ${cooldown ? `откат ${cooldown}` : "готово"}`;

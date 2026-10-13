@@ -184,10 +184,10 @@
       });
       check("PvE order is player skill, enemy skill, enemy hit, player hit, periodic", () => {
         const actor = fighter({ skillType: "blast", skillDamage: 3, bleeding: 1 });
-        const enemy = fighter({ skillType: "shadow", skillDamage: 4, infection: 1 });
+        const enemy = fighter({ skillType: "blast", skillDamage: 4, infection: 1 });
         const before = JSON.stringify([actor, enemy]);
         const turn = model.pveRound(actor, enemy, sequence(0, 0, 0, 0));
-        equal(turn.log, ["actor: blast skill 3", "target: shadow skill 4", "target: hit 10",
+        equal(turn.log, ["actor: blast skill 3", "target: blast skill 4", "target: hit 10",
           "actor: hit 10", "actor: periodic 1", "target: periodic 2"], "exact round order");
         assert(turn.actor.hp === 85 && turn.target.hp === 85, "each fighter takes its own attached DOT");
         assert(JSON.stringify([actor, enemy]) === before, "PvE immutable");
@@ -215,8 +215,10 @@
         assert(turn.log.includes("target: shadow evaded") && turn.target.hp === 97, "shadow damage and evade retained");
         const saved = fighter({ shadowEvade: true });
         assert(model.isValidFighter(saved), "evade flag survives persistence");
-        const blocked = model.pvpTurn(fighter(), saved, "attack", sequence());
-        assert(blocked.target.hp === 100 && !blocked.target.shadowEvade, "one evade consumed without independent dodge RNG");
+        const blocked = model.pveRound(saved, fighter(), sequence(0.99));
+        assert(blocked.actor.hp === 100 && !blocked.actor.shadowEvade, "one evade consumed without independent dodge RNG");
+        const pvp = model.pvpTurn(fighter(), saved, "attack", sequence(0));
+        assert(pvp.target.hp === 90, "client shadow evade flag cannot affect PvP");
       });
       check("PvE revival uses full player chance; regeneration cannot revive", () => {
         const turn = model.pveRound(fighter({ hp: 1, revivalChance: 0.8, regeneration: 20 }),

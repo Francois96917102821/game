@@ -41,8 +41,8 @@
       live = {
         id, status: "active", current_user_id: own, turn: 1,
         deadline_at: new Date(Date.now() + 40000).toISOString(),
-        players: [{ ...p, user_id: own, nickname: "Тест", cooldowns: { shield: 0, torch: 0, staff: 0 } },
-          { ...p, user_id: other, nickname: "Напарник", cooldowns: { shield: 0, torch: 0, staff: 0 } }],
+        players: [{ ...p, user_id: own, nickname: "Тест", shield_cooldown: 0, torch_cooldown: 0, staff_cooldown: 0 },
+          { ...p, user_id: other, nickname: "Напарник", shield_cooldown: 0, torch_cooldown: 0, staff_cooldown: 0 }],
         log: [],
       };
       return JSON.parse(JSON.stringify(live));
@@ -87,6 +87,10 @@
   assert(requests.filter((entry) => entry.rpc === "pvp_action").length === 2, "retry not sent");
   assert(doc.querySelector('[data-pvp-action="attack"]').disabled, "opponent turn lets us act");
   log("lost committed reply reuses UUID without duplicate action and enforces turn UI");
+  live.players[0].shield_cooldown = 2;
+  await app.WellPvp.refresh();
+  assert(app.getCloudSaveSnapshot().run.state.combatProgress.cooldowns.shield === 2, "server cooldown keys not mapped");
+  log("server scalar cooldown fields map to saved fighter state");
   const after = app.getCloudSaveSnapshot();
   assert(after.run.state.gold === before.run.state.gold && after.meta.essence === before.meta.essence &&
     after.meta.orderReputation === before.meta.orderReputation, "PvP minted rewards");

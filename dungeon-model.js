@@ -143,8 +143,8 @@
     if (fighter.turns === 1 && fighter.firstTurnBarrier) fighter.barrier = positive(fighter.barrier) + fighter.firstTurnBarrier;
   }
 
-  function strike(actor, target, rng, log, label, multiplier = 1) {
-    if (target.shadowEvade) {
+  function strike(actor, target, rng, log, label, multiplier = 1, allowShadow = false) {
+    if (allowShadow && target.shadowEvade) {
       target.shadowEvade = false;
       log.push(`${label}: shadow evaded`);
       return;
@@ -292,9 +292,9 @@
       return result(actor, target, log, rng, false);
     }
     autoSkill(target, actor, rng, log, "target");
-    strike(target, actor, rng, log, "target");
+    strike(target, actor, rng, log, "target", 1, true);
     // Both hits belong to this round even if the enemy's strike was fatal.
-    strike(actor, target, rng, log, "actor");
+    strike(actor, target, rng, log, "actor", 1, true);
     periodic(actor, target, log, "actor");
     periodic(target, actor, log, "target");
     // Encounter modifiers are temporary, never compounded into the saved player.

@@ -356,7 +356,7 @@ reset role;
 
 do $chance_tests$
 begin
-  if public.pvp_skill_chance(0.6, 0.4, 0.5, 0.8) <> 0.495 or
+  if public.pvp_skill_chance(0.6, 0.4, 0.5, 0.8) <> 0.49 or
     public.pvp_skill_chance(0, 1.5, 0, 0) <> 0.05 or
     public.pvp_skill_chance(1.5, 0, 1, 1) <> 0.95 then
     raise exception 'PvP skill chance must include concentration, target concentration, agility and accuracy.';

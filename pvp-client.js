@@ -32,6 +32,9 @@
       evasion: fighter.evasion, regeneration: fighter.regeneration, bleeding: fighter.bleeding,
       infection: fighter.infection, potions: fighter.potions, focus: fighter.focus,
       revivalChance: fighter.revivalUsed ? 0 : fighter.revivalChance, offhand: fighter.offhand,
+      criticalChance: fighter.criticalChance, executeChance: fighter.executeChance,
+      lifesteal: fighter.lifesteal, skillType: fighter.skillType,
+      skillDamage: fighter.skillDamage, skillCooldownMax: fighter.skillCooldownMax,
     };
   }
 
@@ -78,7 +81,7 @@
     }));
     for (const button of panel.querySelectorAll("[data-pvp-action]")) {
       const action = button.dataset.pvpAction;
-      const cooldown = own?.cooldowns?.[action] || 0;
+      const cooldown = own?.[`${action}_cooldown`] ?? own?.cooldowns?.[action] ?? 0;
       button.disabled = !canAct || (
         ["shield", "torch", "staff"].includes(action) && (own?.offhand !== action || cooldown > 1)
       ) || (action === "heavy" && own?.focus < 2) ||

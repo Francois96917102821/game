@@ -1261,7 +1261,7 @@ begin
         '^soul-' || coalesce(p_gear ->> 'soul', '') ||
         '-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
       ) or
-      coalesce(p_gear ->> 'name', '') <> case p_gear ->> 'soul'
+      coalesce(p_gear ->> 'name', '') <> (case p_gear ->> 'soul'
         when 'time' then 'Душа времени'
         when 'fire' then 'Душа огня'
         when 'death' then 'Душа смерти'
@@ -1270,7 +1270,7 @@ begin
         when 'cursed' then 'Проклятая душа'
         when 'fury' then 'Душа ярости'
         else ''
-      end then
+      end) then
       raise exception 'Можно отправить только корректную душу.';
     end if;
     v_gear := jsonb_build_object(

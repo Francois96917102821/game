@@ -335,17 +335,25 @@ begin
     raise exception 'Mailbox data must be inaccessible directly and mailbox RPCs must be security definer';
   end if;
 
+  reset role;
+  update public.player_group_members
+  set level = 250, heartbeat_at = now()
+  where user_id in (
+    '11111111-1111-4111-8111-111111111111',
+    '22222222-2222-4222-8222-222222222222'
+  );
+  set local role authenticated;
   perform set_config('request.jwt.claim.sub', '11111111-1111-4111-8111-111111111111', true);
   insert into public.game_saves (user_id, save_data)
   values (
     '11111111-1111-4111-8111-111111111111',
-    '{"version":1,"bestFloor":0,"run":null,"meta":{"homestead":{"homes":[{"id":"owner-mansion","tier":"mansion"}]}}}'::jsonb
+    '{"version":1,"bestFloor":0,"run":null,"meta":{"tavern":{"characterLevel":250},"homestead":{"homes":[{"id":"owner-mansion","tier":"mansion"}]}}}'::jsonb
   ) on conflict (user_id) do update set save_data = excluded.save_data;
   perform set_config('request.jwt.claim.sub', '22222222-2222-4222-8222-222222222222', true);
   insert into public.game_saves (user_id, save_data)
   values (
     '22222222-2222-4222-8222-222222222222',
-    '{"version":1,"bestFloor":0,"run":null,"meta":{"homestead":{"homes":[{"id":"partner-mansion","tier":"mansion"}]}}}'::jsonb
+    '{"version":1,"bestFloor":0,"run":null,"meta":{"tavern":{"characterLevel":250},"homestead":{"homes":[{"id":"partner-mansion","tier":"mansion"}]}}}'::jsonb
   ) on conflict (user_id) do update set save_data = excluded.save_data;
 
   perform set_config('request.jwt.claim.sub', '11111111-1111-4111-8111-111111111111', true);
@@ -431,6 +439,141 @@ begin
   end if;
   if public.player_mailbox_list() -> 0 ->> 'status' <> 'delivered' then
     raise exception 'Acknowledged gear must remain durably recorded as delivered';
+  end if;
+
+  v_message := null;
+  begin
+    perform public.player_mailbox_send(
+      '22222222-2222-4222-8222-222222222222',
+      '10101010-1010-4010-8010-101010101010',
+      '{"id":"soul-time-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","type":"soul","soul":"time","name":"Душа огня","amount":1}'::jsonb
+    );
+  exception when others then
+    get stacked diagnostics v_message = message_text;
+  end;
+  if v_message is null then
+    raise exception 'Soul escrow must reject a soul/name mismatch';
+  end if;
+
+  reset role;
+  update public.game_saves
+  set save_data = jsonb_set(save_data, '{meta,tavern,characterLevel}', '249'::jsonb)
+  where user_id = '22222222-2222-4222-8222-222222222222';
+  set local role authenticated;
+  perform set_config('request.jwt.claim.sub', '11111111-1111-4111-8111-111111111111', true);
+  v_message := null;
+  begin
+    perform public.player_mailbox_send(
+      '22222222-2222-4222-8222-222222222222',
+      '20202020-2020-4020-8020-202020202020',
+      '{"id":"soul-time-bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","type":"soul","soul":"time","name":"Душа времени","amount":1}'::jsonb
+    );
+  exception when others then
+    get stacked diagnostics v_message = message_text;
+  end;
+  if v_message is null then
+    raise exception 'Soul sending must reject a recipient whose cloud save is below level 250';
+  end if;
+  reset role;
+  update public.game_saves
+  set save_data = jsonb_set(save_data, '{meta,tavern,characterLevel}', '250'::jsonb)
+  where user_id = '22222222-2222-4222-8222-222222222222';
+  update public.game_saves
+  set save_data = jsonb_set(save_data, '{meta,tavern,characterLevel}', '249'::jsonb)
+  where user_id = '11111111-1111-4111-8111-111111111111';
+  set local role authenticated;
+  perform set_config('request.jwt.claim.sub', '11111111-1111-4111-8111-111111111111', true);
+  v_message := null;
+  begin
+    perform public.player_mailbox_send(
+      '22222222-2222-4222-8222-222222222222',
+      '30303030-3030-4030-8030-303030303030',
+      '{"id":"soul-time-cccccccc-cccc-4ccc-8ccc-cccccccccccc","type":"soul","soul":"time","name":"Душа времени","amount":1}'::jsonb
+    );
+  exception when others then
+    get stacked diagnostics v_message = message_text;
+  end;
+  if v_message is null then
+    raise exception 'Soul sending must reject a sender whose cloud save is below level 250';
+  end if;
+  reset role;
+  update public.game_saves
+  set save_data = jsonb_set(save_data, '{meta,tavern,characterLevel}', '250'::jsonb)
+  where user_id = '11111111-1111-4111-8111-111111111111';
+  set local role authenticated;
+  perform set_config('request.jwt.claim.sub', '22222222-2222-4222-8222-222222222222', true);
+  perform public.heartbeat_player_group('Partner', 249, true);
+  perform set_config('request.jwt.claim.sub', '11111111-1111-4111-8111-111111111111', true);
+  v_message := null;
+  begin
+    perform public.player_mailbox_send(
+      '22222222-2222-4222-8222-222222222222',
+      '40404040-4040-4040-8040-404040404040',
+      '{"id":"soul-time-dddddddd-dddd-4ddd-8ddd-dddddddddddd","type":"soul","soul":"time","name":"Душа времени","amount":1}'::jsonb
+    );
+  exception when others then
+    get stacked diagnostics v_message = message_text;
+  end;
+  if v_message is null then
+    raise exception 'Soul sending must reject a partner heartbeat below level 250';
+  end if;
+  perform set_config('request.jwt.claim.sub', '22222222-2222-4222-8222-222222222222', true);
+  perform public.heartbeat_player_group('Partner', 250, true);
+  perform set_config('request.jwt.claim.sub', '11111111-1111-4111-8111-111111111111', true);
+  v_mail := public.player_mailbox_send(
+    '22222222-2222-4222-8222-222222222222',
+    'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+    '{"id":"soul-time-eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee","type":"soul","soul":"time","name":"Душа времени","amount":1}'::jsonb
+  );
+  v_mail_id := (v_mail ->> 'id')::uuid;
+  if v_mail ->> 'status' <> 'sender_pending' or public.player_mailbox_send(
+    '22222222-2222-4222-8222-222222222222',
+    'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+    '{"id":"soul-time-eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee","type":"soul","soul":"time","name":"Душа времени","amount":1}'::jsonb
+  ) ->> 'id' <> v_mail_id::text then
+    raise exception 'Soul escrow should accept one canonical soul and make send retries idempotent';
+  end if;
+  perform public.player_mailbox_sender_removed(v_mail_id);
+  perform set_config('request.jwt.claim.sub', '22222222-2222-4222-8222-222222222222', true);
+  select mail.value into v_mail
+  from jsonb_array_elements(public.player_mailbox_list()) as mail(value)
+  where mail.value ->> 'id' = v_mail_id::text;
+  if v_mail is null or v_mail ->> 'id' <> v_mail_id::text or v_mail -> 'gear' ->> 'type' <> 'soul' then
+    raise exception 'Only a ready soul escrow should be visible to its recipient';
+  end if;
+  reset role;
+  update public.game_saves
+  set save_data = jsonb_set(save_data, '{meta,tavern,characterLevel}', '249'::jsonb)
+  where user_id = '22222222-2222-4222-8222-222222222222';
+  set local role authenticated;
+  perform set_config('request.jwt.claim.sub', '22222222-2222-4222-8222-222222222222', true);
+  v_message := null;
+  begin
+    perform public.player_mailbox_claim(v_mail_id);
+  exception when others then
+    get stacked diagnostics v_message = message_text;
+  end;
+  if v_message is null then
+    raise exception 'Soul claim must reject a recipient whose cloud save is below level 250';
+  end if;
+  reset role;
+  update public.game_saves
+  set save_data = jsonb_set(save_data, '{meta,tavern,characterLevel}', '250'::jsonb)
+  where user_id = '22222222-2222-4222-8222-222222222222';
+  set local role authenticated;
+  perform set_config('request.jwt.claim.sub', '22222222-2222-4222-8222-222222222222', true);
+  v_mail := public.player_mailbox_claim(v_mail_id);
+  if v_mail ->> 'status' <> 'claimed' or v_mail -> 'gear' ->> 'soul' <> 'time' or
+    public.player_mailbox_claim(v_mail_id) <> v_mail then
+    raise exception 'Level-eligible soul claim should be retry-safe';
+  end if;
+  v_ack := public.player_mailbox_ack_claim(v_mail_id);
+  select mail.value into v_mail
+  from jsonb_array_elements(public.player_mailbox_list()) as mail(value)
+  where mail.value ->> 'id' = v_mail_id::text;
+  if not coalesce((v_ack ->> 'acknowledged')::boolean, false) or
+    v_mail is null or v_mail ->> 'status' <> 'delivered' then
+    raise exception 'Claimed soul should remain durably delivered after acknowledgement';
   end if;
 
   perform set_config('request.jwt.claim.sub', '33333333-3333-4333-8333-333333333333', true);

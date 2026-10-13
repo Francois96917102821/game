@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8">
+    <title>Тесты душ и R-ремесла</title>
+  </head>
+  <body>
+    <h1 id="result">RUNNING</h1>
+    <pre id="log"></pre>
+    <script src="../tavern-model.js"></script>
+    <script src="../expeditions-model.js"></script>
+    <script src="../homestead-model.js"></script>
+    <script src="../soul-crafting-model.js"></script>
+    <script>
+      "use strict";
+
+      const output = document.getElementById("log");
+      const failures = [];
+      const model = window.WellSoulCraftingModel;
+      function assert(condition, message) {
+        if (!condition) throw new Error(message);
+      }
+      function check(name, action) {
+        try {
+          action();
+          output.textContent += `PASS ${name}\n`;
+        } catch (error) {
+          failures.push(`${name}: ${error.message}`);
+          output.textContent += `FAIL ${name}: ${error.message}\n`;
+        }
+      }
+
+      check("legacy souls normalize without invalidating old saves", () => {
+        const migrated = model.withDefaults(null);
+        assert(model.isValidState(migrated), "empty legacy state receives valid balances and receipts");
+        const oldBalances = model.withDefaults({ counts: { time: 3, fire: -1, invalid: 12 } });
+        assert(model.isValidState(oldBalances) && oldBalances.balances.time === 3 &&
+          oldBalances.balances.fire === 0, "only safe known nonnegative legacy counts migrate");
+      });
+
+      check("drop, craft, and transfer thresholds are exact", () => {
+        assert(!model.grant(model.createState(), 0, "time", "drop-level-0", "combat").ok,
+          "level 0 cannot receive soul drops");
+        const dropped = model.grant(model.createState(), 1, "time", "drop-level-1", "combat");
+        assert(dropped.ok && dropped.state.balances.time === 1, "level 1 may receive souls");
+        assert(!model.craft(dropped.state, 149, "time-weapon", "gear-1", "craft-low").ok,
+          "level 149 cannot craft");
+        assert(!model.transferOut(dropped.state, 250, 249, "time", "transfer-low").ok,
+          "both transfer partners must meet level 250");
+        assert(!model.receive(model.createState(), 249, "time", "receive-low").ok,
+          "level 249 cannot receive souls");
+        assert(model.receive(model.createState(), 250, "time", "receive-level-250").ok,
+          "level 250 may receive souls");
+      });
+
+      check("all seven souls expose the requested weapon, armor, and ring costs", () => {
+        const expected = {
+          time: [8, 6, 7], fire: [7, 7, 10], death: [9, 5, 5], blood: [6, 9, 8],
+          serpent: [10, 10, 9], cursed: [5, 8, 8], fury: [5, 5, 6],
+        };
+        for (const [soulId, costs] of Object.entries(expected)) {
+          const soul = model.SOULS[soulId];
+          assert([soul.weapon, soul.armor, soul.ring].join(",") === costs.join(","),
+            `${soulId} costs must match the feature recipe`);
+        }
+      });
+
+      check("crafting consumes exact costs once and emits valid R gear", () => {
+        let state = model.createState();
+        for (const soulId of Object.keys(model.SOULS)) {
+          const needed = Object.values(model.RECIPES)
+            .filter((recipe) => recipe.soulId === soulId)
+            .reduce((total, recipe) => total + recipe.amount, 0);
+          for (let index = 0; index < needed; index += 1) {
+            const grant = model.grant(state, 150, soulId, `stock-${soulId}-${index}`, "test");
+            assert(grant.ok, `${soulId} stock setup`);
+            state = grant.state;
+          }
+        }
+        let gearSequence = 0;
+        const craftTime = Date.now() + 1000;
+        for (const recipe of Object.values(model.RECIPES)) {
+          const before = state.balances[recipe.soulId];
+          gearSequence += 1;
+          const crafted = model.craft(
+            state, 150, recipe.id, `gear-${gearSequence}`, `craft-${recipe.id}`, craftTime,
+          );
+          assert(crafted.ok && crafted.gear.name === recipe.name &&
+            crafted.gear.bonus === recipe.bonus && crafted.gear.type === recipe.type,
+          `${recipe.id} returns its configured gear`);
+          assert(crafted.state.balances[recipe.soulId] === before - recipe.amount &&
+            model.isValidState(crafted.state), `${recipe.id} charges the exact soul cost`);
+          const retry = model.craft(
+            crafted.state, 150, recipe.id, crafted.gear.id, `craft-${recipe.id}`, craftTime,
+          );
+          assert(retry.ok && retry.duplicate && retry.state.balances[recipe.soulId] === before - recipe.amount,
+            `${recipe.id} receipt retry cannot charge twice`);
+          state = crafted.state;
+        }
+      });
+
+      check("insufficient soul stock does not craft", () => {
+        const state = model.createState();
+        const result = model.craft(state, 150, "fire-armor", "gear-1", "not-enough");
+        assert(!result.ok && model.isValidState(state) && state.balances.fire === 0,
+          "failed recipe leaves the balance unchanged");
+      });
+
+      check("saved receipts cannot change recipe costs or drop quantities", () => {
+        let stock = model.createState();
+        for (let index = 0; index < 8; index += 1) {
+          stock = model.grant(stock, 150, "time", `receipt-stock-${index}`, "test").state;
+        }
+        const crafted = model.craft(
+          stock, 150, "time-weapon", "gear-1", "tamper-craft", Date.now() + 1000,
+        ).state;
+        const alteredCraft = JSON.parse(JSON.stringify(crafted));
+        alteredCraft.transactions.find((transaction) => transaction.kind === "craft").changes.time = -1;
+        alteredCraft.balances.time += 7;
+        assert(!model.isValidState(alteredCraft), "craft receipt must match the exact recipe and gear output");
+        const alteredDrop = JSON.parse(JSON.stringify(stock));
+        alteredDrop.transactions[0].changes.time = 2;
+        alteredDrop.balances.time = 9;
+        assert(!model.isValidState(alteredDrop), "drop receipt cannot mint more than one soul");
+      });
+
+      check("merges deduplicate retries and retain independent transactions", () => {
+        const empty = model.createState();
+        const duplicateA = model.grant(empty, 30, "time", "shared-drop", "combat", 1).state;
+        const duplicateB = model.grant(empty, 30, "time", "shared-drop", "combat", 1).state;
+        const independent = model.grant(empty, 30, "time", "other-drop", "combat", 2).state;
+        const merged = model.merge(model.merge(duplicateA, duplicateB), independent);
+        assert(model.isValidState(merged) && merged.balances.time === 2 &&
+          merged.transactions.length === 2, "same receipt merges once while unrelated receipt remains");
+        const spent = model.transferOut(duplicateA, 250, 250, "time", "send-once", 3).state;
+        const retried = model.merge(spent, duplicateA);
+        assert(model.isValidState(retried) && retried.balances.time === 0,
+          "a stale cloud copy cannot undo a receipt-based transfer debit");
+      });
+
+      async function testCraftingUiGateAndAtomicOutput() {
+        let souls = model.createState();
+        for (let index = 0; index < 8; index += 1) {
+          souls = model.grant(souls, 1, "time", `ui-stock-${index}`, "test").state;
+        }
+        const tavern = window.WellTavernModel.createState();
+        tavern.characterLevel = 149;
+        const meta = {
+          essence: 0,
+          upgrades: { vitality: 0, power: 0, supplies: 0 },
+          bossesDefeated: 0,
+          secretsFound: [],
+          groupInboxReceipts: [],
+          souls,
+          tavern,
+          harbor: window.WellExpeditionsModel.createState(),
+          homestead: window.WellHomesteadModel.createState(),
+        };
+        localStorage.setItem("well-of-whispers-camp-progress", JSON.stringify(meta));
+        const frame = document.createElement("iframe");
+        frame.title = "R-crafting UI test";
+        frame.src = "../index.html?soul-crafting-test=locked";
+        document.body.append(frame);
+        await new Promise((resolve, reject) => {
+          frame.addEventListener("load", resolve, { once: true });
+          frame.addEventListener("error", reject, { once: true });
+        });
+        let game = frame.contentWindow;
+        let doc = game.document;
+        doc.getElementById("profile-soul-crafting-button").click();
+        assert(doc.querySelector("#homestead-dialog").open, "profile shortcut opens soul crafting");
+        let craft = doc.querySelector('[data-homestead-action="craft-soul"][data-recipe-id="time-weapon"]');
+        assert(craft && craft.disabled, "the soul recipe is disabled below level 150");
+
+        const leveled = JSON.parse(game.localStorage.getItem("well-of-whispers-camp-progress"));
+        leveled.tavern.characterLevel = 150;
+        game.localStorage.setItem("well-of-whispers-camp-progress", JSON.stringify(leveled));
+        const reloaded = new Promise((resolve, reject) => {
+          frame.addEventListener("load", resolve, { once: true });
+          frame.addEventListener("error", reject, { once: true });
+        });
+        frame.src = "../index.html?soul-crafting-test=unlocked";
+        await reloaded;
+        game = frame.contentWindow;
+        doc = game.document;
+        game.confirm = () => true;
+        doc.getElementById("profile-soul-crafting-button").click();
+        craft = doc.querySelector('[data-homestead-action="craft-soul"][data-recipe-id="time-weapon"]');
+        assert(craft && !craft.disabled, "enough souls and level 150 enable the recipe");
+        craft.click();
+        const started = Date.now();
+        let saved;
+        do {
+          saved = JSON.parse(game.localStorage.getItem("well-of-whispers-camp-progress"));
+          if (saved.tavern.stash.some((gear) => gear.name === model.RECIPES["time-weapon"].name)) break;
+          await new Promise((resolve) => setTimeout(resolve, 30));
+        } while (Date.now() - started < 5000);
+        const gear = saved.tavern.stash.find((item) => item.name === model.RECIPES["time-weapon"].name);
+        assert(gear && gear.type === "weapon" && gear.bonus === 8 && saved.souls.balances.time === 0,
+          "one UI craft atomically stores gear and spends exactly eight souls");
+        const stale = game.createMetaProgress(Date.now() + 1000);
+        const merged = game.mergeMetaProgress(saved, stale);
+        assert(merged.tavern.stash.some((item) => item.name === gear.name) &&
+          merged.souls.balances.time === 0 && game.isValidMetaProgress(merged),
+        "a stale cross-device merge preserves crafted gear and its soul debit");
+        frame.remove();
+        output.textContent += "PASS UI level gate and atomic R-gear crafting\n";
+      }
+
+      testCraftingUiGateAndAtomicOutput().catch((error) => {
+        failures.push(`crafting UI: ${error.message}`);
+        output.textContent += `FAIL crafting UI: ${error.message}\n`;
+      }).finally(() => {
+        document.getElementById("result").dataset.result = failures.length ? "fail" : "pass";
+        document.getElementById("result").textContent = failures.length
+          ? `${failures.length} FAILURES`
+          : "PASS";
+      });
+    </script>
+  </body>
+</html>

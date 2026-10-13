@@ -213,14 +213,28 @@ create table if not exists public.player_mailbox_escrow (
   sender_id uuid not null references auth.users (id) on delete cascade,
   recipient_id uuid not null references auth.users (id) on delete cascade,
   sender_nickname text not null check (length(sender_nickname) between 1 and 24),
-  source_gear_id text not null check (source_gear_id ~ '^gear-[0-9]+$'),
+  source_gear_id text not null check (
+    source_gear_id ~ '^gear-[0-9]+$' or
+    source_gear_id ~ '^soul-(time|fire|death|blood|serpent|cursed|fury)-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+  ),
   gear jsonb not null check (
     jsonb_typeof(gear) = 'object' and
-    gear ?& array['id', 'type', 'name', 'bonus'] and
-    gear ->> 'id' ~ '^gear-[0-9]+$' and
-    gear ->> 'type' in ('weapon', 'armor') and
+    gear ?& array['id', 'type', 'name'] and
     length(gear ->> 'name') between 1 and 60 and
-    gear ->> 'bonus' ~ '^[1-9]$|^10$'
+    (
+      (
+        gear ->> 'id' ~ '^gear-[0-9]+$' and
+        gear ->> 'type' in ('weapon', 'armor') and
+        gear ? 'bonus' and
+        gear ->> 'bonus' ~ '^[1-9]$|^10$'
+      ) or (
+        gear ->> 'type' = 'soul' and
+        gear ?& array['soul', 'amount'] and
+        gear ->> 'soul' in ('time', 'fire', 'death', 'blood', 'serpent', 'cursed', 'fury') and
+        gear ->> 'amount' = '1' and
+        gear ->> 'id' ~ '^soul-(time|fire|death|blood|serpent|cursed|fury)-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+      )
+    )
   ),
   status text not null default 'sender_pending'
     check (status in ('sender_pending', 'ready', 'claimed', 'delivered')),
@@ -232,6 +246,36 @@ create table if not exists public.player_mailbox_escrow (
   unique (sender_id, source_gear_id),
   check (sender_id <> recipient_id)
 );
+
+alter table public.player_mailbox_escrow
+  drop constraint if exists player_mailbox_escrow_source_gear_id_check;
+alter table public.player_mailbox_escrow
+  add constraint player_mailbox_escrow_source_gear_id_check check (
+    source_gear_id ~ '^gear-[0-9]+$' or
+    source_gear_id ~ '^soul-(time|fire|death|blood|serpent|cursed|fury)-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+  );
+alter table public.player_mailbox_escrow
+  drop constraint if exists player_mailbox_escrow_gear_check;
+alter table public.player_mailbox_escrow
+  add constraint player_mailbox_escrow_gear_check check (
+    jsonb_typeof(gear) = 'object' and
+    gear ?& array['id', 'type', 'name'] and
+    length(gear ->> 'name') between 1 and 60 and
+    (
+      (
+        gear ->> 'id' ~ '^gear-[0-9]+$' and
+        gear ->> 'type' in ('weapon', 'armor') and
+        gear ? 'bonus' and
+        gear ->> 'bonus' ~ '^[1-9]$|^10$'
+      ) or (
+        gear ->> 'type' = 'soul' and
+        gear ?& array['soul', 'amount'] and
+        gear ->> 'soul' in ('time', 'fire', 'death', 'blood', 'serpent', 'cursed', 'fury') and
+        gear ->> 'amount' = '1' and
+        gear ->> 'id' ~ '^soul-(time|fire|death|blood|serpent|cursed|fury)-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+      )
+    )
+  );
 
 create index if not exists player_mailbox_escrow_recipient_idx
   on public.player_mailbox_escrow (recipient_id, status, created_at);
@@ -1194,6 +1238,8 @@ declare
   v_sender_id uuid := (select auth.uid());
   v_group_id uuid;
   v_sender_nickname text;
+  v_sender_level integer;
+  v_recipient_level integer;
   v_gear jsonb;
   v_existing public.player_mailbox_escrow%rowtype;
   v_mail_id uuid;
@@ -1205,19 +1251,49 @@ begin
   if p_recipient_id is null or p_recipient_id = v_sender_id or p_request_id is null then
     raise exception 'Получатель или ключ отправки недопустим.';
   end if;
-  if p_gear is null or jsonb_typeof(p_gear) <> 'object' or
-    coalesce(p_gear ->> 'id', '') !~ '^gear-[0-9]+$' or
-    coalesce(p_gear ->> 'type', '') not in ('weapon', 'armor') or
-    coalesce(p_gear ->> 'name', '') = '' or length(p_gear ->> 'name') > 60 or
-    coalesce(p_gear ->> 'bonus', '') !~ '^[1-9]$|^10$' then
-    raise exception 'Можно отправить только корректную экипировку.';
+  if p_gear is null or jsonb_typeof(p_gear) <> 'object' then
+    raise exception 'Можно отправить только корректный предмет.';
   end if;
-  v_gear := jsonb_build_object(
-    'id', p_gear ->> 'id',
-    'type', p_gear ->> 'type',
-    'name', p_gear ->> 'name',
-    'bonus', (p_gear ->> 'bonus')::integer
-  );
+  if p_gear ->> 'type' = 'soul' then
+    if coalesce(p_gear ->> 'soul', '') not in ('time', 'fire', 'death', 'blood', 'serpent', 'cursed', 'fury') or
+      coalesce(p_gear ->> 'amount', '') <> '1' or
+      coalesce(p_gear ->> 'id', '') !~ (
+        '^soul-' || coalesce(p_gear ->> 'soul', '') ||
+        '-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+      ) or
+      coalesce(p_gear ->> 'name', '') <> (case p_gear ->> 'soul'
+        when 'time' then 'Душа времени'
+        when 'fire' then 'Душа огня'
+        when 'death' then 'Душа смерти'
+        when 'blood' then 'Душа крови'
+        when 'serpent' then 'Душа змея'
+        when 'cursed' then 'Проклятая душа'
+        when 'fury' then 'Душа ярости'
+        else ''
+      end) then
+      raise exception 'Можно отправить только корректную душу.';
+    end if;
+    v_gear := jsonb_build_object(
+      'id', p_gear ->> 'id',
+      'type', 'soul',
+      'soul', p_gear ->> 'soul',
+      'name', p_gear ->> 'name',
+      'amount', 1
+    );
+  else
+    if coalesce(p_gear ->> 'id', '') !~ '^gear-[0-9]+$' or
+      coalesce(p_gear ->> 'type', '') not in ('weapon', 'armor') or
+      coalesce(p_gear ->> 'name', '') = '' or length(p_gear ->> 'name') > 60 or
+      coalesce(p_gear ->> 'bonus', '') !~ '^[1-9]$|^10$' then
+      raise exception 'Можно отправить только корректную экипировку.';
+    end if;
+    v_gear := jsonb_build_object(
+      'id', p_gear ->> 'id',
+      'type', p_gear ->> 'type',
+      'name', p_gear ->> 'name',
+      'bonus', (p_gear ->> 'bonus')::integer
+    );
+  end if;
 
   v_request_key := pg_catalog.hashtextextended(
     v_sender_id::text || ':mail-request:' || p_request_id::text, 0
@@ -1256,7 +1332,8 @@ begin
     return jsonb_build_object('id', v_existing.id, 'status', v_existing.status);
   end if;
 
-  select sender.group_id, sender.nickname into v_group_id, v_sender_nickname
+  select sender.group_id, sender.nickname, sender.level, recipient.level
+  into v_group_id, v_sender_nickname, v_sender_level, v_recipient_level
   from public.player_group_members sender
   join public.player_group_members recipient on recipient.group_id = sender.group_id
   where sender.user_id = v_sender_id and recipient.user_id = p_recipient_id
@@ -1265,6 +1342,10 @@ begin
   for update of sender, recipient;
   if v_group_id is null then
     raise exception 'Получатель должен быть участником той же группы с heartbeat не старше 75 секунд.';
+  end if;
+  if v_gear ->> 'type' = 'soul' and
+    (v_sender_level < 250 or v_recipient_level < 250) then
+    raise exception 'Передавать души можно только между игроками 250-го уровня и выше.';
   end if;
 
   if not exists (
@@ -1293,6 +1374,27 @@ begin
       end
   ) then
     raise exception 'Отправитель и получатель должны сохранить покупку особняка в облаке.';
+  end if;
+  if v_gear ->> 'type' = 'soul' and (
+    not exists (
+      select 1 from public.game_saves s
+      where s.user_id = v_sender_id
+        and case
+          when coalesce(s.save_data #>> '{meta,tavern,characterLevel}', '') ~ '^[0-9]+$'
+          then (s.save_data #>> '{meta,tavern,characterLevel}')::integer >= 250
+          else false
+        end
+    ) or not exists (
+      select 1 from public.game_saves s
+      where s.user_id = p_recipient_id
+        and case
+          when coalesce(s.save_data #>> '{meta,tavern,characterLevel}', '') ~ '^[0-9]+$'
+          then (s.save_data #>> '{meta,tavern,characterLevel}')::integer >= 250
+          else false
+        end
+    )
+  ) then
+    raise exception 'Оба игрока должны сохранить в облаке достижение 250-го уровня.';
   end if;
 
   insert into public.player_mailbox_escrow (
@@ -1371,6 +1473,17 @@ begin
   where id = p_mail_id and recipient_id = v_user_id for update;
   if not found or v_mail.status = 'sender_pending' then
     raise exception 'Письмо ещё не готово к получению.';
+  end if;
+  if v_mail.status = 'ready' and v_mail.gear ->> 'type' = 'soul' and not exists (
+    select 1 from public.game_saves s
+    where s.user_id = v_user_id
+      and case
+        when coalesce(s.save_data #>> '{meta,tavern,characterLevel}', '') ~ '^[0-9]+$'
+        then (s.save_data #>> '{meta,tavern,characterLevel}')::integer >= 250
+        else false
+      end
+  ) then
+    raise exception 'Получать души можно только после сохранения 250-го уровня в облаке.';
   end if;
   if v_mail.status = 'ready' then
     update public.player_mailbox_escrow

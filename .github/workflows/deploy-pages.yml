@@ -31,7 +31,7 @@ jobs:
       - name: Prepare static game files
         run: |
           mkdir -p dist
-          cp index.html styles.css game.js game-art.svg cloud-save.js player-groups.js cloud-config.js tavern-model.js expeditions-model.js homestead-model.js dungeon-model.js pvp-client.js dist/
+          cp index.html styles.css game.js game-art.svg cloud-save.js player-groups.js cloud-config.js tavern-model.js expeditions-model.js homestead-model.js dungeon-model.js pvp-client.js guild-client.js dist/
       - name: Configure optional Supabase client
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -63,7 +63,7 @@ jobs:
         env:
           DEPLOY_SHA: ${{ github.sha }}
         run: |
-          sed -i "s|href=\"styles.css\"|href=\"styles.css?v=${DEPLOY_SHA}\"|; s|src=\"cloud-config.js\"|src=\"cloud-config.js?v=${DEPLOY_SHA}\"|; s|src=\"cloud-save.js\"|src=\"cloud-save.js?v=${DEPLOY_SHA}\"|; s|src=\"player-groups.js\"|src=\"player-groups.js?v=${DEPLOY_SHA}\"|; s|src=\"tavern-model.js\"|src=\"tavern-model.js?v=${DEPLOY_SHA}\"|; s|src=\"expeditions-model.js\"|src=\"expeditions-model.js?v=${DEPLOY_SHA}\"|; s|src=\"homestead-model.js\"|src=\"homestead-model.js?v=${DEPLOY_SHA}\"|; s|src=\"dungeon-model.js\"|src=\"dungeon-model.js?v=${DEPLOY_SHA}\"|; s|src=\"pvp-client.js\"|src=\"pvp-client.js?v=${DEPLOY_SHA}\"|; s|src=\"game.js\"|src=\"game.js?v=${DEPLOY_SHA}\"|" dist/index.html
+          sed -i "s|href=\"styles.css\"|href=\"styles.css?v=${DEPLOY_SHA}\"|; s|src=\"cloud-config.js\"|src=\"cloud-config.js?v=${DEPLOY_SHA}\"|; s|src=\"cloud-save.js\"|src=\"cloud-save.js?v=${DEPLOY_SHA}\"|; s|src=\"player-groups.js\"|src=\"player-groups.js?v=${DEPLOY_SHA}\"|; s|src=\"tavern-model.js\"|src=\"tavern-model.js?v=${DEPLOY_SHA}\"|; s|src=\"expeditions-model.js\"|src=\"expeditions-model.js?v=${DEPLOY_SHA}\"|; s|src=\"homestead-model.js\"|src=\"homestead-model.js?v=${DEPLOY_SHA}\"|; s|src=\"dungeon-model.js\"|src=\"dungeon-model.js?v=${DEPLOY_SHA}\"|; s|src=\"pvp-client.js\"|src=\"pvp-client.js?v=${DEPLOY_SHA}\"|; s|src=\"guild-client.js\"|src=\"guild-client.js?v=${DEPLOY_SHA}\"|; s|src=\"game.js\"|src=\"game.js?v=${DEPLOY_SHA}\"|" dist/index.html
           sed -i "s|const GAME_ART_URL = \"game-art.svg\";|const GAME_ART_URL = \"game-art.svg?v=${DEPLOY_SHA}\";|" dist/game.js
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3

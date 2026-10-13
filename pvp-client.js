@@ -130,6 +130,16 @@
       else notify("!ганг требует двух онлайн-напарников в подземелье. Вступи в группу; случайное событие допускает бой с призраком.");
       return;
     }
+    if (window.WellGuild?.isReady()) {
+      await window.WellGuild.refresh();
+      const guildmate = info.members.find((member) =>
+        member.user_id !== info.userId && window.WellGuild.isGuildmate(member.user_id));
+      if (guildmate) {
+        if (randomEncounter) callbacks.onGhost();
+        else notify("Нельзя вызвать согильдийца на PvP. Найди соперника не из своей гильдии.");
+        return;
+      }
+    }
     userId = info.userId;
     await perform(async () => {
       if (!pending) storePending({

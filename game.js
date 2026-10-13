@@ -76,6 +76,15 @@ const CITY_DISTRICTS = {
         action: "upgrades",
         actionLabel: "К улучшениям за осколки",
       },
+      {
+        icon: "▤",
+        name: "Гильдейская ратуша",
+        description: "Гильдии, чат с Воплощением смотрителя, казна, склад и постройки.",
+        status: "ready",
+        statusLabel: "ОТКРЫТО",
+        action: "guild",
+        actionLabel: "Открыть гильдейский холл",
+      },
       { icon: "✦", name: "Башня магов", description: "Временные зачарования, перераспределение характеристик и дополнительные ячейки пассивных умений.", status: "soon", statusLabel: "СКОРО" },
       {
         icon: "ᛟ",
@@ -106,7 +115,7 @@ const CITY_DISTRICTS = {
     services: [
       { icon: "⚔", name: "Арена", description: "PvP и элитные монстры для героев высокого уровня.", status: "soon", statusLabel: "СКОРО" },
       { icon: "⌂", name: "Домашняя лавка", description: "Покупка домов, участки, мастерские, пруд, сад и доступные комнаты.", status: "ready", statusLabel: "ДОСТУПНО", action: "homestead", actionLabel: "Магазин · Дома" },
-      { icon: "▤", name: "Ратуша", description: "Гильдии, купоны и городские события.", status: "soon", statusLabel: "СКОРО" },
+      { icon: "▤", name: "Ратуша", description: "Гильдейские постройки и городской холл.", status: "ready", statusLabel: "ГИЛЬДИИ", action: "guild", actionLabel: "Открыть гильдейский холл" },
       { icon: "✧", name: "Аллея славы", description: "Статуи великих игроков и их истории.", status: "soon", statusLabel: "СКОРО" },
     ],
   },
@@ -708,6 +717,12 @@ function createMetaProgress(now = Date.now()) {
     orderReputation: 0,
     dungeonTrophies: {},
     dungeonVictories: [],
+    guildSupplies: { healthPotions: 0, regenerationPotions: 0, masks: 0 },
+    guildSupplyTransactions: [],
+    guildWalletTransactions: [],
+    guildTrophyTransactions: [],
+    guildLuck: { bonus: 0, expiresAt: 0 },
+    guildReceipts: [],
     harbor: window.WellExpeditionsModel.createState(),
     homestead: window.WellHomesteadModel.createState(now),
   };
@@ -750,6 +765,51 @@ function isValidMetaProgress(progress) {
         Array.isArray(receipt.trophies) && receipt.trophies.length <= 16 &&
         receipt.trophies.every((key) => Object.prototype.hasOwnProperty.call(DUNGEON_TROPHIES, key)))
     )) &&
+    (progress.guildSupplies === undefined || (
+      progress.guildSupplies && typeof progress.guildSupplies === "object" &&
+      isIntegerBetween(progress.guildSupplies.healthPotions, 0, 1000000) &&
+      isIntegerBetween(progress.guildSupplies.regenerationPotions, 0, 1000000) &&
+      isIntegerBetween(progress.guildSupplies.masks, 0, 1000000)
+    )) &&
+    (progress.guildSupplyTransactions === undefined || (
+      Array.isArray(progress.guildSupplyTransactions) && progress.guildSupplyTransactions.length <= 100000 &&
+      progress.guildSupplyTransactions.every((transaction) => transaction &&
+        typeof transaction.id === "string" &&
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(transaction.id) &&
+        ["healthPotions", "regenerationPotions", "masks"].every((key) =>
+          Number.isInteger(transaction[key]) && transaction[key] >= -1000000 && transaction[key] <= 1000000) &&
+        (transaction.healthPotions !== 0 || transaction.regenerationPotions !== 0 || transaction.masks !== 0)) &&
+      new Set(progress.guildSupplyTransactions.map((transaction) => transaction.id)).size === progress.guildSupplyTransactions.length
+    )) &&
+    (progress.guildWalletTransactions === undefined || (
+      Array.isArray(progress.guildWalletTransactions) && progress.guildWalletTransactions.length <= 100000 &&
+      progress.guildWalletTransactions.every((transaction) => transaction &&
+        typeof transaction.id === "string" &&
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(transaction.id) &&
+        Number.isInteger(transaction.gold) && transaction.gold >= -1000000000 && transaction.gold <= 1000000000 &&
+        Number.isInteger(transaction.essence) && transaction.essence >= -1000000000 && transaction.essence <= 1000000000 &&
+        (transaction.gold !== 0 || transaction.essence !== 0)) &&
+      new Set(progress.guildWalletTransactions.map((transaction) => transaction.id)).size === progress.guildWalletTransactions.length
+    )) &&
+    (progress.guildTrophyTransactions === undefined || (
+      Array.isArray(progress.guildTrophyTransactions) && progress.guildTrophyTransactions.length <= 100000 &&
+      progress.guildTrophyTransactions.every((transaction) => transaction &&
+        typeof transaction.id === "string" &&
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(transaction.id) &&
+        Number.isInteger(transaction.elite) && transaction.elite >= -1000000000 && transaction.elite <= 1000000000 &&
+        transaction.elite !== 0) &&
+      new Set(progress.guildTrophyTransactions.map((transaction) => transaction.id)).size === progress.guildTrophyTransactions.length
+    )) &&
+    (progress.guildLuck === undefined || (
+      progress.guildLuck && isIntegerBetween(progress.guildLuck.bonus, 0, 100) &&
+      Number.isFinite(progress.guildLuck.expiresAt) && progress.guildLuck.expiresAt >= 0
+    )) &&
+    (progress.guildReceipts === undefined || (
+      Array.isArray(progress.guildReceipts) && progress.guildReceipts.length <= 100000 &&
+      progress.guildReceipts.every((id) => typeof id === "string" &&
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)) &&
+      new Set(progress.guildReceipts).size === progress.guildReceipts.length
+    )) &&
     (progress.tavern === undefined || window.WellTavernModel.isValidState(progress.tavern)) &&
     (progress.harbor === undefined || window.WellExpeditionsModel.isValidState(progress.harbor)) &&
     (progress.homestead === undefined || window.WellHomesteadModel.isValidState(progress.homestead))
@@ -768,6 +828,19 @@ function normalizeMetaProgress(progress) {
   normalized.dungeonVictories = (progress?.dungeonVictories || []).map((receipt) => ({
     ...receipt, trophies: [...receipt.trophies],
   }));
+  normalized.guildSupplies = {
+    healthPotions: progress?.guildSupplies?.healthPotions ?? 0,
+    regenerationPotions: progress?.guildSupplies?.regenerationPotions ?? 0,
+    masks: progress?.guildSupplies?.masks ?? 0,
+  };
+  normalized.guildSupplyTransactions = [...(progress?.guildSupplyTransactions || [])].map((transaction) => ({ ...transaction }));
+  normalized.guildWalletTransactions = [...(progress?.guildWalletTransactions || [])].map((transaction) => ({ ...transaction }));
+  normalized.guildTrophyTransactions = [...(progress?.guildTrophyTransactions || [])].map((transaction) => ({ ...transaction }));
+  normalized.guildLuck = {
+    bonus: progress?.guildLuck?.bonus ?? 0,
+    expiresAt: progress?.guildLuck?.expiresAt ?? 0,
+  };
+  normalized.guildReceipts = [...new Set(progress?.guildReceipts || [])];
   return normalized;
 }
 
@@ -804,12 +877,42 @@ function mergeMetaProgress(left, right) {
     0, first.orderReputation - reputationSum(first.dungeonVictories),
     second.orderReputation - reputationSum(second.dungeonVictories),
   ) + reputationSum(dungeonVictories));
+  const mergeTransactions = (key) => {
+    const transactions = new Map();
+    for (const transaction of [...first[key], ...second[key]]) {
+      const existing = transactions.get(transaction.id);
+      if (!existing || JSON.stringify(transaction) < JSON.stringify(existing)) {
+        transactions.set(transaction.id, transaction);
+      }
+    }
+    return [...transactions.values()].sort((a, b) => a.id.localeCompare(b.id));
+  };
+  const guildWalletTransactions = mergeTransactions("guildWalletTransactions");
+  const guildTrophyTransactions = mergeTransactions("guildTrophyTransactions");
   const dungeonTrophies = Object.fromEntries(Object.keys(DUNGEON_TROPHIES).map((key) => [
     key, Math.min(1000000000, Math.max(
-      0, (first.dungeonTrophies[key] || 0) - trophySum(first.dungeonVictories, key),
-      (second.dungeonTrophies[key] || 0) - trophySum(second.dungeonVictories, key),
-    ) + trophySum(dungeonVictories, key)),
+      0, (first.dungeonTrophies[key] || 0) - trophySum(first.dungeonVictories, key) -
+        (key === "elite" ? first.guildTrophyTransactions.reduce((sum, transaction) => sum + transaction.elite, 0) : 0),
+      (second.dungeonTrophies[key] || 0) - trophySum(second.dungeonVictories, key) -
+        (key === "elite" ? second.guildTrophyTransactions.reduce((sum, transaction) => sum + transaction.elite, 0) : 0),
+    ) + trophySum(dungeonVictories, key) +
+      (key === "elite" ? guildTrophyTransactions.reduce((sum, transaction) => sum + transaction.elite, 0) : 0)),
   ]));
+  const supplyTransactionsById = new Map();
+  for (const transaction of [...first.guildSupplyTransactions, ...second.guildSupplyTransactions]) {
+    const existing = supplyTransactionsById.get(transaction.id);
+    if (!existing || JSON.stringify(transaction) < JSON.stringify(existing)) {
+      supplyTransactionsById.set(transaction.id, transaction);
+    }
+  }
+  const guildSupplyTransactions = [...supplyTransactionsById.values()].sort((a, b) => a.id.localeCompare(b.id));
+  const guildSupplies = Object.fromEntries(["healthPotions", "regenerationPotions", "masks"].map((key) => {
+    const firstDelta = first.guildSupplyTransactions.reduce((sum, transaction) => sum + transaction[key], 0);
+    const secondDelta = second.guildSupplyTransactions.reduce((sum, transaction) => sum + transaction[key], 0);
+    const mergedDelta = guildSupplyTransactions.reduce((sum, transaction) => sum + transaction[key], 0);
+    const baseline = Math.max(0, first.guildSupplies[key] - firstDelta, second.guildSupplies[key] - secondDelta);
+    return [key, Math.max(0, Math.min(1000000, baseline + mergedDelta))];
+  }));
   const useSecondTavern = second.tavern.updatedAt > first.tavern.updatedAt ||
     (second.tavern.updatedAt === first.tavern.updatedAt && second.tavern.revision >= first.tavern.revision)
   const tavernSource = useSecondTavern ? second : first;
@@ -849,33 +952,33 @@ function mergeMetaProgress(left, right) {
   homestead.mailReceipts = mergedMailReceipts;
   tavern.nextGearSequence = Math.max(tavern.nextGearSequence,
     ...tavern.stash.map((item) => Number(item.id.slice(5))));
-  const firstTicketReceipts = new Set(first.harbor.ticketPurchases.map((receipt) => receipt.id));
-  const secondTicketReceipts = new Set(second.harbor.ticketPurchases.map((receipt) => receipt.id));
-  const missingDebits = (sourceReceipts, otherHarbor) => otherHarbor.ticketPurchases
-    .filter((receipt) => !sourceReceipts.has(receipt.id))
-    .reduce((total, receipt) => total + receipt.essenceCost, 0);
-  const firstHomesteadReceipts = new Set(first.homestead.receipts.map((receipt) => receipt.id));
-  const secondHomesteadReceipts = new Set(second.homestead.receipts.map((receipt) => receipt.id));
-  const missingHomesteadDebits = (sourceReceipts, otherHomestead, currency) => otherHomestead.receipts
-    .filter((receipt) => !sourceReceipts.has(receipt.id))
-    .reduce((total, receipt) => total + receipt[`${currency}Cost`], 0);
-  const tavernSourceReceipts = useSecondTavern ? secondHomesteadReceipts : firstHomesteadReceipts;
-  const otherHomestead = useSecondTavern ? first.homestead : second.homestead;
-  tavern.gold = Math.max(0, tavern.gold - missingHomesteadDebits(
-    tavernSourceReceipts,
-    otherHomestead,
-    "gold",
-  ));
-  const essenceAfterHomePurchases = (source, other, sourceReceipts) =>
-    source.essence - missingHomesteadDebits(sourceReceipts, other.homestead, "essence");
+  const walletDelta = (transactions, currency) => transactions
+    .reduce((sum, transaction) => sum + transaction[currency], 0);
+  const homesteadCost = (progress, currency) => progress.homestead.receipts
+    .reduce((sum, receipt) => sum + receipt[`${currency}Cost`], 0);
+  const ticketCost = (progress) => progress.harbor.ticketPurchases
+    .reduce((sum, receipt) => sum + receipt.essenceCost, 0);
+  const mergedGoldCost = homestead.receipts.reduce((sum, receipt) => sum + receipt.goldCost, 0);
+  const mergedGoldBaseline = Math.max(
+    0,
+    first.tavern.gold - walletDelta(first.guildWalletTransactions, "gold") + homesteadCost(first, "gold"),
+    second.tavern.gold - walletDelta(second.guildWalletTransactions, "gold") + homesteadCost(second, "gold"),
+  );
+  tavern.gold = Math.max(0, Math.min(1000000000,
+    mergedGoldBaseline + walletDelta(guildWalletTransactions, "gold") - mergedGoldCost));
+  const mergedEssenceCost = homestead.receipts.reduce((sum, receipt) => sum + receipt.essenceCost, 0) +
+    harbor.ticketPurchases.reduce((sum, receipt) => sum + receipt.essenceCost, 0);
+  const essenceBase = Math.max(
+    0,
+    first.essence - walletDelta(first.guildWalletTransactions, "essence") +
+      homesteadCost(first, "essence") + ticketCost(first),
+    second.essence - walletDelta(second.guildWalletTransactions, "essence") +
+      homesteadCost(second, "essence") + ticketCost(second),
+  );
+  const essence = Math.max(0, Math.min(1000000000,
+    essenceBase + walletDelta(guildWalletTransactions, "essence") - mergedEssenceCost));
   return {
-    essence: Math.max(
-      0,
-      essenceAfterHomePurchases(first, second, firstHomesteadReceipts) -
-        missingDebits(firstTicketReceipts, second.harbor),
-      essenceAfterHomePurchases(second, first, secondHomesteadReceipts) -
-        missingDebits(secondTicketReceipts, first.harbor),
-    ),
+    essence,
     upgrades: Object.fromEntries(Object.keys(META_UPGRADES).map((id) => [
       id,
       Math.max(first.upgrades[id], second.upgrades[id]),
@@ -884,6 +987,12 @@ function mergeMetaProgress(left, right) {
     orderReputation,
     dungeonTrophies,
     dungeonVictories,
+    guildSupplies,
+    guildSupplyTransactions,
+    guildWalletTransactions,
+    guildTrophyTransactions,
+    guildLuck: first.guildLuck.expiresAt >= second.guildLuck.expiresAt ? first.guildLuck : second.guildLuck,
+    guildReceipts: [...new Set([...first.guildReceipts, ...second.guildReceipts])].slice(-100000),
     secretsFound: [...new Set([...first.secretsFound, ...second.secretsFound])],
     groupInboxReceipts: [...new Set([
       ...(first.groupInboxReceipts || []),
@@ -901,22 +1010,24 @@ function persistMetaProgress() {
     const stored = JSON.parse(window.localStorage.getItem(META_SAVE_KEY) || "null");
     if (stored !== null && isValidMetaProgress(stored)) {
       const local = normalizeMetaProgress(stored);
-      const currentReceipts = new Set(metaProgress.homestead.receipts.map((receipt) => receipt.id));
-      const missingDebits = (currency) => local.homestead.receipts
-        .filter((receipt) => !currentReceipts.has(receipt.id))
-        .reduce((total, receipt) => total + receipt[`${currency}Cost`], 0);
       const dungeonMerged = mergeMetaProgress(metaProgress, local);
       metaProgress = {
         ...metaProgress,
-        essence: Math.max(0, metaProgress.essence - missingDebits("essence")),
+        essence: dungeonMerged.essence,
         tavern: {
           ...metaProgress.tavern,
-          gold: Math.max(0, metaProgress.tavern.gold - missingDebits("gold")),
+          gold: dungeonMerged.tavern.gold,
         },
         homestead: window.WellHomesteadModel.merge(metaProgress.homestead, local.homestead),
         orderReputation: dungeonMerged.orderReputation,
         dungeonTrophies: dungeonMerged.dungeonTrophies,
         dungeonVictories: dungeonMerged.dungeonVictories,
+        guildSupplies: dungeonMerged.guildSupplies,
+        guildSupplyTransactions: dungeonMerged.guildSupplyTransactions,
+        guildWalletTransactions: dungeonMerged.guildWalletTransactions,
+        guildTrophyTransactions: dungeonMerged.guildTrophyTransactions,
+        guildLuck: dungeonMerged.guildLuck,
+        guildReceipts: dungeonMerged.guildReceipts,
       };
     }
     window.localStorage.setItem(META_SAVE_KEY, JSON.stringify(metaProgress));
@@ -929,6 +1040,169 @@ function persistMetaProgress() {
   });
   if (persisted && window.WellCloudSave) window.WellCloudSave.scheduleSave(getCloudSaveSnapshot());
   return persisted;
+}
+
+function updateGuildSupplies(receiptId, change) {
+  if (metaProgress.guildSupplyTransactions.some((transaction) => transaction.id === receiptId)) return false;
+  if (metaProgress.guildSupplyTransactions.length >= 100000) {
+    throw new Error("Достигнут предел истории гильдейских припасов.");
+  }
+  const transaction = {
+    id: receiptId,
+    healthPotions: change.healthPotions || 0,
+    regenerationPotions: change.regenerationPotions || 0,
+    masks: change.masks || 0,
+  };
+  const supplies = { ...metaProgress.guildSupplies };
+  for (const key of ["healthPotions", "regenerationPotions", "masks"]) {
+    const amount = transaction[key];
+    if (!Number.isInteger(amount) || amount < -1000000 || amount > 1000000 ||
+      supplies[key] + amount < 0 || supplies[key] + amount > 1000000) {
+      throw new Error("Операция с припасами гильдии недопустима.");
+    }
+    supplies[key] += amount;
+  }
+  if (transaction.healthPotions === 0 && transaction.regenerationPotions === 0 && transaction.masks === 0) {
+    throw new Error("Операция не меняет припасы гильдии.");
+  }
+  metaProgress = {
+    ...metaProgress,
+    guildSupplies: supplies,
+    guildSupplyTransactions: [...metaProgress.guildSupplyTransactions, transaction],
+  };
+  return true;
+}
+
+function recordGuildReceipt(receiptId) {
+  if (metaProgress.guildReceipts.includes(receiptId)) return false;
+  if (metaProgress.guildReceipts.length >= 100000) throw new Error("Достигнут предел истории гильдейских операций.");
+  metaProgress = { ...metaProgress, guildReceipts: [...metaProgress.guildReceipts, receiptId] };
+  return true;
+}
+
+function availableGuildGear() {
+  const excluded = new Set([
+    metaProgress.tavern.preparedGearId,
+    ...(state.started ? state.tavernGearIds || [] : savedRun?.tavernGearIds || []),
+  ].filter(Boolean));
+  return metaProgress.tavern.stash
+    .filter((gear) => !excluded.has(gear.id))
+    .map((gear) => ({
+      ...gear,
+      label: `${gear.name} · +${gear.bonus} ${gear.type === "weapon" ? "к атаке" : "к защите"}`,
+    }));
+}
+
+function applyGuildWalletChange(change, receiptId) {
+  if (metaProgress.guildReceipts.includes(receiptId)) return true;
+  const previous = metaProgress;
+  if (change.kind === "item_deposit" || change.kind === "item_take") {
+    const tavern = JSON.parse(JSON.stringify(metaProgress.tavern));
+    if (change.kind === "item_deposit") {
+      const index = tavern.stash.findIndex((gear) => gear.id === change.itemId);
+      if (index >= 0) {
+        if (tavern.preparedGearId === change.itemId ||
+          (state.started ? state.tavernGearIds || [] : savedRun?.tavernGearIds || []).includes(change.itemId)) {
+          throw new Error("Нельзя внести предмет, подготовленный для текущего спуска.");
+        }
+        tavern.stash.splice(index, 1);
+        if (tavern.stash.length !== metaProgress.tavern.stash.length) {
+          tavern.revision += 1;
+          tavern.updatedAt = Date.now();
+        }
+      } else {
+        throw new Error("Предмет больше не найден в личном запасе.");
+      }
+    } else {
+      const item = change.item || {};
+      if (!isValidGear(item) || tavern.stash.length >= 10000) {
+        throw new Error("Предмет не прошёл проверку или личный запас заполнен.");
+      }
+      let id = item.id;
+      if (tavern.stash.some((gear) => gear.id === id)) {
+        do {
+          tavern.nextGearSequence += 1;
+          id = `gear-${tavern.nextGearSequence}`;
+        } while (tavern.stash.some((gear) => gear.id === id));
+      }
+      tavern.stash.push({ ...item, id });
+      tavern.nextGearSequence = Math.max(tavern.nextGearSequence, Number(id.slice(5)) || 0);
+      tavern.revision += 1;
+      tavern.updatedAt = Date.now();
+    }
+    metaProgress = { ...metaProgress, tavern };
+  } else if (change.kind === "elite_trophy") {
+    const amount = change.amount;
+    if (!Number.isInteger(amount) || amount < 1 || metaProgress.dungeonTrophies.elite < amount) {
+      throw new Error("Недостаточно элитных трофеев.");
+    }
+    if (metaProgress.guildTrophyTransactions.length >= 100000) {
+      throw new Error("Достигнут предел истории гильдейских трофеев.");
+    }
+    metaProgress = {
+      ...metaProgress,
+      dungeonTrophies: { ...metaProgress.dungeonTrophies, elite: metaProgress.dungeonTrophies.elite - amount },
+      guildTrophyTransactions: [...metaProgress.guildTrophyTransactions, { id: receiptId, elite: -amount }],
+    };
+  } else {
+    const kind = change.kind.startsWith("withdraw_") ? change.kind.slice("withdraw_".length) : change.kind;
+    const amount = change.amount;
+    if (!["gold", "essence"].includes(kind) || !Number.isInteger(amount) || amount < 1 ||
+      metaProgress.guildWalletTransactions.length >= 100000) {
+      throw new Error("Казначейская операция недопустима или достигнут предел истории.");
+    }
+    const delta = change.kind.startsWith("withdraw_") ? amount : -amount;
+    if (kind === "gold") {
+      const nextGold = metaProgress.tavern.gold + delta;
+      if (nextGold < 0 || nextGold > 1000000000) throw new Error("Недостаточно личного золота или превышен предел.");
+      metaProgress = { ...metaProgress, tavern: { ...metaProgress.tavern, gold: nextGold } };
+    } else {
+      const nextEssence = metaProgress.essence + delta;
+      if (nextEssence < 0 || nextEssence > 1000000000) throw new Error("Недостаточно личных осколков или превышен предел.");
+      metaProgress = { ...metaProgress, essence: nextEssence };
+    }
+    metaProgress.guildWalletTransactions = [
+      ...metaProgress.guildWalletTransactions,
+      { id: receiptId, gold: kind === "gold" ? delta : 0, essence: kind === "essence" ? delta : 0 },
+    ];
+  }
+  recordGuildReceipt(receiptId);
+  if (!persistMetaProgress()) {
+    metaProgress = previous;
+    throw new Error("Не удалось сохранить личную часть гильдейской операции.");
+  }
+  render();
+  return true;
+}
+
+function applyGuildHallReward(reward, receiptId) {
+  if (metaProgress.guildReceipts.includes(receiptId)) return true;
+  if (metaProgress.guildReceipts.length >= 100000) throw new Error("Достигнут предел истории гильдейских операций.");
+  const previous = metaProgress;
+  if (reward.health_potions || reward.regeneration_potions || reward.guild_mask) {
+    updateGuildSupplies(receiptId, {
+      healthPotions: reward.health_potions || 0,
+      regenerationPotions: reward.regeneration_potions || 0,
+      masks: reward.guild_mask || 0,
+    });
+  }
+  if (reward.luck > 0 && Number.isFinite(Date.parse(reward.luck_expires_at))) {
+    const expiresAt = Date.parse(reward.luck_expires_at);
+    if (expiresAt > metaProgress.guildLuck.expiresAt) {
+      metaProgress = { ...metaProgress, guildLuck: { bonus: reward.luck, expiresAt } };
+    }
+  }
+  if (reward.heal_all_injuries) {
+    const tavern = { ...metaProgress.tavern, injuries: 0, revision: metaProgress.tavern.revision + 1, updatedAt: Date.now() };
+    metaProgress = { ...metaProgress, tavern };
+  }
+  recordGuildReceipt(receiptId);
+  if (!persistMetaProgress()) {
+    metaProgress = previous;
+    throw new Error("Не удалось сохранить награду гильдейской службы.");
+  }
+  render();
+  return true;
 }
 
 function openTavernDatabase() {
@@ -1399,6 +1673,24 @@ function restoreCloudSave(snapshot) {
     console.warn("Не удалось записать восстановленное облачное сохранение на устройство.", error);
   }
   state = createState();
+  render();
+}
+
+function drinkGuildRegenerationPotion() {
+  if (!state.enemy || state.gameOver || state.liveDuelId || state.extraActionUsed ||
+    metaProgress.guildSupplies.regenerationPotions < 1) return;
+  const previous = metaProgress;
+  updateGuildSupplies(mailboxRequestId(), { regenerationPotions: -1 });
+  if (!persistMetaProgress()) {
+    metaProgress = previous;
+    return;
+  }
+  const fighter = getDungeonFighter();
+  fighter.regeneration += 1;
+  state.combatProgress = fighter;
+  state.extraActionUsed = true;
+  setEvent("ЗЕЛЬЕ РЕГЕНЕРАЦИИ", "До конца этой встречи ты будешь восстанавливать 1 здоровье в конце каждого своего хода. Дополнительное действие потрачено.", "⚗");
+  addJournal("Зелье регенерации", "На оставшуюся часть боя добавлено 1 восстановление здоровья за свой ход.", "⚗");
   render();
 }
 
@@ -2566,7 +2858,10 @@ function defeatEnemy() {
   gainXp(enemy.xp);
   advanceQuest("defeat");
   let gearMessage = ` Репутация ордена: +${reputation}.${collected.length ? ` Трофеи: ${collected.join(", ")}.` : ""}`;
-  const lootChance = Math.min(0.8, 0.3 + getClassStat("lootChance"));
+  const guildLuck = metaProgress.guildLuck.expiresAt > Date.now()
+    ? metaProgress.guildLuck.bonus / 100
+    : 0;
+  const lootChance = Math.min(0.8, 0.3 + getClassStat("lootChance") + guildLuck);
   if (enemy.boss || Math.random() < lootChance) {
     if (state.inventory.length < MAX_GEAR) {
       const gear = createGear(randomInt(0, 1) === 0 ? "weapon" : "armor");
@@ -2817,13 +3112,21 @@ function equipGear(gearId) {
 function useCamouflage() {
   if (!state.enemy || state.gameOver || state.extraActionUsed || state.enemy.boss || state.enemy.elite || dungeonDuelLocked()) return;
   const previous = metaProgress;
-  const result = window.WellHomesteadModel.consumeCamouflage(metaProgress.homestead, Date.now());
-  if (!result.ok) {
-    setEvent("МАСКИРОВКИ НЕТ", result.reason, "◈");
+  if (metaProgress.homestead.camouflage > 0) {
+    const result = window.WellHomesteadModel.consumeCamouflage(metaProgress.homestead, Date.now());
+    if (!result.ok) {
+      setEvent("МАСКИРОВКИ НЕТ", result.reason, "◈");
+      render();
+      return;
+    }
+    metaProgress = { ...metaProgress, homestead: result.state };
+  } else if (metaProgress.guildSupplies.masks > 0) {
+    updateGuildSupplies(mailboxRequestId(), { masks: -1 });
+  } else {
+    setEvent("МАСКИРОВКИ НЕТ", "В запасе нет маскировки.", "◈");
     render();
     return;
   }
-  metaProgress = { ...metaProgress, homestead: result.state };
   if (!persistMetaProgress()) {
     metaProgress = previous;
     setEvent("МАСКИРОВКА НЕ СОХРАНЕНА", "Предмет остался в инвентаре; бой продолжается.", "◈");
@@ -2839,10 +3142,20 @@ function useCamouflage() {
 }
 
 function drinkPotion(inCombat = false) {
-  if (!state.started || state.potions <= 0 || state.hp >= state.maxHp || state.gameOver || dungeonDuelLocked() ||
+  if (!state.started || state.potions + metaProgress.guildSupplies.healthPotions <= 0 ||
+    state.hp >= state.maxHp || state.gameOver || dungeonDuelLocked() ||
     (state.enemy && state.extraActionUsed)) return;
   if (state.enemy) state.extraActionUsed = true;
-  state.potions -= 1;
+  if (state.potions > 0) state.potions -= 1;
+  else {
+    const previous = metaProgress;
+    updateGuildSupplies(mailboxRequestId(), { healthPotions: -1 });
+    if (!persistMetaProgress()) {
+      metaProgress = previous;
+      state.extraActionUsed = false;
+      return;
+    }
+  }
   const healing = Math.min(14 + getClassStat("potionHealing"), state.maxHp - state.hp);
   state.hp += healing;
   setEvent("ЗЕЛЬЕ ВЫПИТО", `Ты восстановил ${healing} здоровья.`, "⚗");
@@ -4767,7 +5080,7 @@ function render() {
   const attackPower = state.classId ? getAttackPower() : state.attack;
   ui.attack.textContent = `${attackPower}–${attackPower + 3}`;
   ui.gold.textContent = String(state.gold);
-  ui.potions.textContent = String(state.potions);
+  ui.potions.textContent = String(state.potions + metaProgress.guildSupplies.healthPotions);
   ui.focusValue.textContent = `${state.focus} / ${MAX_FOCUS}`;
   ui.focusBar.style.width = `${(state.focus / MAX_FOCUS) * 100}%`;
   ui.focusBar.setAttribute("aria-valuenow", String(state.focus));
@@ -4830,8 +5143,9 @@ function render() {
   ));
   ui.explore.disabled = !state.started || Boolean(state.enemy) || state.gameOver || state.merchantAvailable || state.waitingToDescend || eventActions.length > 0;
   ui.potion.disabled = !state.started || state.potions === 0 || state.hp >= state.maxHp || state.gameOver;
-  $("combat-potion-button").disabled = state.potions === 0 || state.hp >= state.maxHp || state.gameOver;
-  ui.combatPotionCount.textContent = String(state.potions);
+  $("combat-potion-button").disabled = state.potions + metaProgress.guildSupplies.healthPotions === 0 ||
+    state.hp >= state.maxHp || state.gameOver;
+  ui.combatPotionCount.textContent = String(state.potions + metaProgress.guildSupplies.healthPotions);
   ui.explore.textContent = state.room === 0 ? "Войти в первый зал" : "Исследовать зал";
   ui.explore.replaceChildren(Object.assign(document.createElement("span"), { textContent: "⌕" }), document.createTextNode(` ${state.room === 0 ? "Войти в первый зал" : "Исследовать зал"}`));
   ui.explore.hidden = !state.started || Boolean(state.enemy) || state.gameOver || state.merchantAvailable || state.waitingToDescend || eventActions.length > 0;
@@ -4859,6 +5173,10 @@ function render() {
   $("escape-button").disabled = state.extraActionUsed || state.enemy?.special === "captain";
   $("guard-button").disabled = state.extraActionUsed;
   $("combat-potion-button").disabled ||= state.extraActionUsed;
+  $("guild-regeneration-button").hidden = !state.enemy || state.gameOver || state.liveDuelId !== null;
+  $("guild-regeneration-button").disabled = state.extraActionUsed || !metaProgress.guildSupplies.regenerationPotions;
+  $("guild-regeneration-button").textContent =
+    `Зелье регенерации · ${metaProgress.guildSupplies.regenerationPotions} · +1 за ход`;
   $("combat-extra-status").textContent = `Доп. действие: ${state.extraActionUsed ? "потрачено" : "1 доступно"}. Стойка: ${{ balanced: "баланс", defensive: "защита", offensive: "атака" }[state.stance]}. Удар / классовая способность запускают весь раунд.`;
   $("ghost-panel").hidden = !state.ghostDuel;
   if (state.ghostDuel) {
@@ -4874,8 +5192,9 @@ function render() {
   }
   const camouflageButton = $("camouflage-run-button");
   camouflageButton.hidden = !state.enemy || state.gameOver || state.enemy.boss || state.enemy.elite;
-  camouflageButton.disabled = state.extraActionUsed || metaProgress.homestead.camouflage < 1;
-  camouflageButton.textContent = `Маскировка · ${metaProgress.homestead.camouflage} в инвентаре`;
+  const camouflageCount = metaProgress.homestead.camouflage + metaProgress.guildSupplies.masks;
+  camouflageButton.disabled = state.extraActionUsed || camouflageCount < 1;
+  camouflageButton.textContent = `Маскировка · ${camouflageCount} в инвентаре`;
   ui.merchantActions.hidden = !state.merchantAvailable || state.gameOver;
   ui.buyPotion.disabled = state.potions >= getPotionLimit() || state.gold < MERCHANT_PRICES.potion;
   ui.buyPotion.textContent = `⚗ Зелье · ${MERCHANT_PRICES.potion} ✦`;
@@ -5021,6 +5340,7 @@ $("guard-button").addEventListener("click", () => {
   useCombatExtra("stance");
 });
 $("camouflage-run-button").addEventListener("click", useCamouflage);
+$("guild-regeneration-button").addEventListener("click", drinkGuildRegenerationPotion);
 $("offhand-button").addEventListener("click", () => useCombatExtra("offhand"));
 $("escape-button").addEventListener("click", () => useCombatExtra("escape"));
 $("ghost-panel").addEventListener("click", (event) => {
@@ -5096,6 +5416,8 @@ ui.cityServices.addEventListener("click", (event) => {
     openHarbor();
   } else if (button.dataset.cityAction === "homestead") {
     openHomestead();
+  } else if (button.dataset.cityAction === "guild") {
+    $("guild-open-button").click();
   }
 });
 ui.homesteadOpenButton.addEventListener("click", openHomestead);
@@ -5215,6 +5537,26 @@ async function initializeGameServices() {
     inDungeon: () => state.started && !state.gameOver,
     onBattle: applyPvpBattle,
     onGhost: startGhostDuel,
+  });
+  window.WellGuild.initialize({
+    getNickname: () => {
+      const user = window.WellCloudSave.getCurrentUser();
+      return user?.user_metadata?.nickname || user?.user_metadata?.display_name ||
+        user?.email?.split("@")[0] || "Путник";
+    },
+    getBalance: (kind) => {
+      if (kind === "gold") return metaProgress.tavern.gold;
+      if (kind === "essence") return metaProgress.essence;
+      if (kind === "elite_trophy") return metaProgress.dungeonTrophies.elite || 0;
+      return 0;
+    },
+    getItems: availableGuildGear,
+    canTakeItem: () => metaProgress.tavern.stash.length < 10000,
+    applyWalletChange: (change, receiptId, result) => applyGuildWalletChange({
+      ...change,
+      item: change.kind === "item_take" ? result.item : undefined,
+    }, receiptId),
+    applyHallReward: (result, receiptId) => applyGuildHallReward(result, receiptId),
   });
 }
 

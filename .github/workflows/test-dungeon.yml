@@ -6,6 +6,9 @@ on:
       - "dungeon-model.js"
       - "game.js"
       - "pvp-client.js"
+      - "guild-client.js"
+      - "supabase/guild-schema.sql"
+      - "supabase/tests/guilds.sql"
       - "index.html"
       - "styles.css"
       - "tests/*.html"
@@ -36,7 +39,7 @@ jobs:
             fi
             sleep 1
           done
-          for test in dungeon dungeon-integration pvp-client tavern expeditions homestead; do
+          for test in dungeon dungeon-integration pvp-client guild-integration tavern expeditions homestead; do
             chrome --headless --no-sandbox --disable-gpu --disable-dev-shm-usage \
               --user-data-dir="$PWD/.dungeon-ci/game-${test}-profile" \
               --disable-extensions --dump-dom --virtual-time-budget=120000 \

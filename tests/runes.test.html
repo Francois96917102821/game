@@ -64,7 +64,23 @@
     const armorA = { ...attackDrop("b"), type: "armor" };
     const armorB = { ...attackDrop("c"), type: "armor" };
     const merged = model.mergeDrops([armorA], [armorB]);
-    assert(merged.length === 1 && model.counts(merged).armor === 1, "level-30 armor cap was exceeded");
+    assert(merged.length === 2 && model.counts(merged).armor === 1, "level-30 armor count was not capped");
+  });
+  check("rune merges preserve historical drops and are associative across level caps", () => {
+    const low = { id: id("a"), type: "armor", count: 1, level: 30 };
+    const middle = { id: id("b"), type: "armor", count: 1, level: 31 };
+    const high = { id: id("c"), type: "armor", count: 1, level: 32 };
+    const overflow = { id: id("d"), type: "armor", count: 1, level: 32 };
+    const merged = model.mergeDrops([low], [middle]);
+    assert(merged.length === 2 && merged.some((drop) => drop.id === low.id),
+      "a higher-level drop erased historical inventory");
+    const left = model.mergeDrops(model.mergeDrops([low], [middle]), [high, overflow]);
+    const right = model.mergeDrops([low], model.mergeDrops([middle], [high, overflow]));
+    assert(JSON.stringify(left) === JSON.stringify(right) && model.counts(left).armor === 3,
+      "rune merge changed with grouping or failed to clamp overflow");
+    const used = model.mergeUses([{ id: id("e"), type: "armor", cost: 1000 }], [], left, 1000);
+    assert(used.uses.length === 1 && model.stats(used.uses).armor === 1 &&
+      model.inventory(left, used.uses).armor === 2, "historical use/stat was lost after progression");
   });
 
   localStorage.clear();
@@ -89,13 +105,16 @@
     assert(migrated.runeDrops.length === 0 && migrated.runeUses.length === 0, "rune defaults missing");
   });
   check("reputation receipts and rune ledgers merge without replay", () => {
-    const drop = attackDrop();
-    const use = { id: id("d"), type: "attack", cost: 500 };
+    const drop = { id: id("a"), type: "armor", count: 1, level: 30 };
+    const laterDrop = { id: id("b"), type: "armor", count: 1, level: 31 };
+    const use = { id: id("d"), type: "armor", cost: 1000 };
     const left = { ...freshMeta(), orderReputation: 0, runeDrops: [drop], runeUses: [use] };
-    const right = { ...freshMeta(), orderReputation: 500, runeDrops: [drop] };
+    const right = { ...freshMeta(), orderReputation: 1000, runeDrops: [laterDrop] };
     const merged = app.mergeMetaProgress(left, right);
     const again = app.mergeMetaProgress(merged, merged);
     assert(merged.orderReputation === 0 && merged.runeUses.length === 1, "stale copy refunded or duplicated use");
+    assert(merged.runeDrops.length === 2 && model.inventory(merged.runeDrops, merged.runeUses).armor === 1,
+      "progression merge erased an older drop or its use");
     assert(again.orderReputation === 0 && again.runeUses.length === 1, "repeated merge changed state");
     assert(app.isValidMetaProgress(merged), "merged state invalid");
   });
@@ -112,30 +131,56 @@
     assert(snapshot.meta.runeDrops[0].type === "attack" && snapshot.meta.runeDrops[0].level === 30 &&
       snapshot.meta.runeDrops[0].count === 1, "wrong rune receipt");
     assert(app.isValidMetaProgress(snapshot.meta), "rune meta invalid");
-    assert(!app.isValidMetaProgress({
+    const staleOverflow = {
       ...snapshot.meta,
       runeDrops: [
         { id: id("b"), type: "armor", count: 1, level: 30 },
         { id: id("c"), type: "armor", count: 1, level: 30 },
       ],
-    }), "oversized rune ledger accepted");
+    };
+    assert(app.isValidMetaProgress(staleOverflow) &&
+      model.counts(staleOverflow.runeDrops).armor === 1,
+    "cross-device overflow was not safely clamped while preserving receipts");
+  });
+  check("level 29 victory cannot drop a rune just by crossing to level 30", () => {
+    app.startGameWithClass("knight");
+    app.eval("state.room=1;state.level=29;state.xp=XP_PER_LEVEL*29-1;state.enemy=null;state.gameOver=false;state.hp=state.maxHp;state.liveDuelId=null;state.ghostDuel=null;state.event.actions=[];metaProgress.tavern.characterLevel=29;");
+    app.spawnSpecificEnemy("keeper");
+    const before = app.getCloudSaveSnapshot().meta.runeDrops.length;
+    const random = app.Math.random;
+    app.Math.random = () => 0;
+    try { app.defeatEnemy(); }
+    finally { app.Math.random = random; }
+    assert(app.eval("state.level") === 30, "victory did not cross to level 30");
+    assert(app.getCloudSaveSnapshot().meta.runeDrops.length === before,
+      "rune eligibility used the post-XP level");
   });
   check("shared PvE boss victories award once per battle receipt", () => {
+    app.eval("state.level=29;state.xp=XP_PER_LEVEL*29-1;metaProgress.tavern.characterLevel=29;");
     const before = app.getCloudSaveSnapshot().meta.runeDrops.length;
     const battle = {
-      id: id("e"), status: "victory", players: [], floor: 1, round: 2, xp: 0, gold: 0,
+      id: id("e"), status: "victory", players: [], floor: 1, round: 2, xp: 1, gold: 0,
       boss: { name: "Страж", icon: "☠", skin: "guardian" },
     };
     const random = app.Math.random;
-    app.Math.random = () => 0.02;
+    app.Math.random = () => 0;
     try {
       app.applyGroupBattleUpdate(battle, "test-player");
       app.applyGroupBattleUpdate(battle, "test-player");
     } finally { app.Math.random = random; }
+    assert(app.eval("state.level") === 30, "shared victory did not cross to level 30");
+    assert(app.getCloudSaveSnapshot().meta.runeDrops.length === before,
+      "shared rune eligibility used the post-XP level");
+    const eligibleBattle = { ...battle, id: id("f"), xp: 0 };
+    app.Math.random = () => 0.02;
+    try {
+      app.applyGroupBattleUpdate(eligibleBattle, "test-player");
+      app.applyGroupBattleUpdate(eligibleBattle, "test-player");
+    } finally { app.Math.random = random; }
     const drops = app.getCloudSaveSnapshot().meta.runeDrops;
-    assert(drops.length === before + 1 && drops.some((drop) => drop.id === battle.id),
+    assert(drops.length === before + 1 && drops.some((drop) => drop.id === eligibleBattle.id),
       "shared boss did not yield one idempotent rune");
-    assert(drops.find((drop) => drop.id === battle.id).type === "armor", "unexpected boundary drop type");
+    assert(drops.find((drop) => drop.id === eligibleBattle.id).type === "armor", "unexpected boundary drop type");
   });
   check("PvP victory does not create a PvE rune receipt", () => {
     const before = app.getCloudSaveSnapshot().meta.runeDrops.length;
@@ -148,7 +193,7 @@
     assert(app.getCloudSaveSnapshot().meta.runeDrops.length === before, "PvP victory dropped a rune");
   });
   check("rune UI atomically spends reputation and applies a permanent combat stat", () => {
-    app.eval("state.level=1;metaProgress.tavern.characterLevel=1;render();");
+    app.eval("state.level=1;metaProgress.tavern.characterLevel=1;state.started=false;state.gameOver=true;state.enemy=null;state.ghostDuel=null;state.liveDuelId=null;render();");
     const attackRow = doc.querySelector('[data-rune-type="attack"]').parentElement;
     assert(attackRow.querySelector("strong").textContent.endsWith("1/1"),
       "a previous run's acquired count should not display above its lowered current-level cap");
@@ -168,6 +213,35 @@
     assert(fighter.attack === attackBefore + 1, "combat fighter did not receive attack bonus");
     assert(app.isValidMetaProgress(snapshot.meta), "used rune save invalid");
   });
+  check("rune use is guarded to camp in both UI and action", () => {
+    app.eval("metaProgress.orderReputation=500;state.started=true;state.gameOver=false;state.enemy=null;render();");
+    let button = doc.querySelector('[data-rune-type="attack"]');
+    assert(button.disabled, "rune use button stayed enabled during a run");
+    let before = app.getCloudSaveSnapshot().meta;
+    app.useEnhancementRune("attack");
+    let after = app.getCloudSaveSnapshot().meta;
+    assert(after.orderReputation === before.orderReputation &&
+      after.runeUses.length === before.runeUses.length, "direct action spent a rune during a run");
+
+    app.eval("state.started=false;state.gameOver=true;state.ghostDuel={ghost:{hp:1,maxHp:1},player:{skips:0,offhand:'shield',cooldowns:{},focus:0,potions:0,hp:1,maxHp:1},round:1,deadline:Date.now()+10000};render();");
+    button = doc.querySelector('[data-rune-type="attack"]');
+    assert(button.disabled, "rune use button stayed enabled during a duel");
+    before = app.getCloudSaveSnapshot().meta;
+    app.useEnhancementRune("attack");
+    after = app.getCloudSaveSnapshot().meta;
+    assert(after.orderReputation === before.orderReputation &&
+      after.runeUses.length === before.runeUses.length, "direct action spent a rune during a duel");
+
+    app.eval("window.__runeTestGetBattle=window.WellPlayerGroups.getBattle;window.WellPlayerGroups.getBattle=()=>({status:'active'});state.ghostDuel=null;render();");
+    button = doc.querySelector('[data-rune-type="attack"]');
+    assert(button.disabled, "rune use button stayed enabled during a group battle");
+    before = app.getCloudSaveSnapshot().meta;
+    app.useEnhancementRune("attack");
+    after = app.getCloudSaveSnapshot().meta;
+    assert(after.orderReputation === before.orderReputation &&
+      after.runeUses.length === before.runeUses.length, "direct action spent a rune during a group battle");
+    app.eval("window.WellPlayerGroups.getBattle=window.__runeTestGetBattle;delete window.__runeTestGetBattle;render();");
+  });
   check("combat stats use the real fighter pipeline", () => {
     const meta = freshMeta();
     meta.orderReputation = 6500;
@@ -182,7 +256,7 @@
     app.eval(`metaProgress=mergeMetaProgress(${json},${json});state.level=30;state.started=true;state.gameOver=false;state.classId="knight";state.attack=5;state.equipment={weapon:null,armor:null};`);
     const fighter = app.getDungeonFighter();
     assert(fighter.attack === 6, "attack rune not included");
-    assert(fighter.armor === 0.19, `armor/resistance should combine to 19%, got ${fighter.armor}`);
+    assert(fighter.armor === 0.19, `armor/resistance proxies should combine to 19%, got ${fighter.armor}`);
     assert(fighter.accuracy === 0.91 && fighter.concentration === 0.36, "accuracy/concentration not applied");
     assert(app.getGroupBattlePlayer().defense === 4, "resistance/armor absent in group combat stats");
     assert(app.getRuneStat("luck") === 1, "luck bonus absent");

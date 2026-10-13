@@ -48,12 +48,16 @@ for (const test of tests) {
       socket.addEventListener("message", (event) => {
         const reply = JSON.parse(event.data);
         if (reply.id !== 1) return;
+        if (reply.error?.code === -32000 && reply.error.message.includes("Execution context was destroyed")) {
+          setTimeout(evaluate, 100);
+          return;
+        }
         clearTimeout(timer);
         if (reply.error || reply.result.exceptionDetails) {
           reject(new Error(JSON.stringify(reply.error || reply.result.exceptionDetails)));
         } else resolve(reply.result.result.value);
       });
-      socket.send(JSON.stringify({
+      const evaluate = () => socket.send(JSON.stringify({
         id: 1, method: "Runtime.evaluate",
         params: {
           awaitPromise: true, returnByValue: true,
@@ -67,6 +71,7 @@ for (const test of tests) {
           })`,
         },
       }));
+      evaluate();
     });
     console.log(`${result.status.toUpperCase()} ${test}\n${result.log || ""}`);
     if (result.status !== "pass") failed = true;

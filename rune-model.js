@@ -11,11 +11,11 @@
     }),
     armor: Object.freeze({
       name: "Броня", price: 1000, cap: (level) => Math.max(0, level - 29),
-      effect: "+1 к защите (6 п. п. снижения физического урона)",
+      effect: "+1 к броне: до 6 п. п. снижения урона, общий предел брони 75%",
     }),
     resistance: Object.freeze({
       name: "Сопротивление", price: 1000, cap: (level) => Math.max(0, level - 29),
-      effect: "+1 п. п. снижения входящего урона",
+      effect: "+1 п. п. к тому же снижению урона, что и броня (общий предел 75%)",
     }),
     accuracy: Object.freeze({
       name: "Точность", price: 2000, cap: (level) => Math.max(0, Math.ceil((level - 29) / 2)),
@@ -46,10 +46,15 @@
 
   function counts(drops) {
     const found = Object.fromEntries(Object.keys(RUNES).map((type) => [type, 0]));
+    const highestLevel = Object.fromEntries(Object.keys(RUNES).map((type) => [type, 0]));
     for (const receipt of mergeDrops(drops, [])) {
       if (receipt && validType(receipt.type) && Number.isInteger(receipt.count) && receipt.count > 0) {
-        found[receipt.type] = Math.min(1000000000, found[receipt.type] + receipt.count);
+        found[receipt.type] += receipt.count;
+        highestLevel[receipt.type] = Math.max(highestLevel[receipt.type], receipt.level);
       }
+    }
+    for (const type of Object.keys(RUNES)) {
+      found[type] = Math.min(found[type], RUNES[type].cap(highestLevel[type]));
     }
     return found;
   }
@@ -90,17 +95,7 @@
       const existing = byId.get(receipt.id);
       if (!existing || JSON.stringify(receipt) < JSON.stringify(existing)) byId.set(receipt.id, receipt);
     }
-    const found = Object.fromEntries(Object.keys(RUNES).map((type) => [type, 0]));
-    const accepted = [];
-    for (const receipt of [...byId.values()].sort((a, b) =>
-      b.level - a.level || a.id.localeCompare(b.id))) {
-      const remaining = Math.max(0, RUNES[receipt.type].cap(receipt.level) - found[receipt.type]);
-      const count = Math.min(receipt.count, remaining);
-      if (!count) continue;
-      accepted.push({ ...receipt, count });
-      found[receipt.type] += count;
-    }
-    return accepted.sort((a, b) => a.id.localeCompare(b.id));
+    return [...byId.values()].sort((a, b) => a.id.localeCompare(b.id));
   }
 
   function rollDrop(level, drops, rng = Math.random, hasRuneRing = false) {

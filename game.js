@@ -1546,7 +1546,14 @@ function getRuneLevel() {
   return Math.max(state.level, metaProgress.tavern.characterLevel, 1);
 }
 
+function canUseEnhancementRunes() {
+  const coopBattle = window.WellPlayerGroups?.getBattle();
+  return (!state.started || state.gameOver) && !state.enemy && !dungeonDuelLocked() &&
+    !(coopBattle && ["waiting", "active"].includes(coopBattle.status));
+}
+
 function useEnhancementRune(type) {
+  if (!canUseEnhancementRunes()) return;
   if (!window.WellRuneModel.validType(type)) return;
   const rune = window.WellRuneModel.RUNES[type];
   if (metaProgress.runeUses.length >= 100000) {
@@ -1640,6 +1647,7 @@ function renderRunes() {
   const owned = window.WellRuneModel.inventory(metaProgress.runeDrops, metaProgress.runeUses);
   const stats = window.WellRuneModel.stats(metaProgress.runeUses);
   const level = getRuneLevel();
+  const campAvailable = canUseEnhancementRunes();
   list.className = "rune-list";
   list.replaceChildren();
   for (const [type, rune] of Object.entries(window.WellRuneModel.RUNES)) {
@@ -1656,9 +1664,10 @@ function renderRunes() {
     button.className = "meta-buy-button";
     button.dataset.runeType = type;
     button.textContent = owned[type] ? `Использовать · ${rune.price}` : `Нет руны · ${rune.price}`;
-    button.disabled = owned[type] < 1 || metaProgress.orderReputation < rune.price;
+    button.disabled = !campAvailable || owned[type] < 1 || metaProgress.orderReputation < rune.price;
     button.title = button.disabled
-      ? owned[type] < 1 ? "Сначала найди эту руну в PvE." : "Недостаточно репутации ордена."
+      ? !campAvailable ? "Руны можно использовать только в лагере, вне забега и боя."
+        : owned[type] < 1 ? "Сначала найди эту руну в PvE." : "Недостаточно репутации ордена."
       : "Потратить одну руну и репутацию, навсегда повысив характеристику.";
     row.append(details, button);
     list.append(row);
@@ -2734,6 +2743,7 @@ function useClassAbility() {
 
 function defeatEnemy() {
   const enemy = state.enemy;
+  const victoryLevel = state.level;
   const reputation = state.level * (enemy.special === "worldeater" ? 10 : 1);
   metaProgress.orderReputation = Math.min(1000000000, metaProgress.orderReputation + reputation);
   const trophy = (key) => {
@@ -2799,10 +2809,10 @@ function defeatEnemy() {
   if (metaProgress.runeDrops.length >= 100000) {
     console.warn("Журнал добычи рун достиг предела; новая руна не выпала.");
   } else {
-    const drop = awardEnhancementRune(state.level, enemy.runeReceiptId);
+    const drop = awardEnhancementRune(victoryLevel, enemy.runeReceiptId);
     if (drop) {
       const total = window.WellRuneModel.counts(metaProgress.runeDrops)[drop.type];
-      gearMessage += ` Найдена руна «${window.WellRuneModel.RUNES[drop.type].name}» (${total}/${window.WellRuneModel.RUNES[drop.type].cap(state.level)}).`;
+      gearMessage += ` Найдена руна «${window.WellRuneModel.RUNES[drop.type].name}» (${total}/${window.WellRuneModel.RUNES[drop.type].cap(victoryLevel)}).`;
     }
   }
   if (Math.random() < 0.02 && state.inventory.length < MAX_GEAR) {
@@ -2935,6 +2945,7 @@ function applyGroupBattleUpdate(battle, userId) {
   } else if (battle.status === "victory") {
     if (state.coopBattleReceipts.includes(battle.id)) return;
     state.coopBattleReceipts.push(battle.id);
+    const victoryLevel = state.level;
     state.floor = battle.floor;
     state.room = MAX_ROOMS;
     state.enemy = null;
@@ -2943,7 +2954,7 @@ function applyGroupBattleUpdate(battle, userId) {
     state.gold = Math.min(1000000000, state.gold + battle.gold);
     gainXp(battle.xp);
     advanceQuest("defeat");
-    const runeDrop = awardEnhancementRune(state.level, battle.id);
+    const runeDrop = awardEnhancementRune(victoryLevel, battle.id);
     const runeText = runeDrop
       ? ` Найдена руна «${window.WellRuneModel.RUNES[runeDrop.type].name}».`
       : "";

@@ -407,8 +407,7 @@
 
   function settle21(state, now) {
     const player = cardTotal(state.game.player);
-    const dealer = cardTotal(state.game.dealer);
-    while (dealer < 17 && state.game.deck.length) state.game.dealer.push(draw(state.game));
+    while (cardTotal(state.game.dealer) < 17 && state.game.deck.length) state.game.dealer.push(draw(state.game));
     const finalDealer = cardTotal(state.game.dealer);
     if (player > 21) finishGame(state, 0, `Перебор: ${player}. Ставка потеряна.`, now);
     else if (finalDealer > 21 || player > finalDealer) finishGame(state, state.game.bet * 2, `Победа: ${player} против ${finalDealer}. Возврат 2× ставки.`, now);

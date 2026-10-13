@@ -120,6 +120,20 @@
         assert(state.game.status === "finished" && state.game.payout === 125 && state.gold === 220, "five of a kind pays 25x once");
         rejects(() => model.rollDice(state, [], 1003, () => 0), "finished dice game cannot reroll or repay");
       });
+      check("21 dealer stops drawing after reaching seventeen", () => {
+        const state = model.createState(1000);
+        state.game = {
+          id: "dealer-boundary", kind: "21", bet: 5, startedAt: 1000, status: "playing", payout: null,
+          player: [{ value: 10, suit: "♣" }, { value: 8, suit: "♣" }],
+          dealer: [{ value: 2, suit: "♦" }, { value: 3, suit: "♦" }],
+          deck: [...Array.from({ length: 10 }, (_, i) => ({ value: i + 2, suit: "♠" })),
+            { value: 10, suit: "♥" }, { value: 7, suit: "♥" }],
+        };
+        const settled = model.stand21(state, 1001);
+        assert(settled.game.dealer.length === 4 && settled.game.deck.length === 10 &&
+          model.cardTotal(settled.game.dealer) === 22 && model.isValidState(settled),
+          "dealer must stop at bust instead of drawing the entire deck into an invalid save");
+      });
       check("negative bets and premature claims are rejected", () => {
         const state = model.createState(1000);
         rejects(() => model.startGame(state, "dice", 5, 1000), "cannot bet above wallet");

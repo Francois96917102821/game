@@ -1,0 +1,44 @@
+name: Test houses and homesteads
+
+on:
+  pull_request:
+    paths:
+      - "homestead-model.js"
+      - "game.js"
+      - "index.html"
+      - "styles.css"
+      - "tests/homestead.test.html"
+      - ".github/workflows/test-homestead.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  browser:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out game
+        uses: actions/checkout@v4
+      - name: Set up Chrome
+        uses: browser-actions/setup-chrome@v1
+      - name: Run homestead browser tests
+        run: |
+          set -euo pipefail
+          python3 -m http.server 8765 --bind 127.0.0.1 > /tmp/game-homestead-test-server.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid"' EXIT
+          for attempt in {1..30}; do
+            if curl --silent --fail http://127.0.0.1:8765/tests/homestead.test.html > /dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          chrome --headless --no-sandbox --disable-gpu --disable-dev-shm-usage \
+            --disable-extensions --dump-dom --virtual-time-budget=120000 \
+            http://127.0.0.1:8765/tests/homestead.test.html > /tmp/homestead-test.html
+          if ! grep -q 'data-result="pass"' /tmp/homestead-test.html; then
+            cat /tmp/homestead-test.html
+            exit 1
+          fi
+          grep -o 'PASS [^<]*' /tmp/homestead-test.html

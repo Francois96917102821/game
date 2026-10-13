@@ -114,6 +114,17 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--gold-light); ou
 .start-card .eyebrow { margin: 8px 0 0; }
 .start-card h3 { margin: 9px 0; font-size: clamp(21px, 2.4vw, 29px); line-height: 1.25; }
 .start-card > p:not(.eyebrow) { max-width: 330px; margin: 0 0 16px; color: #b0b2a5; font-size: 11px; line-height: 1.65; }
+.start-card .saved-summary { margin: -5px 0 12px; color: var(--gold-light); font: 9px "DM Mono", monospace; letter-spacing: .04em; }
+.resume-button { margin-bottom: 9px; }
+.new-run-button { border-color: #42483a; background: #23271f; color: #c1c9aa; }
+.start-card.has-save { padding-block: 10px; }
+.start-card.has-save .start-emblem { font-size: 22px; }
+.start-card.has-save .eyebrow { margin-top: 4px; }
+.start-card.has-save h3 { margin: 5px 0; font-size: 22px; }
+.start-card.has-save > p:not(.eyebrow) { margin: 0 0 8px; line-height: 1.45; }
+.start-card.has-save .saved-summary { margin: 0 0 8px; }
+.start-card.has-save .resume-button { margin-bottom: 5px; padding-block: 9px; }
+.start-card.has-save .new-run-button { padding-block: 9px; }
 .primary-button { border: 1px solid #a17d43; border-radius: 6px; padding: 11px 19px; background: linear-gradient(180deg, #897044, #6b5634); color: #fff4dc; font-weight: 700; font-size: 12px; cursor: pointer; box-shadow: 0 5px 17px rgba(0,0,0,.28); transition: filter .18s, transform .18s; }
 .primary-button:hover:not(:disabled) { filter: brightness(1.16); transform: translateY(-1px); }
 .primary-button span { margin-left: 10px; font-size: 15px; }

@@ -47,7 +47,7 @@
           </div>
           <div class="panel-divider"></div>
           <div class="best-run"><span>ЛУЧШИЙ СПУСК</span><strong id="best-floor">—</strong></div>
-          <p class="save-note"><span aria-hidden="true">●</span> Рекорд сохраняется на устройстве</p>
+          <p class="save-note"><span aria-hidden="true">●</span> Прогресс сохраняется автоматически</p>
         </aside>
 
         <section class="adventure-panel">
@@ -76,8 +76,10 @@
             <div class="start-card" id="start-card">
               <span class="start-emblem" aria-hidden="true">ᛟ</span>
               <p class="eyebrow">ЛЕГЕНДА НАЧИНАЕТСЯ</p>
-              <h3>Не каждый колодец<br>ведёт к воде.</h3>
-              <p>Спускайся по забытым залам, собирай добычу и выясни, кто зовёт со дна.</p>
+              <h3 id="start-title">Не каждый колодец ведёт к воде.</h3>
+              <p id="start-description">Спускайся по забытым залам, собирай добычу и выясни, кто зовёт со дна.</p>
+              <p class="saved-summary" id="saved-summary" hidden></p>
+              <button class="primary-button resume-button" id="resume-button" type="button" hidden>Продолжить спуск <span aria-hidden="true">→</span></button>
               <button class="primary-button" id="start-button" type="button">Начать спуск <span aria-hidden="true">↓</span></button>
             </div>
           </div>

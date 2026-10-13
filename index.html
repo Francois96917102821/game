@@ -16,6 +16,10 @@
           <span><strong>Колодец</strong><small>ШЁПОТА</small></span>
         </a>
         <div class="top-note"><span class="live-dot"></span> ОДИНОЧНОЕ ПРИКЛЮЧЕНИЕ</div>
+        <button class="cloud-status-button" id="cloud-open-button" type="button" aria-haspopup="dialog">
+          <span class="cloud-status-icon" aria-hidden="true">☁</span>
+          <span id="cloud-header-status" aria-live="polite">ЛОКАЛЬНОЕ СОХРАНЕНИЕ</span>
+        </button>
         <button class="icon-button" id="sound-toggle" type="button" aria-label="Звук выключен" title="Звук выключен">♫</button>
       </header>
 
@@ -128,6 +132,7 @@
             <button class="action-button heavy-action" id="heavy-button" type="button" disabled><span aria-hidden="true">✦</span> Сокрушительный · 2 ✦</button>
             <button class="action-button secondary-action" id="combat-potion-button" type="button"><span aria-hidden="true">⚗</span> Зелье <span id="combat-potion-count">2</span></button>
             <button class="action-button guard-action" id="guard-button" type="button"><span aria-hidden="true">⬡</span> Защищаться</button>
+            <button class="action-button ability-action" id="class-ability-button" type="button"><span id="class-ability-icon" aria-hidden="true">✦</span><span id="class-ability-label">Способность</span></button>
           </div>
           <div class="merchant-actions" id="merchant-actions" aria-label="Прилавок странствующего торговца" hidden>
             <button class="action-button secondary-action" id="buy-potion-button" type="button">⚗ Зелье · 12 ✦</button>
@@ -149,9 +154,13 @@
           <div class="objective-card">
             <span class="eyebrow">ТВОЯ ЦЕЛЬ</span>
             <strong id="objective-title">Найти источник зова</strong>
-            <p id="objective-text">Исследуй 5 залов и одолей стража этажа, чтобы открыть путь дальше.</p>
+            <p id="objective-text">Исследуй пять залов и одолей стража на шестом, чтобы открыть путь дальше.</p>
             <div class="objective-progress"><span id="objective-progress"></span></div>
           </div>
+          <section class="quest-card" aria-labelledby="quest-heading">
+            <div class="quest-card-heading"><span class="eyebrow" id="quest-heading">ЗАДАНИЯ ЗАБЕГА</span><span aria-hidden="true">✧</span></div>
+            <div class="quest-list" id="quest-list" aria-live="polite" hidden></div>
+          </section>
           <div class="journal-foot"><span class="live-dot"></span> <span id="journal-status">Твой путь ждёт начала</span></div>
         </aside>
       </section>
@@ -163,17 +172,60 @@
       </form>
       <span class="eyebrow">ПУТЬ ИСКАТЕЛЯ</span>
       <h2 id="class-dialog-title">Выбери свой класс</h2>
-      <p class="dialog-intro">На 3-м уровне выбери одну из трёх специализаций своего класса. На 6-м и 9-м уровнях выбранный подкласс станет сильнее.</p>
+      <p class="dialog-intro">Выбери один из трёх путей. На 3-м уровне откроется второй класс из его ветви, а на 9-м — одно из двух мастерств выбранного класса.</p>
       <div class="class-options" id="class-options" role="group" aria-label="Доступные классы"></div>
       <div class="class-details" id="class-details" aria-live="polite"></div>
       <button class="primary-button dialog-confirm" id="choose-class-button" type="button">Начать спуск этим классом <span aria-hidden="true">↓</span></button>
     </dialog>
     <dialog class="game-dialog subclass-dialog" id="subclass-dialog" aria-labelledby="subclass-dialog-title">
       <span class="eyebrow" id="subclass-level">УРОВЕНЬ 3</span>
-      <h2 id="subclass-dialog-title">Новая специализация</h2>
-      <p class="dialog-intro">Выбери подкласс, чтобы получить его особенность. Выбор нельзя изменить в этом забеге.</p>
-      <div class="subclass-choices" id="subclass-choices" role="group" aria-label="Подклассы"></div>
+      <h2 id="subclass-dialog-title">Новый класс</h2>
+      <p class="dialog-intro">Выбери одно из направлений своей ветви. Выбор нельзя изменить в этом забеге.</p>
+      <div class="subclass-choices" id="subclass-choices" role="group" aria-label="Доступные классы"></div>
     </dialog>
+    <dialog class="game-dialog cloud-dialog" id="cloud-dialog" aria-labelledby="cloud-dialog-title">
+      <form method="dialog" class="dialog-close-form">
+        <button class="dialog-close" aria-label="Закрыть настройки облака">×</button>
+      </form>
+      <span class="eyebrow">СИНХРОНИЗАЦИЯ ПРОГРЕССА</span>
+      <h2 id="cloud-dialog-title">Облачное сохранение</h2>
+      <p class="dialog-intro">Забег и рекорд можно переносить между устройствами после входа в аккаунт. Без подключения игра продолжает сохраняться только в этом браузере.</p>
+      <p class="cloud-status-message" id="cloud-status" role="status" aria-live="polite"></p>
+      <form class="cloud-auth-form" id="cloud-auth-form">
+        <label for="cloud-email">Электронная почта</label>
+        <input id="cloud-email" name="email" type="email" autocomplete="email" required>
+        <label for="cloud-password">Пароль</label>
+        <input id="cloud-password" name="password" type="password" autocomplete="current-password" minlength="6" required>
+        <div class="cloud-auth-actions">
+          <button class="primary-button" id="cloud-signin-button" type="button">Войти</button>
+          <button class="action-button secondary-action" id="cloud-signup-button" type="button">Создать аккаунт</button>
+        </div>
+      </form>
+      <section class="cloud-account" id="cloud-account" hidden>
+        <p>Аккаунт: <strong id="cloud-account-email"></strong></p>
+        <div class="cloud-account-actions">
+          <button class="primary-button" id="cloud-sync-button" type="button">Синхронизировать сейчас</button>
+          <button class="action-button secondary-action" id="cloud-signout-button" type="button">Выйти</button>
+        </div>
+        <div class="cloud-history" id="cloud-history" hidden>
+          <label for="cloud-history-select">История облачных копий</label>
+          <select id="cloud-history-select"></select>
+          <button class="action-button secondary-action" id="cloud-restore-button" type="button">Восстановить копию</button>
+        </div>
+      </section>
+    </dialog>
+    <dialog class="game-dialog cloud-conflict-dialog" id="cloud-conflict-dialog" aria-labelledby="cloud-conflict-title">
+      <span class="eyebrow">СОХРАНЕНИЯ РАЗЛИЧАЮТСЯ</span>
+      <h2 id="cloud-conflict-title">Какой путь продолжить?</h2>
+      <p class="dialog-intro" id="cloud-conflict-summary"></p>
+      <p class="cloud-conflict-note">Не выбранная версия останется в истории облачных копий. До выбора прогресс не перезаписывается.</p>
+      <div class="cloud-account-actions">
+        <button class="action-button secondary-action" id="cloud-use-local-button" type="button">Оставить этот вариант</button>
+        <button class="primary-button" id="cloud-use-remote-button" type="button">Загрузить облачный вариант</button>
+      </div>
+    </dialog>
+    <script src="cloud-config.js"></script>
+    <script src="cloud-save.js"></script>
     <script src="game.js"></script>
   </body>
 </html>

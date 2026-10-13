@@ -304,6 +304,22 @@
       </section>
       <button class="tavern-return-button" id="tavern-return-button" type="button">← Вернуться в портовый квартал</button>
     </dialog>
+    <dialog class="game-dialog harbor-dialog" id="harbor-dialog" aria-labelledby="harbor-title">
+      <form method="dialog" class="dialog-close-form">
+        <button class="dialog-close" aria-label="Закрыть пристань и вернуться в город">×</button>
+      </form>
+      <span class="eyebrow">ПОРТОВЫЙ КВАРТАЛ</span>
+      <h2 id="harbor-title">Пристань дальних островов</h2>
+      <p class="dialog-intro">Покупай постоянный доступ к одиночным сюжетным экспедициям. Решения и наблюдательность определяют путь; параметры героя не влияют на исход.</p>
+      <p class="harbor-status" id="harbor-status" role="status" aria-live="polite"></p>
+      <section class="harbor-wallet" aria-label="Билеты и осколки">
+        <div><span>БИЛЕТЫ</span><strong id="harbor-tickets">0</strong></div>
+        <div><span>ОСКОЛКИ</span><strong id="harbor-essence">0 ✦</strong></div>
+      </section>
+      <div class="harbor-content" id="harbor-content" aria-live="polite"></div>
+      <section class="harbor-history" id="harbor-history" aria-label="Журнал экспедиций"></section>
+      <button class="tavern-return-button" id="harbor-return-button" type="button">← Вернуться в портовый квартал</button>
+    </dialog>
     <dialog class="game-dialog class-dialog" id="class-dialog" aria-labelledby="class-dialog-title">
       <form method="dialog" class="dialog-close-form">
         <button class="dialog-close" aria-label="Закрыть выбор класса">×</button>
@@ -407,6 +423,7 @@
     <script src="cloud-save.js"></script>
     <script src="player-groups.js"></script>
     <script src="tavern-model.js"></script>
+    <script src="expeditions-model.js"></script>
     <script src="game.js"></script>
   </body>
 </html>

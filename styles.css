@@ -86,13 +86,19 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--gold-light); ou
 .floor-chip { text-align: right; }
 .floor-chip > span { display: block; color: var(--muted); font-size: 8px; }
 .floor-chip strong { display: block; margin-top: 4px; color: var(--gold-light); font: 500 16px "DM Mono", monospace; }
-.well-scene { height: 295px; position: relative; isolation: isolate; overflow: hidden; border: 1px solid #36372b; border-radius: 8px; background: linear-gradient(180deg, #0b0e0d 0%, #161a17 54%, #211f17 100%); }
+.well-scene { height: 295px; position: relative; isolation: isolate; overflow: hidden; border: 1px solid #36372b; border-radius: 8px; background: linear-gradient(180deg, #0b0e0d 0%, #161a17 54%, #211f17 100%); transition: background .55s ease, border-color .55s ease; }
+.well-scene.floor-drowned { border-color: #35474a; background: linear-gradient(180deg, #0a1215 0%, #152425 54%, #1d2622 100%); }
+.well-scene.floor-roots { border-color: #39452d; background: linear-gradient(180deg, #10130d 0%, #1c2618 54%, #26291a 100%); }
+.well-scene.floor-forge { border-color: #4a3730; background: linear-gradient(180deg, #140d0b 0%, #281a16 54%, #33241a 100%); }
 .well-scene:before { content: ""; position: absolute; inset: 0; z-index: -1; opacity: .4; background: repeating-linear-gradient(0deg, transparent 0 49px, rgba(167, 148, 99, .13) 50px 51px); }
 .well-scene:after { content: ""; position: absolute; left: 50%; top: -95px; width: min(85%, 410px); height: 350px; transform: translateX(-50%); border: 18px solid #242720; border-top: 0; border-radius: 0 0 50% 50%; box-shadow: inset 0 -15px 25px rgba(0,0,0,.6), 0 10px 25px rgba(0,0,0,.5); z-index: -1; }
 .scene-shaft { position: absolute; top: 0; bottom: 0; width: 70px; opacity: .34; background: repeating-linear-gradient(0deg, transparent 0 46px, #3a382a 47px 50px); }
 .shaft-one { left: calc(50% - 160px); transform: skewY(9deg); border-left: 2px solid #39392b; }
 .shaft-two { right: calc(50% - 160px); transform: skewY(-9deg); border-right: 2px solid #39392b; }
 .scene-light { position: absolute; left: 50%; bottom: 5px; width: 255px; height: 185px; transform: translateX(-50%); background: radial-gradient(ellipse, rgba(183, 142, 67, .27), rgba(118, 101, 48, .09) 40%, transparent 72%); transition: opacity .4s; }
+.well-scene.floor-drowned .scene-light { background: radial-gradient(ellipse, rgba(73, 163, 174, .32), rgba(57, 121, 131, .1) 40%, transparent 72%); }
+.well-scene.floor-roots .scene-light { background: radial-gradient(ellipse, rgba(148, 184, 86, .31), rgba(90, 124, 55, .1) 40%, transparent 72%); }
+.well-scene.floor-forge .scene-light { background: radial-gradient(ellipse, rgba(216, 102, 57, .34), rgba(160, 70, 45, .12) 40%, transparent 72%); }
 .scene-stone { position: absolute; z-index: 1; height: 12px; border: 1px solid rgba(134, 130, 102, .32); border-radius: 7px; background: linear-gradient(180deg, #49483a, #25271f); box-shadow: 0 5px 8px rgba(0,0,0,.45); }
 .stone-one { width: 100px; left: 10%; top: 46px; transform: rotate(-4deg); }
 .stone-two { width: 77px; right: 12%; top: 81px; transform: rotate(5deg); }
@@ -101,11 +107,23 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--gold-light); ou
 .stone-five { width: 92px; left: 8%; bottom: 49px; transform: rotate(-3deg); }
 .stone-six { width: 73px; right: 16%; bottom: 25px; transform: rotate(4deg); }
 .scene-rune { position: absolute; top: 30px; left: 50%; transform: translateX(-50%); color: #a98c54; opacity: .32; font-size: 22px; text-shadow: 0 0 20px #c5a04c; }
-.scene-character, .scene-enemy { position: absolute; z-index: 2; bottom: 36px; left: 50%; transform: translateX(-50%); color: #d5bd80; font-size: 58px; text-shadow: 0 0 19px rgba(219, 167, 75, .54); transition: transform .25s, color .25s; }
-.scene-enemy { display: none; color: #ce715d; font-size: 53px; }
+.scene-character, .scene-enemy { position: absolute; z-index: 2; bottom: 36px; left: 50%; transform: translateX(-50%); color: #d5bd80; font-size: 58px; text-shadow: 0 0 19px rgba(219, 167, 75, .54); transition: transform .25s, color .25s, text-shadow .4s; }
+.scene-character { transition: left .25s, transform .25s, color .25s, text-shadow .4s; }
+.scene-merchant { position: absolute; z-index: 2; bottom: 36px; left: 65%; display: none; transform: translateX(-50%); color: #d7c290; font-size: 52px; text-shadow: 0 0 21px rgba(203, 174, 102, .62); }
+.well-scene.has-merchant .scene-character { left: 38%; }
+.well-scene.has-merchant .scene-merchant { display: block; }
+.well-scene.floor-drowned .scene-character { color: #a8d8d2; text-shadow: 0 0 19px rgba(87, 205, 197, .54); }
+.well-scene.floor-roots .scene-character { color: #c0d58c; text-shadow: 0 0 19px rgba(153, 206, 88, .48); }
+.well-scene.floor-forge .scene-character { color: #edac7b; text-shadow: 0 0 19px rgba(241, 116, 70, .53); }
+.scene-enemy { display: none; color: #ce715d; font-family: "Segoe UI Symbol", "Segoe UI", sans-serif; font-size: 53px; }
+.scene-enemy.enemy-moss, .scene-enemy.enemy-root, .scene-enemy.enemy-spore, .scene-enemy.enemy-hound { color: #b5c76e; text-shadow: 0 0 21px rgba(167, 196, 86, .62); }
+.scene-enemy.enemy-stone, .scene-enemy.enemy-iron, .scene-enemy.enemy-golem { color: #b4b7ab; text-shadow: 0 0 20px rgba(205, 185, 135, .54); }
+.scene-enemy.enemy-shade, .scene-enemy.enemy-wraith { color: #b4a0df; text-shadow: 0 0 23px rgba(166, 117, 235, .66); }
+.scene-enemy.enemy-drowned, .scene-enemy.enemy-eel { color: #7acdd3; text-shadow: 0 0 22px rgba(77, 194, 211, .63); }
+.scene-enemy.enemy-ember { color: #f39d68; text-shadow: 0 0 24px rgba(251, 110, 53, .75); }
+.scene-enemy.enemy-guardian { font-size: 67px; }
 .well-scene.in-combat .scene-character { left: 39%; }
 .well-scene.in-combat .scene-enemy { display: block; left: 65%; }
-.well-scene.in-combat .scene-enemy:before { content: "☠"; }
 .well-scene.hit .scene-enemy { transform: translateX(-50%) translateX(8px); color: #f0a38a; }
 .well-scene.hit .scene-character { transform: translateX(-50%) translateX(-8px); }
 .scene-caption { position: absolute; left: 13px; bottom: 12px; display: flex; align-items: center; gap: 7px; color: #aaa996; font: 9px "DM Mono", monospace; letter-spacing: .06em; }
@@ -156,7 +174,9 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--gold-light); ou
 .action-button > span:first-child { font-size: 15px; }
 .secondary-action { border-color: #42483a; background: #23271f; color: #c1c9aa; }
 .secondary-action:hover:not(:disabled) { background: #30382a; border-color: #758360; }
-.combat-actions { grid-template-columns: repeat(2, 1fr); }
+.combat-actions, .merchant-actions { grid-template-columns: repeat(2, 1fr); }
+.merchant-actions { display: grid; gap: 9px; margin-top: 13px; }
+.merchant-actions[hidden] { display: none; }
 .attack-action { border-color: #9a5749; background: #39251f; color: #f0c1aa; }
 .attack-action:hover:not(:disabled) { background: #57332a; border-color: #cc7761; }
 .heavy-action { border-color: #80653e; background: #342b1e; }
@@ -245,6 +265,7 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--gold-light); ou
   .top-note { max-width: 115px; line-height: 1.4; }
   .well-scene { height: 245px; }
   .combat-actions { gap: 7px; }
+  .merchant-actions { gap: 7px; }
   .action-button { font-size: 10px; }
 }
 @media (prefers-reduced-motion: reduce) {

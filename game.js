@@ -5,11 +5,82 @@ const XP_PER_LEVEL = 20;
 const SAVE_KEY = "well-of-whispers-best-floor";
 const RUN_SAVE_KEY = "well-of-whispers-active-run";
 const SAVE_VERSION = 1;
-const ENEMY_TYPES = [
-  { name: "Плесневый ползун", icon: "☠", hp: 13, damage: 4, xp: 8, gold: 4 },
-  { name: "Слепой страж", icon: "☠", hp: 17, damage: 5, xp: 11, gold: 6 },
-  { name: "Теневой осколок", icon: "☠", hp: 12, damage: 6, xp: 10, gold: 5 },
+const POTION_LIMIT = 4;
+const MERCHANT_PRICES = { potion: 12, weapon: 18, healing: 8 };
+const FLOOR_THEMES = [
+  {
+    id: "well",
+    name: "Колодец шёпота",
+    entrance: "Эхо старого колодца зовёт с каждым шагом. Каменные плиты прячут следы прежних путников.",
+    spring: "В трещине старой кладки бьёт чистый подземный ключ.",
+    trap: "Изношенная каменная плита провалилась под ногой.",
+    shrine: "В нише мерцает древняя руна. Она впитывает тусклый свет.",
+    guardian: "Хранитель колодца",
+    guardianIcon: "☠",
+    bossHp: 29,
+    bossDamage: 7,
+    bossXp: 24,
+    bossGold: 19,
+  },
+  {
+    id: "drowned",
+    name: "Затопленный город",
+    entrance: "Дальше лестница скрывается под чёрной водой. С верхних арок свисают забытые якорные цепи.",
+    spring: "В каменной чаше собралась свежая вода — не из чёрного затопленного коридора.",
+    trap: "Под водой щёлкнула цепная ловушка — волна сбила тебя с ног.",
+    shrine: "Затопленная статуя открывает глаза. На дне вспыхивает морская руна.",
+    guardian: "Певица бездны",
+    guardianIcon: "♆",
+    bossHp: 35,
+    bossDamage: 8,
+    bossXp: 28,
+    bossGold: 23,
+  },
+  {
+    id: "roots",
+    name: "Корневой собор",
+    entrance: "Потолок исчез под переплетёнными корнями. Сквозь трещины пробивается золотистое свечение.",
+    spring: "В старом древесном корне хранится сладкая целебная смола.",
+    trap: "Живой корень обвил ногу и рванул из темноты.",
+    shrine: "Разросшиеся корни сложились в подобие трона. Внутри теплится семя света.",
+    guardian: "Сердце подземного дерева",
+    guardianIcon: "✹",
+    bossHp: 42,
+    bossDamage: 9,
+    bossXp: 32,
+    bossGold: 27,
+  },
+  {
+    id: "forge",
+    name: "Кузница пепла",
+    entrance: "В глубине открылась покинутая кузница. Угли давно остыли, но воздух всё ещё пахнет железом.",
+    spring: "Между закопчённых наковален пробился прохладный горный ручей.",
+    trap: "Ржавые лопасти кузнечного механизма сорвались с креплений.",
+    shrine: "На чёрной наковальне лежит рунный осколок, сохранивший жар.",
+    guardian: "Пепельный король",
+    guardianIcon: "♨",
+    bossHp: 48,
+    bossDamage: 10,
+    bossXp: 38,
+    bossGold: 32,
+  },
 ];
+
+const ENEMY_TYPES = [
+  { theme: "well", name: "Плесневый ползун", icon: "☣", skin: "moss", hp: 13, damage: 4, xp: 8, gold: 4 },
+  { theme: "well", name: "Слепой страж", icon: "♟", skin: "stone", hp: 17, damage: 5, xp: 11, gold: 6 },
+  { theme: "well", name: "Теневой осколок", icon: "✧", skin: "shade", hp: 12, damage: 6, xp: 10, gold: 5 },
+  { theme: "drowned", name: "Утопший дозорный", icon: "⚓", skin: "drowned", hp: 17, damage: 6, xp: 11, gold: 7 },
+  { theme: "drowned", name: "Глубинный угорь", icon: "♆", skin: "eel", hp: 14, damage: 8, xp: 12, gold: 8 },
+  { theme: "drowned", name: "Призрак корабля", icon: "≋", skin: "wraith", hp: 15, damage: 6, xp: 12, gold: 8 },
+  { theme: "roots", name: "Сплетённый страж", icon: "♣", skin: "root", hp: 21, damage: 7, xp: 15, gold: 9 },
+  { theme: "roots", name: "Грибной чтец", icon: "❋", skin: "spore", hp: 15, damage: 9, xp: 15, gold: 10 },
+  { theme: "roots", name: "Корневая гончая", icon: "❈", skin: "hound", hp: 18, damage: 8, xp: 14, gold: 9 },
+  { theme: "forge", name: "Железный скорпион", icon: "⛓", skin: "iron", hp: 24, damage: 8, xp: 18, gold: 11 },
+  { theme: "forge", name: "Жар-паук", icon: "♨", skin: "ember", hp: 19, damage: 11, xp: 18, gold: 12 },
+  { theme: "forge", name: "Огненный голем", icon: "♟", skin: "golem", hp: 27, damage: 9, xp: 20, gold: 13 },
+];
+const ENEMY_SKINS = new Set([...ENEMY_TYPES.map((enemy) => enemy.skin), "guardian"]);
 
 const $ = (id) => document.getElementById(id);
 const ui = {
@@ -27,7 +98,10 @@ const ui = {
   scene: $("well-scene"),
   caption: $("scene-caption"),
   character: $("scene-character"),
+  enemy: $("scene-enemy"),
+  merchant: $("scene-merchant"),
   startCard: $("start-card"),
+  startKicker: $("start-kicker"),
   startTitle: $("start-title"),
   startDescription: $("start-description"),
   startButton: $("start-button"),
@@ -43,6 +117,11 @@ const ui = {
   potion: $("potion-button"),
   combatActions: $("combat-actions"),
   combatPotionCount: $("combat-potion-count"),
+  merchantActions: $("merchant-actions"),
+  buyPotion: $("buy-potion-button"),
+  buyWeapon: $("buy-weapon-button"),
+  buyHealing: $("buy-healing-button"),
+  leaveMerchant: $("leave-merchant-button"),
   descend: $("descend-button"),
   restart: $("restart-button"),
   journal: $("journal-list"),
@@ -73,6 +152,7 @@ function createState() {
     level: 1,
     enemy: null,
     guarding: false,
+    merchantAvailable: false,
     waitingToDescend: false,
     caption: "Внизу кто-то ждёт",
     event: {
@@ -105,6 +185,7 @@ function isValidRun(run) {
     !isIntegerBetween(saved.xp, 0, XP_PER_LEVEL * saved.level - 1) ||
     typeof saved.guarding !== "boolean" ||
     typeof saved.waitingToDescend !== "boolean" ||
+    (saved.merchantAvailable !== undefined && typeof saved.merchantAvailable !== "boolean") ||
     !Array.isArray(saved.journal) || saved.journal.length > 7 ||
     !saved.event || typeof saved.event !== "object" ||
     typeof saved.caption !== "string" || saved.caption.length > 100 ||
@@ -115,6 +196,8 @@ function isValidRun(run) {
     if (
       !saved.enemy || typeof saved.enemy !== "object" ||
       typeof saved.enemy.name !== "string" || saved.enemy.name.length > 100 ||
+      (saved.enemy.icon !== undefined && (typeof saved.enemy.icon !== "string" || saved.enemy.icon.length > 8)) ||
+      (saved.enemy.skin !== undefined && !ENEMY_SKINS.has(saved.enemy.skin)) ||
       !isIntegerBetween(saved.enemy.hp, 1, 1000000) ||
       !isIntegerBetween(saved.enemy.maxHp, saved.enemy.hp, 1000000) ||
       !isIntegerBetween(saved.enemy.damage, 1, 1000000) ||
@@ -122,9 +205,14 @@ function isValidRun(run) {
       !isIntegerBetween(saved.enemy.gold, 0, 1000000) ||
       typeof saved.enemy.boss !== "boolean" ||
       saved.enemy.boss !== (saved.room === MAX_ROOMS) ||
-      saved.room === 0 || saved.waitingToDescend
+      saved.room === 0 || saved.waitingToDescend || saved.merchantAvailable === true
     ) return false;
   } else if (saved.waitingToDescend && saved.room !== MAX_ROOMS) {
+    return false;
+  } else if (
+    saved.merchantAvailable === true &&
+    (saved.room === 0 || saved.room === MAX_ROOMS || saved.waitingToDescend)
+  ) {
     return false;
   }
 
@@ -228,13 +316,21 @@ function setCaption(text) {
   ui.caption.textContent = text;
 }
 
+function getFloorTheme(floor = state.floor) {
+  return FLOOR_THEMES[(floor - 1) % FLOOR_THEMES.length];
+}
+
+function getRoomEnemies() {
+  return ENEMY_TYPES.filter((enemy) => enemy.theme === getFloorTheme().id);
+}
+
 function startGame() {
   state = createState();
   savedRun = null;
   state.started = true;
   state.attack = randomInt(5, 8);
   addJournal("Спуск начался", "Ты переступил порог колодца. Обратного пути пока нет.", "↓");
-  setEvent("ПЕРВЫЙ ЗАЛ", "Каменная лестница уходит вниз. В темноте мерцает слабый свет.", "↓", "ЭТАЖ 1");
+  setEvent("ПЕРВЫЙ ЗАЛ", getFloorTheme().entrance, "↓", `ЭТАЖ ${state.floor}`);
   setCaption("Путь начинается");
   ui.startCard.hidden = true;
   ui.journalStatus.textContent = "Ты внутри колодца";
@@ -251,7 +347,7 @@ function resumeGame() {
 }
 
 function explore() {
-  if (!state.started || state.enemy || state.gameOver || state.waitingToDescend) return;
+  if (!state.started || state.enemy || state.gameOver || state.merchantAvailable || state.waitingToDescend) return;
   state.room += 1;
   state.guarding = false;
   updateBestFloor();
@@ -261,43 +357,77 @@ function explore() {
   }
 
   const roll = Math.random();
-  if (roll < 0.47) {
+  if (roll < 0.4) {
     spawnEnemy(false);
-  } else if (roll < 0.73) {
+  } else if (roll < 0.6) {
     const reward = randomInt(5, 12) + state.floor;
     state.gold += reward;
-    const foundPotion = Math.random() < 0.28 && state.potions < 4;
+    const foundPotion = Math.random() < 0.28 && state.potions < POTION_LIMIT;
     if (foundPotion) state.potions += 1;
     const loot = `Под осыпавшимися камнями нашлось ${reward} монет${foundPotion ? " и зелье" : ""}.`;
     setEvent("ТАЙНИК НАЙДЕН", loot, "✦");
     addJournal("Спрятанная добыча", loot, "✦");
     setCaption("Здесь кто-то был");
     playTone(490, 0.12);
-  } else if (roll < 0.88) {
+  } else if (roll < 0.74) {
     const healing = Math.min(randomInt(6, 11), state.maxHp - state.hp);
     state.hp += healing;
-    setEvent("ТИХИЙ ИСТОЧНИК", healing > 0 ? `Чистая вода вернула ${healing} здоровья.` : "Вода холодна, но ты уже полон сил.", "◌");
+    setEvent("ПЕРЕДЫШКА", healing > 0 ? `${getFloorTheme().spring} Ты восстановил ${healing} здоровья.` : `${getFloorTheme().spring} Ты уже полон сил.`, "◌");
     addJournal("Глоток передышки", healing > 0 ? `Источник восстановил ${healing} здоровья.` : "Ты нашёл источник, но не нуждался в лечении.", "◌");
-    setCaption("Вода светится");
+    setCaption("Тихая передышка");
     playTone(360, 0.15);
-  } else {
+  } else if (roll < 0.87) {
     const damage = Math.min(randomInt(3, 6), state.hp - 1);
     state.hp -= damage;
-    setEvent("КАМЕННАЯ ЛОВУШКА", `Осыпавшийся свод задел тебя. Потеряно ${damage} здоровья.`, "⌁");
-    addJournal("Опасный проход", `Ловушка отняла ${damage} здоровья.`, "⌁");
-    setCaption("Пыль оседает");
+    const escape = damage ? `${getFloorTheme().trap} Потеряно ${damage} здоровья.` : `Ты чудом увернулся. ${getFloorTheme().trap}`;
+    setEvent("ЛОВУШКА", escape, "⌁");
+    addJournal("Опасный проход", escape, "⌁");
+    setCaption(damage ? "Пыль оседает" : "Ты увернулся от ловушки");
     playTone(145, 0.12);
+  } else if (roll < 0.95) {
+    const blessing = Math.random() < 0.5;
+    if (blessing) {
+      state.attack += 1;
+      setEvent("РУНА СИЛЫ", `${getFloorTheme().shrine} Урон навсегда увеличен на 1.`, "✧");
+      addJournal("Пробуждение руны", "Старая руна навсегда увеличила силу удара на 1.", "✧");
+    } else {
+      state.maxHp += 4;
+      const healing = Math.min(8, state.maxHp - state.hp);
+      state.hp += healing;
+      setEvent("РУНА ЖИЗНИ", `${getFloorTheme().shrine} Максимальное здоровье увеличено на 4${healing ? `, восстановлено ещё ${healing}` : ""}.`, "✧");
+      addJournal("Благословение руны", `Максимальное здоровье выросло на 4, восстановлено ${healing}.`, "✧");
+    }
+    setCaption("Свет древней руны");
+    playTone(530, 0.17);
+  } else {
+    state.merchantAvailable = true;
+    setEvent("СКЕЛЕТ ТОРГОВЦА", "Немного монет за припасы или оружие? Выбирай товар или спокойно иди дальше.", "♙", "ТРАНСАКЦИЯ");
+    addJournal("Странная лавка", "У костяного торговца есть зелья, лечение и оружие. Поторопиться можно, но торговаться не обязательно.", "♙");
+    setCaption("Кто-то ждёт за прилавком");
+    playTone(310, 0.14);
   }
   render();
 }
 
 function spawnEnemy(isBoss) {
-  const base = isBoss
-    ? { name: "Хранитель колодца", icon: "☠", hp: 24 + state.floor * 5, damage: 6 + state.floor, xp: 20, gold: 14 + state.floor * 2, boss: true }
-    : ENEMY_TYPES[randomInt(0, ENEMY_TYPES.length - 1)];
-  const scale = isBoss ? 1 : 1 + (state.floor - 1) * 0.16;
+  const theme = getFloorTheme();
+  const roomEnemies = getRoomEnemies();
+  const cycle = Math.floor((state.floor - 1) / FLOOR_THEMES.length);
+  const base = isBoss ? {
+    name: theme.guardian,
+    icon: theme.guardianIcon,
+    skin: "guardian",
+    hp: theme.bossHp + cycle * 15,
+    damage: theme.bossDamage + cycle * 2,
+    xp: theme.bossXp + cycle * 8,
+    gold: theme.bossGold + state.floor,
+    boss: true,
+  } : roomEnemies[randomInt(0, roomEnemies.length - 1)];
+  const scale = 1 + (state.floor - 1) * 0.12;
   state.enemy = {
     name: base.name,
+    icon: base.icon,
+    skin: base.skin,
     hp: Math.round(base.hp * scale),
     maxHp: Math.round(base.hp * scale),
     damage: Math.ceil(base.damage * scale),
@@ -305,7 +435,7 @@ function spawnEnemy(isBoss) {
     gold: base.gold,
     boss: Boolean(base.boss),
   };
-  setEvent(isBoss ? "СТРАЖ ЭТАЖА" : "ОБИТАТЕЛЬ ГЛУБИНЫ", `${state.enemy.name} преграждает путь. Здоровье: ${state.enemy.hp}.`, isBoss ? "☠" : "⚔");
+  setEvent(isBoss ? `СТРАЖ · ${theme.name.toUpperCase()}` : "ОБИТАТЕЛЬ ГЛУБИНЫ", `${state.enemy.name} преграждает путь. Здоровье: ${state.enemy.hp}.`, isBoss ? theme.guardianIcon : base.icon);
   addJournal(isBoss ? "Страж пробуждён" : "Встреча в темноте", `${state.enemy.name} вступает в бой.`, isBoss ? "☠" : "⚔");
   setCaption(isBoss ? "Страж колодца" : "Враг приближается");
   playTone(isBoss ? 110 : 165, 0.18);
@@ -409,6 +539,40 @@ function descend() {
   render();
 }
 
+function merchantPurchase(item) {
+  if (!state.merchantAvailable || state.gameOver) return;
+  if (item === "potion") {
+    if (state.potions >= POTION_LIMIT || state.gold < MERCHANT_PRICES.potion) return;
+    state.gold -= MERCHANT_PRICES.potion;
+    state.potions += 1;
+    setEvent("СДЕЛКА СОСТОЯЛАСЬ", `Одно зелье здоровья — ${MERCHANT_PRICES.potion} монет. Осталось зелий: ${state.potions}.`, "⚗", "КУПЛЕНО");
+    addJournal("Покупка в лавке", `Ты приобрёл зелье за ${MERCHANT_PRICES.potion} монет.`, "⚗");
+  } else if (item === "weapon") {
+    if (state.gold < MERCHANT_PRICES.weapon) return;
+    state.gold -= MERCHANT_PRICES.weapon;
+    state.attack += 1;
+    setEvent("КЛИНОК ЗАТОЧЕН", `Оружие заточено. Твоя сила навсегда увеличена до ${state.attack}.`, "⚔", "КУПЛЕНО");
+    addJournal("Заточка оружия", "Торговец наточил оружие: сила выросла на 1.", "⚔");
+  } else if (item === "healing") {
+    if (state.gold < MERCHANT_PRICES.healing || state.hp >= state.maxHp) return;
+    state.gold -= MERCHANT_PRICES.healing;
+    const healing = Math.min(12, state.maxHp - state.hp);
+    state.hp += healing;
+    setEvent("ПОВЯЗКА НАЛОЖЕНА", `Старая повязка восстановила ${healing} здоровья.`, "✚", "КУПЛЕНО");
+    addJournal("Лечение у торговца", `За ${MERCHANT_PRICES.healing} монет ты восстановил ${healing} здоровья.`, "✚");
+  }
+  playTone(420, 0.12);
+  render();
+}
+
+function leaveMerchant() {
+  if (!state.merchantAvailable) return;
+  state.merchantAvailable = false;
+  setEvent("В ПУТЬ", "Торговец убрал прилавок и исчез в трещине между камней.", "↓");
+  setCaption("Лавка осталась позади");
+  render();
+}
+
 function updateBestFloor() {
   saveBestFloor();
 }
@@ -459,6 +623,7 @@ function renderJournal() {
 }
 
 function render() {
+  const theme = getFloorTheme();
   ui.level.textContent = `УР. ${state.level}`;
   ui.health.textContent = `${state.hp} / ${state.maxHp}`;
   ui.healthBar.style.width = `${(state.hp / state.maxHp) * 100}%`;
@@ -470,27 +635,42 @@ function render() {
   ui.potions.textContent = String(state.potions);
   ui.best.textContent = bestFloor ? `ЭТАЖ ${bestFloor}` : "—";
   ui.floor.textContent = state.started ? `ЭТАЖ ${state.floor}` : "—";
-  ui.floorTitle.textContent = state.started ? `Зал ${state.room || 1} · ${state.enemy ? state.enemy.name : "Колодец шёпота"}` : "Зов из глубины";
+  ui.floorTitle.textContent = state.started ? `Зал ${state.room || 1} · ${state.enemy ? state.enemy.name : theme.name}` : "Зов из глубины";
   ui.caption.textContent = state.caption;
   ui.eventKicker.textContent = state.event.kicker;
   ui.eventText.textContent = state.event.text;
   ui.eventIcon.textContent = state.event.icon;
   ui.eventTag.textContent = state.event.tag;
   ui.scene.classList.toggle("in-combat", Boolean(state.enemy));
+  ui.scene.classList.toggle("has-merchant", state.merchantAvailable);
+  for (const floorTheme of FLOOR_THEMES) {
+    ui.scene.classList.toggle(`floor-${floorTheme.id}`, state.started && theme.id === floorTheme.id);
+  }
+  ui.enemy.className = `scene-enemy${state.enemy ? ` enemy-${state.enemy.skin || "guardian"}` : ""}`;
+  ui.enemy.textContent = state.enemy ? state.enemy.icon || "☠" : "";
+  ui.merchant.textContent = state.merchantAvailable ? "♟" : "";
   ui.character.textContent = "♙";
-  ui.explore.disabled = !state.started || Boolean(state.enemy) || state.gameOver || state.waitingToDescend;
+  ui.explore.disabled = !state.started || Boolean(state.enemy) || state.gameOver || state.merchantAvailable || state.waitingToDescend;
   ui.potion.disabled = !state.started || state.potions === 0 || state.hp >= state.maxHp || state.gameOver;
   $("combat-potion-button").disabled = state.potions === 0 || state.hp >= state.maxHp || state.gameOver;
   ui.combatPotionCount.textContent = String(state.potions);
   ui.explore.textContent = state.room === 0 ? "Войти в первый зал" : "Исследовать зал";
   ui.explore.replaceChildren(Object.assign(document.createElement("span"), { textContent: "⌕" }), document.createTextNode(` ${state.room === 0 ? "Войти в первый зал" : "Исследовать зал"}`));
-  ui.explore.hidden = !state.started || Boolean(state.enemy) || state.gameOver || state.waitingToDescend;
-  ui.potion.hidden = !state.started || Boolean(state.enemy) || state.gameOver || state.waitingToDescend;
+  ui.explore.hidden = !state.started || Boolean(state.enemy) || state.gameOver || state.merchantAvailable || state.waitingToDescend;
+  ui.potion.hidden = !state.started || Boolean(state.enemy) || state.gameOver || state.merchantAvailable || state.waitingToDescend;
   ui.combatActions.hidden = !state.enemy || state.gameOver;
+  ui.merchantActions.hidden = !state.merchantAvailable || state.gameOver;
+  ui.buyPotion.disabled = state.potions >= POTION_LIMIT || state.gold < MERCHANT_PRICES.potion;
+  ui.buyPotion.textContent = `⚗ Зелье · ${MERCHANT_PRICES.potion} ✦`;
+  ui.buyWeapon.disabled = state.gold < MERCHANT_PRICES.weapon;
+  ui.buyWeapon.textContent = `⚔ Заточка · ${MERCHANT_PRICES.weapon} ✦`;
+  ui.buyHealing.disabled = state.hp >= state.maxHp || state.gold < MERCHANT_PRICES.healing;
+  ui.buyHealing.textContent = `✚ Лечение · ${MERCHANT_PRICES.healing} ✦`;
   ui.descend.hidden = !state.waitingToDescend || state.gameOver;
   ui.restart.hidden = !state.gameOver;
   ui.startCard.hidden = state.started;
   ui.startCard.classList.toggle("has-save", Boolean(savedRun));
+  ui.startKicker.textContent = savedRun ? "ПУТЕШЕСТВИЕ СОХРАНЕНО" : "ЛЕГЕНДА НАЧИНАЕТСЯ";
   ui.resumeButton.hidden = !savedRun;
   ui.startButton.textContent = savedRun ? "Начать новый спуск" : "Начать спуск ↓";
   ui.startButton.classList.toggle("new-run-button", Boolean(savedRun));
@@ -545,9 +725,15 @@ ui.potion.addEventListener("click", () => drinkPotion(false));
 $("attack-button").addEventListener("click", () => attackEnemy());
 $("heavy-button").addEventListener("click", () => attackEnemy(1.8));
 $("combat-potion-button").addEventListener("click", () => drinkPotion(true));
-$("guard-button").addEventListener("click", () => enemyTurn(true));
+$("guard-button").addEventListener("click", () => {
+  if (state.enemy && !state.gameOver) enemyTurn(true);
+});
 ui.descend.addEventListener("click", descend);
 ui.restart.addEventListener("click", startGame);
+ui.buyPotion.addEventListener("click", () => merchantPurchase("potion"));
+ui.buyWeapon.addEventListener("click", () => merchantPurchase("weapon"));
+ui.buyHealing.addEventListener("click", () => merchantPurchase("healing"));
+ui.leaveMerchant.addEventListener("click", leaveMerchant);
 $("sound-toggle").addEventListener("click", (event) => {
   soundEnabled = !soundEnabled;
   event.currentTarget.setAttribute("aria-pressed", String(soundEnabled));

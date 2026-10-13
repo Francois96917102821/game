@@ -72,10 +72,11 @@
             <div class="scene-rune">ᛟ</div>
             <div class="scene-character" id="scene-character" aria-hidden="true">♙</div>
             <div class="scene-enemy" id="scene-enemy" aria-hidden="true"></div>
+            <div class="scene-merchant" id="scene-merchant" aria-hidden="true"></div>
             <div class="scene-caption"><span class="live-dot"></span><span id="scene-caption">Внизу кто-то ждёт</span></div>
             <div class="start-card" id="start-card">
               <span class="start-emblem" aria-hidden="true">ᛟ</span>
-              <p class="eyebrow">ЛЕГЕНДА НАЧИНАЕТСЯ</p>
+              <p class="eyebrow" id="start-kicker">ЛЕГЕНДА НАЧИНАЕТСЯ</p>
               <h3 id="start-title">Не каждый колодец ведёт к воде.</h3>
               <p id="start-description">Спускайся по забытым залам, собирай добычу и выясни, кто зовёт со дна.</p>
               <p class="saved-summary" id="saved-summary" hidden></p>
@@ -107,6 +108,12 @@
             <button class="action-button heavy-action" id="heavy-button" type="button"><span aria-hidden="true">✦</span> Сильный удар</button>
             <button class="action-button secondary-action" id="combat-potion-button" type="button"><span aria-hidden="true">⚗</span> Зелье <span id="combat-potion-count">2</span></button>
             <button class="action-button guard-action" id="guard-button" type="button"><span aria-hidden="true">⬡</span> Защищаться</button>
+          </div>
+          <div class="merchant-actions" id="merchant-actions" aria-label="Прилавок странствующего торговца" hidden>
+            <button class="action-button secondary-action" id="buy-potion-button" type="button">⚗ Зелье · 12 ✦</button>
+            <button class="action-button" id="buy-weapon-button" type="button">⚔ Заточка · 18 ✦</button>
+            <button class="action-button secondary-action" id="buy-healing-button" type="button">✚ Лечение · 8 ✦</button>
+            <button class="action-button guard-action" id="leave-merchant-button" type="button">Продолжить путь <span aria-hidden="true">→</span></button>
           </div>
           <button class="primary-button descend-button" id="descend-button" type="button" hidden>Спуститься глубже <span aria-hidden="true">↓</span></button>
           <button class="primary-button restart-button" id="restart-button" type="button" hidden>Начать заново <span aria-hidden="true">↻</span></button>

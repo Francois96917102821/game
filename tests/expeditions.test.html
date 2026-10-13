@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8">
+    <title>Тесты экспедиций</title>
+  </head>
+  <body>
+    <h1 id="result">RUNNING</h1>
+    <pre id="log"></pre>
+    <script src="../expeditions-model.js"></script>
+    <script>
+      "use strict";
+
+      const output = document.getElementById("log");
+      const failures = [];
+      const model = window.WellExpeditionsModel;
+      function assert(condition, message) {
+        if (!condition) throw new Error(message);
+      }
+      function check(name, action) {
+        try {
+          action();
+          output.textContent += `PASS ${name}\n`;
+        } catch (error) {
+          failures.push(`${name}: ${error.message}`);
+          output.textContent += `FAIL ${name}: ${error.message}\n`;
+        }
+      }
+      function choose(state, choiceId, now, id) {
+        const result = model.choose(state, choiceId, now, id);
+        assert(!result.reason, `choice ${choiceId} was rejected: ${result.reason}`);
+        return result;
+      }
+      function click(documentNode, selector) {
+        const element = documentNode.querySelector(selector);
+        assert(element, `missing UI element ${selector}`);
+        element.click();
+        return element;
+      }
+      async function waitFor(predicate, message, timeout = 8000) {
+        const start = Date.now();
+        while (Date.now() - start < timeout) {
+          if (predicate()) return;
+          await new Promise((resolve) => setTimeout(resolve, 40));
+        }
+        throw new Error(message);
+      }
+
+      check("ticket purchases cost exactly 100 premium shards per ticket", () => {
+        const result = model.buyTickets(model.createState(), 250, 2, "receipt-two");
+        assert(result.bought && result.essence === 50, "two tickets charge exactly 200 shards");
+        assert(model.ticketBalance(result.state) === 2, "purchased tickets appear in the balance");
+        const rejected = model.buyTickets(result.state, 99, 1, "receipt-poor");
+        assert(!rejected.bought && rejected.essence === 99, "insufficient shards are not charged");
+      });
+
+      check("access is bought once and remains available after serialization", () => {
+        const tickets = model.buyTickets(model.createState(), 200, 2, "receipt-access");
+        const purchase = model.purchase(tickets.state, "sunken-archipelago");
+        assert(purchase.purchased && model.ticketBalance(purchase.state) === 0, "two-ticket access is charged once");
+        const reloaded = model.withDefaults(JSON.parse(JSON.stringify(purchase.state)));
+        const repeatPurchase = model.purchase(reloaded, "sunken-archipelago");
+        assert(repeatPurchase.reason === "owned" && model.ticketBalance(repeatPurchase.state) === 0,
+          "owned access cannot be charged a second time");
+      });
+
+      check("cloud merges preserve ticket receipts and purchases from both devices", () => {
+        let firstDevice = model.buyTickets(model.createState(), 100, 1, "receipt-device-a").state;
+        firstDevice = model.purchase(firstDevice, "mist-lighthouse").state;
+        let secondDevice = model.buyTickets(model.createState(), 100, 1, "receipt-device-b").state;
+        secondDevice = model.purchase(secondDevice, "ash-reef").state;
+        const merged = model.merge(firstDevice, secondDevice);
+        assert(merged.ticketPurchases.length === 2 && merged.purchased.length === 2,
+          "independent device receipts and permanent unlocks are unioned");
+        assert(model.ticketBalance(merged) === 0, "merged ticket balance accounts for both unlocks");
+        assert(model.isValidState(merged), "merged harbor state remains valid for cloud saves");
+      });
+
+      check("branch choices persist and first successful reward is granted exactly once", () => {
+        let harbor = model.createState();
+        harbor = model.buyTickets(harbor, 100, 1, "receipt-story").state;
+        harbor = model.purchase(harbor, "mist-lighthouse").state;
+        harbor = model.start(harbor, "mist-lighthouse", 1000).state;
+        harbor = choose(harbor, "high-light", 1001, "unused-1").state;
+        const first = choose(harbor, "dark-light-dark", 1002, "history-first");
+        assert(first.outcome === "success" && first.rewardGranted, "correct observation leads to a first-clear reward");
+        harbor = model.withDefaults(JSON.parse(JSON.stringify(first.state)));
+        assert(harbor.completed.length === 1 && harbor.relics.length === 1 && harbor.history.length === 1,
+          "first reward and route survive a save/reload round trip");
+        harbor = model.start(harbor, "mist-lighthouse", 2000).state;
+        harbor = choose(harbor, "low-light", 2001, "unused-2").state;
+        const repeat = choose(harbor, "third-wave", 2002, "history-repeat");
+        assert(repeat.outcome === "success" && !repeat.rewardGranted && repeat.reward === null,
+          "a successful replay never duplicates the reward");
+        assert(repeat.state.history.length === 2 && repeat.state.relics.length === 1 &&
+          repeat.state.history[0].choices[0].choiceId !== repeat.state.history[1].choices[0].choiceId,
+        "the alternative route is recorded without a second relic");
+      });
+
+      check("wrong observations and deliberate retreat have distinct outcomes", () => {
+        let harbor = model.buyTickets(model.createState(), 200, 2, "receipt-outcomes").state;
+        harbor = model.purchase(harbor, "sunken-archipelago").state;
+        harbor = model.start(harbor, "sunken-archipelago", 3000).state;
+        let result = choose(harbor, "fourth-echo", 3001, "history-failure");
+        assert(result.outcome === "failure" && !result.rewardGranted, "misreading the clue is a loss, not a stat check");
+        harbor = model.start(result.state, "sunken-archipelago", 4000).state;
+        result = choose(harbor, "return", 4001, "history-retreat");
+        assert(result.outcome === "retreat" && !result.rewardGranted, "retreat is recorded separately and keeps access");
+        assert(result.state.purchased.includes("sunken-archipelago") && result.state.history.length === 2,
+          "failed and abandoned runs preserve permanent access and history");
+      });
+
+      async function checkBrowserUi() {
+        localStorage.setItem("well-of-whispers-camp-progress", JSON.stringify({
+          essence: 100,
+          upgrades: { vitality: 0, power: 0, supplies: 0 },
+          bossesDefeated: 0,
+          secretsFound: [],
+          groupInboxReceipts: [],
+        }));
+        const frame = document.createElement("iframe");
+        frame.title = "Проверка интерфейса пристани";
+        frame.style.width = "375px";
+        frame.style.height = "700px";
+        frame.src = "../index.html?expeditions-test=1";
+        document.body.append(frame);
+        await new Promise((resolve, reject) => {
+          frame.addEventListener("load", resolve, { once: true });
+          frame.addEventListener("error", reject, { once: true });
+        });
+        const gameWindow = frame.contentWindow;
+        let gameDocument = frame.contentWindow.document;
+        const baseMeta = gameWindow.createMetaProgress(5000);
+        baseMeta.essence = 1000;
+        const firstDevice = JSON.parse(JSON.stringify(baseMeta));
+        const secondDevice = JSON.parse(JSON.stringify(baseMeta));
+        const firstTicket = model.buyTickets(firstDevice.harbor, firstDevice.essence, 1, "merge-receipt-a");
+        const secondTicket = model.buyTickets(secondDevice.harbor, secondDevice.essence, 1, "merge-receipt-b");
+        firstDevice.harbor = firstTicket.state;
+        firstDevice.essence = firstTicket.essence;
+        secondDevice.harbor = secondTicket.state;
+        secondDevice.essence = secondTicket.essence;
+        const mergedMeta = gameWindow.mergeMetaProgress(firstDevice, secondDevice);
+        assert(mergedMeta.essence === 800 && model.ticketBalance(mergedMeta.harbor) === 2,
+          "cloud merge preserves independent ticket purchases without restoring spent shards");
+        const staleMerge = gameWindow.mergeMetaProgress(firstDevice, baseMeta);
+        assert(staleMerge.essence === 900, "a stale cloud snapshot cannot refund a ticket purchase");
+        click(gameDocument, '[data-district="port"]');
+        click(gameDocument, '[data-city-action="harbor"]');
+        await waitFor(() => gameDocument.querySelector("#harbor-dialog").open, "harbor dialog did not open");
+        click(gameDocument, '[data-harbor-action="buy-tickets"][data-amount="1"]');
+        let saved = JSON.parse(localStorage.getItem("well-of-whispers-camp-progress"));
+        assert(saved.essence === 0 && model.ticketBalance(saved.harbor) === 1, "UI debits 100 shards and displays one ticket");
+        click(gameDocument, '[data-harbor-action="purchase"][data-expedition-id="mist-lighthouse"]');
+        saved = JSON.parse(localStorage.getItem("well-of-whispers-camp-progress"));
+        assert(saved.harbor.purchased.includes("mist-lighthouse"), "UI purchase is stored in meta-progress");
+        click(gameDocument, '[data-harbor-action="start"][data-expedition-id="mist-lighthouse"]');
+        click(gameDocument, '[data-harbor-action="choose"][data-choice-id="high-light"]');
+        click(gameDocument, '[data-harbor-action="choose"][data-choice-id="dark-light-dark"]');
+        saved = JSON.parse(localStorage.getItem("well-of-whispers-camp-progress"));
+        assert(saved.harbor.completed.includes("mist-lighthouse") && saved.harbor.relics.length === 1,
+          "UI awards the permanent first-clear relic");
+
+        const reload = new Promise((resolve, reject) => {
+          frame.addEventListener("load", resolve, { once: true });
+          frame.addEventListener("error", reject, { once: true });
+        });
+        frame.src = "../index.html?expeditions-test=reload";
+        await reload;
+        gameDocument = frame.contentWindow.document;
+        click(gameDocument, '[data-district="port"]');
+        click(gameDocument, '[data-city-action="harbor"]');
+        await waitFor(() => gameDocument.querySelector("#harbor-dialog").open, "harbor did not reopen after reload");
+        assert(gameDocument.querySelector("#harbor-tickets").textContent === "0", "ticket balance survives reload");
+        click(gameDocument, '[data-harbor-action="start"][data-expedition-id="mist-lighthouse"]');
+        click(gameDocument, '[data-harbor-action="choose"][data-choice-id="low-light"]');
+        click(gameDocument, '[data-harbor-action="choose"][data-choice-id="third-wave"]');
+        saved = JSON.parse(localStorage.getItem("well-of-whispers-camp-progress"));
+        assert(saved.harbor.history.length === 2 && saved.harbor.relics.length === 1,
+          "reloaded UI permits another branch but does not issue a duplicate reward");
+        const cloudSnapshot = frame.contentWindow.getCloudSaveSnapshot();
+        assert(cloudSnapshot.meta.harbor.history.length === 2,
+          "expedition progress is present in the cloud save snapshot");
+        output.textContent += "PASS harbor UI ticket purchase, permanent access, reward, and reload flow\n";
+        frame.remove();
+      }
+
+      checkBrowserUi().catch((error) => failures.push(`browser UI: ${error.message}`)).finally(() => {
+        if (failures.length) {
+          output.textContent += `${failures.length} FAILURE(S)\n${failures.join("\n")}\n`;
+          document.getElementById("result").textContent = "FAIL";
+          document.getElementById("result").dataset.result = "fail";
+        } else {
+          document.getElementById("result").textContent = "PASS";
+          document.getElementById("result").dataset.result = "pass";
+        }
+      });
+    </script>
+  </body>
+</html>

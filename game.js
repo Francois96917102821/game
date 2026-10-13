@@ -65,7 +65,7 @@ const CITY_DISTRICTS = {
     description: "Пристанище у воды открыто сразу; таверна принимает путников, остальные службы отмечены отдельно.",
     services: [
       { icon: "♨", name: "Таверна", description: "Еда, временная работа, комнаты отдыха и игры на золото. Поиск игроков и гильдий пока недоступен.", status: "ready", statusLabel: "ДОСТУПНО", action: "tavern", actionLabel: "Войти в таверну" },
-      { icon: "⚓", name: "Пристань", description: "Одноразовые сюжетные экспедиции по воде.", status: "soon", statusLabel: "СКОРО" },
+      { icon: "⚓", name: "Пристань", description: "Покупай билеты и отправляйся в сюжетные экспедиции на дальние острова.", status: "ready", statusLabel: "ЭКСПЕДИЦИИ", action: "harbor", actionLabel: "Открыть пристань" },
       { icon: "⚒", name: "Мастерская", description: "Место для творческих заказов и работ.", status: "soon", statusLabel: "СКОРО" },
       { icon: "◈", name: "Гильдия убийц", description: "Заказы на PvP-схватки с другими игроками.", status: "soon", statusLabel: "СКОРО" },
     ],
@@ -545,6 +545,12 @@ const ui = {
   metaEssence: $("meta-essence"),
   metaUpgrades: $("meta-upgrades"),
   metaSecrets: $("meta-secrets"),
+  harborDialog: $("harbor-dialog"),
+  harborTickets: $("harbor-tickets"),
+  harborEssence: $("harbor-essence"),
+  harborStatus: $("harbor-status"),
+  harborContent: $("harbor-content"),
+  harborHistory: $("harbor-history"),
   tavernDialog: $("tavern-dialog"),
   tavernStatus: $("tavern-status"),
   tavernGold: $("tavern-gold"),
@@ -570,6 +576,7 @@ let tavernWriteConflict = false;
 let tavernMessage = "";
 let pendingTavernState = null;
 let selectedTavernTab = "food";
+let harborMessage = "";
 let tavernSelectedGameId = null;
 let selectedDiceToHold = [];
 let tavernDatabasePromise = null;
@@ -650,6 +657,7 @@ function createMetaProgress(now = Date.now()) {
     secretsFound: [],
     groupInboxReceipts: [],
     tavern,
+    harbor: window.WellExpeditionsModel.createState(),
   };
 }
 
@@ -674,7 +682,8 @@ function isValidMetaProgress(progress) {
     progress.secretsFound.every((id) => SECRET_LORE.some((secret) => secret.id === id)) &&
     new Set(progress.secretsFound).size === progress.secretsFound.length &&
     isValidInboxReceipts(progress.groupInboxReceipts) &&
-    (progress.tavern === undefined || window.WellTavernModel.isValidState(progress.tavern))
+    (progress.tavern === undefined || window.WellTavernModel.isValidState(progress.tavern)) &&
+    (progress.harbor === undefined || window.WellExpeditionsModel.isValidState(progress.harbor))
   );
 }
 
@@ -683,6 +692,7 @@ function normalizeMetaProgress(progress) {
   normalized.tavern = progress?.tavern === undefined
     ? createMetaProgress(0).tavern
     : window.WellTavernModel.withDefaults(progress.tavern);
+  normalized.harbor = window.WellExpeditionsModel.withDefaults(progress?.harbor);
   return normalized;
 }
 
@@ -710,8 +720,18 @@ function mergeMetaProgress(left, right) {
     (second.tavern.updatedAt === first.tavern.updatedAt && second.tavern.revision >= first.tavern.revision)
     ? second.tavern
     : first.tavern;
+  const harbor = window.WellExpeditionsModel.merge(first.harbor, second.harbor);
+  const firstTicketReceipts = new Set(first.harbor.ticketPurchases.map((receipt) => receipt.id));
+  const secondTicketReceipts = new Set(second.harbor.ticketPurchases.map((receipt) => receipt.id));
+  const missingDebits = (sourceReceipts, otherHarbor) => otherHarbor.ticketPurchases
+    .filter((receipt) => !sourceReceipts.has(receipt.id))
+    .reduce((total, receipt) => total + receipt.essenceCost, 0);
   return {
-    essence: Math.max(first.essence, second.essence),
+    essence: Math.max(
+      0,
+      first.essence - missingDebits(firstTicketReceipts, second.harbor),
+      second.essence - missingDebits(secondTicketReceipts, first.harbor),
+    ),
     upgrades: Object.fromEntries(Object.keys(META_UPGRADES).map((id) => [
       id,
       Math.max(first.upgrades[id], second.upgrades[id]),
@@ -723,6 +743,7 @@ function mergeMetaProgress(left, right) {
       ...(second.groupInboxReceipts || []),
     ])],
     tavern: JSON.parse(JSON.stringify(tavern)),
+    harbor,
   };
 }
 
@@ -2684,6 +2705,222 @@ function renderCity() {
     createCityServiceCard(service, selectedDistrict === "upper" && !upperUnlocked)));
 }
 
+function harborReceiptId() {
+  return window.crypto?.randomUUID
+    ? window.crypto.randomUUID()
+    : `voyage-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function harborActionButton(label, action, data = {}, disabled = false, className = "service-button") {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = className;
+  button.textContent = label;
+  button.dataset.harborAction = action;
+  for (const [key, value] of Object.entries(data)) button.dataset[key] = String(value);
+  button.disabled = disabled;
+  return button;
+}
+
+function openHarbor() {
+  if (state.started && !state.gameOver) return;
+  selectedDistrict = "port";
+  renderCity();
+  harborMessage = "";
+  if (!ui.harborDialog.open) ui.harborDialog.showModal();
+  renderHarbor();
+}
+
+function closeHarbor() {
+  if (ui.harborDialog.open) ui.harborDialog.close();
+  selectedDistrict = "port";
+  renderCity();
+}
+
+function renderHarbor() {
+  if (!ui.harborDialog || !metaProgress?.harbor) return;
+  const model = window.WellExpeditionsModel;
+  const harbor = metaProgress.harbor;
+  const expeditions = model.EXPEDITIONS;
+  ui.harborTickets.textContent = String(model.ticketBalance(harbor));
+  ui.harborEssence.textContent = `${metaProgress.essence} ✦`;
+  ui.harborStatus.textContent = harborMessage ||
+    "Билеты покупаются за осколки. Осколки — ценная премиальная валюта; перед покупкой проверь цену.";
+  ui.harborStatus.classList.toggle("error", harborMessage.startsWith("Не удалось") || harborMessage.startsWith("Недостаточно"));
+  ui.harborContent.replaceChildren();
+
+  if (harbor.active) {
+    const expedition = expeditions.find((item) => item.id === harbor.active.expeditionId);
+    const node = expedition.nodes[harbor.active.nodeId];
+    const scene = document.createElement("section");
+    scene.className = "expedition-scene";
+    const title = document.createElement("h3");
+    title.textContent = `${expedition.icon} ${expedition.title}`;
+    const story = document.createElement("p");
+    story.className = "expedition-story";
+    story.textContent = node.text;
+    const choices = document.createElement("div");
+    choices.className = "expedition-choices";
+    for (const choice of node.choices || []) {
+      choices.append(harborActionButton(choice.label, "choose", { choiceId: choice.id }));
+    }
+    scene.append(title, story, choices);
+    ui.harborContent.append(scene);
+  } else {
+    const ticketShop = document.createElement("section");
+    ticketShop.className = "harbor-ticket-shop";
+    const shopTitle = document.createElement("h3");
+    shopTitle.textContent = "Билеты на корабль";
+    const shopNote = document.createElement("p");
+    shopNote.textContent = "1 билет = 100 осколков. Осколки — ценная премиальная валюта.";
+    const shopActions = document.createElement("div");
+    shopActions.className = "harbor-ticket-actions";
+    for (const amount of [1, 5]) {
+      shopActions.append(harborActionButton(
+        `Купить ${amount} ${amount === 1 ? "билет" : "билета"} · ${amount * model.TICKET_PRICE} ✦`,
+        "buy-tickets",
+        { amount },
+        metaProgress.essence < amount * model.TICKET_PRICE,
+      ));
+    }
+    ticketShop.append(shopTitle, shopNote, shopActions);
+    ui.harborContent.append(ticketShop);
+
+    const catalog = document.createElement("section");
+    catalog.className = "expedition-catalog";
+    const catalogTitle = document.createElement("h3");
+    catalogTitle.textContent = "Экспедиции";
+    catalog.append(catalogTitle);
+    for (const expedition of expeditions) {
+      const card = document.createElement("article");
+      card.className = "expedition-card";
+      const title = document.createElement("h4");
+      title.textContent = `${expedition.icon} ${expedition.title}`;
+      const description = document.createElement("p");
+      description.textContent = expedition.description;
+      const reward = document.createElement("p");
+      reward.className = "expedition-reward";
+      const completed = harbor.completed.includes(expedition.id);
+      reward.textContent = `Первое успешное прохождение: ${expedition.reward.relic} и запись «${expedition.reward.record}». ${completed ? "Награда уже получена." : ""}`;
+      const access = harbor.purchased.includes(expedition.id);
+      const button = harborActionButton(
+        access ? (completed ? "Исследовать ещё раз" : "Отправиться в экспедицию") : `Купить доступ · ${expedition.cost} ${expedition.cost === 1 ? "билет" : "билета"}`,
+        access ? "start" : "purchase",
+        { expeditionId: expedition.id },
+        !access && model.ticketBalance(harbor) < expedition.cost,
+        access ? "primary-button" : "service-button",
+      );
+      card.append(title, description, reward, button);
+      catalog.append(card);
+    }
+    ui.harborContent.append(catalog);
+  }
+
+  ui.harborHistory.replaceChildren();
+  const historyHeading = document.createElement("h3");
+  historyHeading.textContent = "Журнал экспедиций";
+  ui.harborHistory.append(historyHeading);
+  if (harbor.history.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "harbor-empty";
+    empty.textContent = "Здесь появятся найденные пути, неудачи и записи о возвращении.";
+    ui.harborHistory.append(empty);
+  } else {
+    for (const entry of harbor.history.slice(-5).reverse()) {
+      const row = document.createElement("article");
+      row.className = "harbor-history-entry";
+      const expedition = expeditions.find((item) => item.id === entry.expeditionId);
+      const title = document.createElement("strong");
+      title.textContent = `${expedition.title} · ${
+        entry.outcome === "success" ? "успех" : entry.outcome === "failure" ? "неудача" : "отступление"
+      }`;
+      const story = document.createElement("span");
+      story.textContent = `${entry.title}. ${entry.text}`;
+      const path = document.createElement("small");
+      path.textContent = entry.choices.map((choice) => choice.label).join(" → ");
+      row.append(title, story, path);
+      ui.harborHistory.append(row);
+    }
+  }
+}
+
+function handleHarborAction(action, data) {
+  const model = window.WellExpeditionsModel;
+  const now = Date.now();
+  if (action === "buy-tickets") {
+    const result = model.buyTickets(metaProgress.harbor, metaProgress.essence, Number(data.amount), harborReceiptId());
+    if (!result.bought) {
+      harborMessage = result.reason === "essence" ? "Недостаточно осколков для покупки билетов." : "Не удалось купить билеты.";
+      renderHarbor();
+      return;
+    }
+    const previous = metaProgress;
+    metaProgress = { ...metaProgress, essence: result.essence, harbor: result.state };
+    if (!persistMetaProgress()) {
+      metaProgress = previous;
+      harborMessage = "Не удалось сохранить покупку билетов; осколки не списаны.";
+      renderHarbor();
+      return;
+    }
+    harborMessage = `Куплено билетов: ${data.amount}. Списано ${Number(data.amount) * model.TICKET_PRICE} осколков.`;
+  } else if (action === "purchase") {
+    const result = model.purchase(metaProgress.harbor, data.expeditionId);
+    if (!result.purchased) {
+      harborMessage = result.reason === "tickets" ? "Недостаточно билетов для этой экспедиции." : "Не удалось купить доступ.";
+      renderHarbor();
+      return;
+    }
+    const previous = metaProgress;
+    metaProgress = { ...metaProgress, harbor: result.state };
+    if (!persistMetaProgress()) {
+      metaProgress = previous;
+      harborMessage = "Не удалось сохранить покупку доступа; билеты не списаны.";
+      renderHarbor();
+      return;
+    }
+    harborMessage = "Доступ к экспедиции куплен навсегда. Повторные прохождения не требуют билетов.";
+  } else if (action === "start") {
+    const result = model.start(metaProgress.harbor, data.expeditionId, now);
+    if (!result.started) {
+      harborMessage = result.reason === "active" ? "Сначала заверши или покинь текущую экспедицию." : "Эта экспедиция пока недоступна.";
+      renderHarbor();
+      return;
+    }
+    const previous = metaProgress;
+    metaProgress = { ...metaProgress, harbor: result.state };
+    if (!persistMetaProgress()) {
+      metaProgress = previous;
+      harborMessage = "Не удалось сохранить начало экспедиции; попробуй снова.";
+      renderHarbor();
+      return;
+    }
+    harborMessage = "";
+  } else if (action === "choose") {
+    const result = model.choose(metaProgress.harbor, data.choiceId, now, harborReceiptId());
+    if (result.reason) {
+      harborMessage = "Не удалось записать этот выбор. Обнови окно и попробуй снова.";
+      renderHarbor();
+      return;
+    }
+    const previous = metaProgress;
+    metaProgress = { ...metaProgress, harbor: result.state };
+    if (result.outcome === "success") {
+      harborMessage = result.rewardGranted
+        ? `Экспедиция пройдена! Получена реликвия «${result.reward.relic}» и запись «${result.reward.record}». Награда выдаётся только один раз.`
+        : "Ты снова прошёл экспедицию и открыл другую ветвь сюжета. Повторная награда не выдаётся.";
+    } else if (result.outcome === "failure") {
+      harborMessage = "Экспедиция завершилась неудачей. Доступ сохранён — можно попробовать другой путь.";
+    } else if (result.outcome === "retreat") {
+      harborMessage = "Ты вернулся в порт. Купленный доступ остаётся навсегда.";
+    }
+    if (!persistMetaProgress()) {
+      metaProgress = previous;
+      harborMessage = "Не удалось сохранить выбор; состояние экспедиции не изменено.";
+    }
+  }
+  renderHarbor();
+}
+
 function getTavernLevel() {
   return state.started ? state.level : savedRun?.level || metaProgress.tavern.characterLevel;
 }
@@ -3334,7 +3571,17 @@ ui.cityServices.addEventListener("click", (event) => {
     $("meta-panel").scrollIntoView({ behavior: "smooth", block: "center" });
   } else if (button.dataset.cityAction === "tavern") {
     openTavern();
+  } else if (button.dataset.cityAction === "harbor") {
+    openHarbor();
   }
+});
+ui.harborDialog.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-harbor-action]");
+  if (button) handleHarborAction(button.dataset.harborAction, button.dataset);
+});
+ui.harborDialog.addEventListener("close", () => {
+  selectedDistrict = "port";
+  renderCity();
 });
 ui.tavernDialog.addEventListener("click", (event) => {
   const tab = event.target.closest("button[data-tavern-tab]");
@@ -3372,6 +3619,7 @@ ui.tavernDialog.addEventListener("close", () => {
   renderCity();
 });
 $("tavern-return-button").addEventListener("click", closeTavern);
+$("harbor-return-button").addEventListener("click", closeHarbor);
 $("tavern-waiter-hours").addEventListener("change", renderTavern);
 setInterval(() => {
   if (ui.tavernDialog.open) renderTavern();

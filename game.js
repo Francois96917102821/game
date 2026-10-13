@@ -598,6 +598,9 @@ let selectedTavernTab = "food";
 let harborMessage = "";
 let homesteadMessage = "";
 let homesteadBusy = false;
+let homesteadAnchor = "";
+let mailboxInbox = [];
+let mailboxLoading = false;
 let tavernSelectedGameId = null;
 let selectedDiceToHold = [];
 let tavernDatabasePromise = null;
@@ -746,6 +749,39 @@ function mergeMetaProgress(left, right) {
   const tavern = JSON.parse(JSON.stringify(tavernSource.tavern));
   const harbor = window.WellExpeditionsModel.merge(first.harbor, second.harbor);
   const homestead = window.WellHomesteadModel.merge(first.homestead, second.homestead);
+  const mailGearByMailId = new Map();
+  for (const source of [first, second]) {
+    for (const receipt of source.homestead.mailReceipts) {
+      const gear = source.tavern.stash.find((item) => item.id === receipt.gearId);
+      if (gear && !mailGearByMailId.has(receipt.mailId)) {
+        mailGearByMailId.set(receipt.mailId, { receipt, gear });
+      }
+    }
+  }
+  const mergedMailReceipts = [];
+  const usedGearIds = new Set(tavern.stash.map((item) => item.id));
+  for (const receipt of homestead.mailReceipts) {
+    const delivered = mailGearByMailId.get(receipt.mailId);
+    if (!delivered) continue;
+    const existing = tavern.stash.find((item) => item.id === receipt.gearId);
+    if (!existing && tavern.stash.length >= 10000) continue;
+    let gearId = receipt.gearId;
+    if (existing && (existing.type !== delivered.gear.type ||
+      existing.name !== delivered.gear.name || existing.bonus !== delivered.gear.bonus)) {
+      do {
+        tavern.nextGearSequence += 1;
+        gearId = `gear-${tavern.nextGearSequence}`;
+      } while (usedGearIds.has(gearId));
+    }
+    if (!usedGearIds.has(gearId)) {
+      tavern.stash.push({ ...delivered.gear, id: gearId });
+      usedGearIds.add(gearId);
+    }
+    mergedMailReceipts.push({ mailId: receipt.mailId, gearId });
+  }
+  homestead.mailReceipts = mergedMailReceipts;
+  tavern.nextGearSequence = Math.max(tavern.nextGearSequence,
+    ...tavern.stash.map((item) => Number(item.id.slice(5))));
   const firstTicketReceipts = new Set(first.harbor.ticketPurchases.map((receipt) => receipt.id));
   const secondTicketReceipts = new Set(second.harbor.ticketPurchases.map((receipt) => receipt.id));
   const missingDebits = (sourceReceipts, otherHarbor) => otherHarbor.ticketPurchases
@@ -2284,17 +2320,23 @@ function recordTavernInjury() {
 }
 
 function getAttackPower() {
-  return state.attack + (state.equipment.weapon?.bonus || 0) +
-    getClassStat("attack");
+  const base = state.attack + (state.equipment.weapon?.bonus || 0) + getClassStat("attack");
+  return hasActiveMealBuff("attack") ? Math.floor(base * 1.5) : base;
 }
 
 function getArmorDefense() {
-  return (state.equipment.armor?.bonus || 0) + getCharacterClass().defense +
-    getClassStat("defense");
+  const base = (state.equipment.armor?.bonus || 0) + getCharacterClass().defense + getClassStat("defense");
+  return hasActiveMealBuff("defense") ? Math.floor(base * 1.5) : base;
 }
 
 function getDodgeChance() {
-  return Math.min(0.8, getClassStat("dodge"));
+  const chance = getClassStat("dodge");
+  return Math.min(0.8, hasActiveMealBuff("dodge") ? chance * 1.5 : chance);
+}
+
+function hasActiveMealBuff(stat, now = Date.now()) {
+  const buff = metaProgress.homestead.mealBuff;
+  return Boolean(buff && buff.stat === stat && buff.expiresAt > now);
 }
 
 function getHeavyAttackMultiplier() {
@@ -2444,6 +2486,30 @@ function equipGear(gearId) {
   render();
 }
 
+function useCamouflage() {
+  if (!state.enemy || state.gameOver || state.enemy.boss || state.enemy.elite) return;
+  const previous = metaProgress;
+  const result = window.WellHomesteadModel.consumeCamouflage(metaProgress.homestead, Date.now());
+  if (!result.ok) {
+    setEvent("МАСКИРОВКИ НЕТ", result.reason, "◈");
+    render();
+    return;
+  }
+  metaProgress = { ...metaProgress, homestead: result.state };
+  if (!persistMetaProgress()) {
+    metaProgress = previous;
+    setEvent("МАСКИРОВКА НЕ СОХРАНЕНА", "Предмет остался в инвентаре; бой продолжается.", "◈");
+    render();
+    return;
+  }
+  const escapedEnemy = state.enemy.name;
+  state.enemy = null;
+  setEvent("МАСКИРОВКА СРАБОТАЛА", `${escapedEnemy} не заметил тебя: маскировка позволила обойти обычного врага. Опыт и добыча не получены.`, "◈");
+  addJournal("Тихий обход", `${escapedEnemy} не заметил тебя; маскировка израсходована.`, "◈");
+  setCaption("Проход свободен");
+  render();
+}
+
 function drinkPotion(inCombat = false) {
   if (!state.started || state.potions <= 0 || state.hp >= state.maxHp || state.gameOver) return;
   state.potions -= 1;
@@ -2562,6 +2628,12 @@ function renderJournal() {
 }
 
 function renderEquipment() {
+  const craftButton = $("profile-crafting-button");
+  const bestHome = window.WellHomesteadModel.getBestHome(metaProgress.homestead);
+  craftButton.disabled = state.started && !state.gameOver;
+  craftButton.textContent = bestHome
+    ? `Ремесленный стол · ${metaProgress.homestead.atHome ? "доступен дома" : "войти в дом"}`
+    : "Ремесленный стол · сначала купи дом";
   const weapon = state.equipment.weapon;
   const armor = state.equipment.armor;
   for (const [element, gear, type] of [
@@ -2878,7 +2950,7 @@ function renderHomestead() {
   const shop = homeSection("Магазин домов", "После каждой покупки автоматически выбирается лучший дом. Домов можно покупать сколько угодно.");
   shop.append(
     homeCard("Простая хижина · 2 участка · сон 2 ч 40 мин",
-      "Комнаты: спальня, ремесленный стол, почтовый ящик, кухня. Цена: 20 000 золота таверны.",
+      "Комнаты: спальня, ремесленный стол и кухня. Почтовый ящик требует особняк у обоих игроков. Цена: 20 000 золота таверны.",
       [homesteadButton("Купить хижину · 20 000 золота", "buy-home", { tier: "cabin", payment: "gold" },
         metaProgress.tavern.gold < 20000)]),
     homeCard("Добротный дом · 4 участка · сон 2 ч 20 мин",
@@ -2886,7 +2958,7 @@ function renderHomestead() {
       [homesteadButton("Купить дом · 400 осколков", "buy-home", { tier: "sturdy", payment: "essence" },
         metaProgress.essence < 400)]),
     homeCard("Богатый особняк · 6 участков · сон 2 ч",
-      "Комнаты: спальня, ремесленный стол, почтовый ящик, кухня, библиотека, лечебница, святилище, тренировочный зал.",
+      "Комнаты: спальня, ремесленный стол, почтовый ящик, кухня, библиотека, лечебница и святилище. Подвал с тренировочным залом покупается отдельно за золото.",
       [
         homesteadButton("Купить · 1 000 осколков", "buy-home", { tier: "mansion", payment: "essence" },
           metaProgress.essence < 1000),
@@ -2940,28 +3012,186 @@ function renderHomestead() {
         "finish-sleep", {}, now < homestead.sleep.endsAt)
       : homesteadButton(`Лечь спать · ${Math.floor(house.sleepMs / 60000)} минут`, "sleep")]));
   bedroom.append(homeCard("Ремесленный стол",
-    "Обрабатывай сырьё в мастерских на участках: 3 единицы сырья дают 1 материал. Рецепты строительства показаны у каждой постройки."));
+    "Создавай экипировку из материалов домашних мастерских. Предмет попадёт в постоянный запас таверны для подготовки к следующему спуску.",
+    [homesteadButton("Открыть рецепты ремесла", "room-tab", { anchor: "craft" })]));
   bedroom.append(homeCard("Кухня",
-    "Открывает существующую систему рецептов и сытости таверны; блюда действительно попадают в запас еды.",
-    [homesteadButton("Открыть кухню таверны", "kitchen")]));
-  bedroom.append(homeCard("Почтовый ящик · пока недоступен",
-    "Без защищённой серверной доставки обмен между игроками невозможен. Письма и отправка предметов не имитируются."));
+    "Готовь лепёшку из домашнего зерна или одно специальное блюдо после завершённого сна. Каждая порция восстанавливает сытость до 100; специальное блюдо имеет 50% шанс дать выбранный временный боевой бонус на 2 часа.",
+    [homesteadButton("Перейти к рецептам кухни", "room-tab", { anchor: "kitchen" })]));
+  if (house.tier >= 3) {
+    bedroom.append(homeCard("Почтовый ящик",
+      "Отправка доступна только между владельцами особняков, состоящими в одной активной группе. Предмет сначала поступает в серверный эскроу и выдаётся только после локального сохранения отправителя.",
+      [homesteadButton("Открыть почтовый ящик", "room-tab", { anchor: "mailbox" })]));
+  } else {
+    bedroom.append(homeCard("Почтовый ящик · нужен особняк",
+      "Для отправителя и получателя требуется купленный особняк и свежий статус в одной группе."));
+  }
   if (house.tier >= 2) {
-    bedroom.append(homeCard("Библиотека · пока недоступна",
-      "В игре нет системы навыков или сброса характеристик; страницы и услуги не продаются."));
+    bedroom.append(homeCard("Библиотека",
+      `Пустых страниц: ${homestead.pages}. Покупка не меняет характеристики. Надетая книга: ${homestead.equippedBook?.name || "нет"}.`,
+      [
+        homesteadButton("100 страниц · 300 золота", "buy-pages", { count: 100 }, metaProgress.tavern.gold < 300),
+        homesteadButton("1 000 страниц · 3 000 золота", "buy-pages", { count: 1000 }, metaProgress.tavern.gold < 3000),
+        homesteadButton("Снять надетую книгу", "unequip-book", {}, !homestead.equippedBook || homestead.books.length >= 10000),
+      ]));
   }
   if (house.tier >= 3) {
-    bedroom.append(homeCard("Тренировочный зал · пока недоступен",
-      "Манекен не выдаёт опыт и не маскирует боевые действия."));
     const clinic = model.useClinic(homestead, metaProgress.tavern.injuries, now);
+    const clinicReadyAt = homestead.clinicAt === null ? null : homestead.clinicAt + 20 * model.HOUR;
     bedroom.append(homeCard("Лечебница",
-      `Лечит все травмы не чаще одного раза в реальный календарный день. Травм сейчас: ${metaProgress.tavern.injuries} / 3.${homestead.clinicDate === new Date(now).toISOString().slice(0, 10) ? " Сегодня уже использована." : ""}`,
-      [homesteadButton("Вылечить травмы сегодня", "clinic", {}, !clinic.ok)]));
+      `Лечит все травмы раз в 20 часов. Травм сейчас: ${metaProgress.tavern.injuries} / 3.${clinicReadyAt && !clinic.ok ? ` Доступна через ${formatHomeCountdown(clinicReadyAt, now)}.` : " Приём доступен; даже без травм начинается перезарядка."}`,
+      [homesteadButton("Пройти лечение · перезарядка 20 ч", "clinic", {}, !clinic.ok)]));
+    bedroom.append(homeCard("Подвал особняка",
+      homestead.basementPurchased
+        ? "Подвал куплен отдельно. Тренировочный зал не наносит урон игроку и не выдаёт золото или опыт."
+        : `Подвал отдельно открывает тренировочный зал. Цена: ${model.BASEMENT_GOLD_COST.toLocaleString("ru-RU")} золота таверны.`,
+      homestead.basementPurchased
+        ? [homesteadButton("Перейти к тренировочному залу", "room-tab", { anchor: "basement" })]
+        : [homesteadButton(`Купить подвал · ${model.BASEMENT_GOLD_COST.toLocaleString("ru-RU")} золота`,
+          "buy-basement", {}, metaProgress.tavern.gold < model.BASEMENT_GOLD_COST)]));
     bedroom.append(homeCard("Святилище",
       "Алтарь рыбалки влияет на настоящий улов. Рун, характеристик и боли в боевой системе пока нет: эти алтари честно отмечены недоступными.",
       [homesteadButton("К святилищу", "sanctuary")]));
   }
   holdings.append(bedroom);
+
+  const workshop = homeSection("Ремесленный стол · профиль", "Все цены показаны до подтверждения. Экипировка сохраняется в постоянный запас; на материалы начисляются только рецептурные расходы.");
+  workshop.dataset.roomSection = "craft";
+  for (const [recipeId, recipe] of Object.entries(model.CRAFT_RECIPES)) {
+    const cost = Object.entries(recipe.recipe)
+      .map(([key, amount]) => `${amount} ${HOME_RESOURCE_NAMES[key]}`).join(" + ");
+    const tierLocked = house.tier < recipe.tier;
+    workshop.append(homeCard(`${recipe.name} · ${recipe.type === "weapon" ? "урон" : "защита"} +${recipe.bonus}`,
+      `Рецепт: ${cost}. ${tierLocked ? "Нужен добротный дом или особняк." : "Материалы списываются только после подтверждения."}`,
+      [homesteadButton(`Создать · ${cost}`, "craft-gear", { recipeId },
+        tierLocked || metaProgress.tavern.stash.length >= 10000 ||
+          Object.entries(recipe.recipe).some(([key, amount]) => homestead.resources[key] < amount))]));
+  }
+
+  const kitchen = homeSection("Кухня", "Зерно — это семена из ежедневного домашнего сбора. Обычная лепёшка полностью насыщает; каждое блюдо после сна доступно один раз на завершённый отдых.");
+  kitchen.dataset.roomSection = "kitchen";
+  const buffLabels = { attack: "атаки", defense: "защиты", dodge: "уклонения" };
+  for (const [mealId, meal] of Object.entries(model.MEALS)) {
+    const ingredients = Object.entries(meal.recipe)
+      .map(([key, amount]) => `${amount} ${HOME_RESOURCE_NAMES[key]}`).join(" + ");
+    const afterRest = meal.afterRest;
+    const lockedByRest = afterRest &&
+      (homestead.lastCompletedSleepAt === null ||
+        homestead.lastRestMealAt === homestead.lastCompletedSleepAt);
+    const effect = meal.stat
+      ? `После готовки блюда после сна даёт 50% шанс на +50% к ${buffLabels[meal.stat]} на 2 часа.`
+      : "Восстанавливает сытость до 100 без боевого усиления.";
+    kitchen.append(homeCard(`${meal.name} · запас ${homestead.meals[mealId]}`,
+      `Цена: ${ingredients}. ${effect}${afterRest && homestead.lastCompletedSleepAt !== null && !lockedByRest
+        ? " Отдых завершён: специальное блюдо можно приготовить сейчас."
+        : afterRest ? " Сначала заверши сон." : ""}`,
+      [
+        homesteadButton(`Приготовить · ${ingredients}`, "cook-meal", { mealId },
+          lockedByRest || Object.entries(meal.recipe).some(([key, amount]) => homestead.resources[key] < amount)),
+        homesteadButton("Съесть · сытость 100%", "eat-meal", { mealId }, homestead.meals[mealId] < 1),
+      ]));
+  }
+  if (homestead.mealBuff) {
+    const statName = buffLabels[homestead.mealBuff.stat] || homestead.mealBuff.stat;
+    kitchen.append(homeCard("Временный эффект еды",
+      homestead.mealBuff.expiresAt > now
+        ? `+50% к ${statName} действует ещё ${formatHomeCountdown(homestead.mealBuff.expiresAt, now)}.`
+        : `Эффект +50% к ${statName} завершился; время окончания ${new Date(homestead.mealBuff.expiresAt).toLocaleString("ru-RU")}.`));
+  }
+
+  if (house.tier >= 2) {
+    const library = homeSection("Библиотека");
+    library.dataset.roomSection = "library";
+    library.append(homeCard(`Пустые страницы · ${homestead.pages} в запасе`,
+      "100 страниц стоят ровно 300 золота; 1 000 страниц — ровно 3 000 золота. Покупка не расходует осколки и не меняет постоянные характеристики.",
+      [
+        homesteadButton("Купить 100 · 300 золота", "buy-pages", { count: 100 }, metaProgress.tavern.gold < 300),
+        homesteadButton("Купить 1 000 · 3 000 золота", "buy-pages", { count: 1000 }, metaProgress.tavern.gold < 3000),
+      ]));
+    library.append(homeCard(`Надетая книга · ${homestead.equippedBook?.name || "нет"}`,
+      homestead.books.length ? `Книг в инвентаре: ${homestead.books.length}.` : "Книг в инвентаре нет.",
+      [homesteadButton("Снять книгу в инвентарь", "unequip-book", {},
+        !homestead.equippedBook || homestead.books.length >= 10000)]));
+    holdings.append(library);
+  }
+
+  if (house.tier >= 3) {
+    const mailbox = homeSection("Почтовый ящик");
+    mailbox.dataset.roomSection = "mailbox";
+    mailbox.append(homeCard("Условия безопасной доставки",
+      "Оба игрока должны владеть особняком и быть в одной группе с недавним heartbeat (до 75 секунд). Сервер хранит gear в эскроу, пока локальное сохранение отправителя не подтвердило удаление; адреса электронной почты и сохранения партнёров не читаются.",
+      [homesteadButton(mailboxLoading ? "Обновление входящих…" : "Обновить входящие", "mail-refresh", {}, mailboxLoading)]));
+    const mailboxContext = window.WellPlayerGroups?.getMailboxContext?.();
+    const partners = mailboxContext?.fresh
+      ? mailboxContext.members.filter((member) => member.user_id !== mailboxContext.userId)
+      : [];
+    const transferRun = getMailboxRunState();
+    const availableGear = transferRun
+      ? [
+        ...["weapon", "armor"].map((type) => transferRun.equipment?.[type]).filter(Boolean)
+          .map((gear) => ({ gear, source: "equipment" })),
+        ...(transferRun.inventory || []).map((gear) => ({ gear, source: "inventory" })),
+      ]
+      : [];
+    if (!partners.length) {
+      mailbox.append(homeCard("Получатель не найден",
+        mailboxContext?.members?.length
+          ? "Обнови группу и дождись свежего heartbeat партнёра."
+          : "Войди в аккаунт и создай или вступи в группу из двух игроков."));
+    } else if (!availableGear.length) {
+      mailbox.append(homeCard("Нет переносимой экипировки",
+        "Для отправки нужен сохранённый спуск с экипированным предметом или предметом в рюкзаке."));
+    } else {
+      for (const partner of partners) {
+        for (const entry of availableGear) {
+          mailbox.append(homeCard(`Отправить ${entry.gear.name} к ${partner.nickname}`,
+            `${entry.gear.type === "weapon" ? "Оружие" : "Броня"} · +${entry.gear.bonus}. Подтверди цену 0; предмет сначала будет принят серверным эскроу.`,
+            [homesteadButton("Передать предмет", "mail-send", {
+              gearId: entry.gear.id,
+              recipientId: partner.user_id,
+              recipientName: partner.nickname,
+            }, !mailboxContext.fresh)]));
+        }
+      }
+    }
+    const pendingMail = loadPendingMailboxOperations();
+    for (const pending of pendingMail) {
+      mailbox.append(homeCard(`Отправка · ${pending.gear?.name || pending.itemId}`,
+        pending.removed
+          ? "Предмет удалён локально; эскроу откроется только после облачного сохранения. При сбое сначала нажми «Синхронизировать» в окне облака, затем повтори."
+          : "Предмет остаётся у отправителя, пока локальное и облачное удаление не сохранится.",
+        [homesteadButton("Повторить безопасное подтверждение", "mail-retry", { key: pending.key })]));
+    }
+    for (const incoming of mailboxInbox) {
+      mailbox.append(homeCard(`Входящее · ${incoming.gear?.name || "экипировка"} · от ${incoming.sender_nickname || "сопартийца"}`,
+        incoming.status === "delivered"
+          ? "Уже сохранено в постоянном запасе; повторная выдача защищена квитанцией."
+          : `Серверный эскроу хранит ${incoming.gear?.type === "armor" ? "броню" : "оружие"} +${incoming.gear?.bonus || "?"}; после подтверждения предмет останется в постоянном запасе таверны.`,
+        [homesteadButton(incoming.status === "delivered" ? "Проверить квитанцию" : "Принять в постоянный запас",
+          "mail-claim", { mailId: incoming.id })]));
+    }
+    holdings.append(mailbox);
+  }
+
+  if (house.tier >= 3 && homestead.basementPurchased) {
+    const basement = homeSection("Тренировочный зал · подвал");
+    basement.dataset.roomSection = "basement";
+    const armor = model.DUMMY_ARMOR[homestead.dummyArmor];
+    basement.append(homeCard(`Манекен · ${homestead.dummyHp.toLocaleString("ru-RU")} / 100 000 HP`,
+      `Броня манекена: ${armor.name} (снижает тренировочный урон на ${armor.reduction}). Удары не ранят игрока, не дают золото или опыт.${homestead.dummyAchievement ? " Достижение «Манекен повержен» уже сохранено." : ""}`,
+      [
+        ...Object.entries(model.DUMMY_ARMOR).map(([id, definition]) =>
+          homesteadButton(`Броня: ${definition.name}`, "dummy-armor", { armorId: id }, homestead.dummyArmor === id)),
+        homesteadButton("Ударить манекен", "dummy-hit", {}, homestead.dummyHp === 0),
+        homesteadButton("Восстановить манекен · 100 000 HP", "dummy-reset", {}, homestead.dummyHp > 0),
+      ]));
+    basement.append(homeCard(`Маскировка · ${homestead.camouflage} в инвентаре`,
+      `Цена: ${model.CAMOUFLAGE_GOLD_COST.toLocaleString("ru-RU")} золота. Расходуется, чтобы пропустить одного обычного врага (не босса и не элиту) в следующем спуске.`,
+      [homesteadButton("Купить маскировку · 1 000 золота", "buy-camouflage", {},
+        homestead.camouflage > 0 || metaProgress.tavern.gold < model.CAMOUFLAGE_GOLD_COST)]));
+    holdings.append(basement);
+  }
+
+  holdings.append(workshop, kitchen);
 
   const plotsSection = homeSection("Участки и постройки", "На каждом участке — одна постройка. Перестройка в другой тип стоит полный рецепт новой постройки и не возвращает прежние материалы; активные посевы, вода и дневные квоты защищены.");
   const resources = model.RESOURCE_KEYS.map((key) =>
@@ -3084,6 +3314,11 @@ function renderHomestead() {
     holdings.append(sanctuary);
   }
   ui.homesteadContent.append(holdings);
+  if (homesteadAnchor) {
+    const target = [...ui.homesteadContent.querySelectorAll("[data-room-section]")]
+      .find((section) => section.dataset.roomSection === homesteadAnchor);
+    if (target) window.setTimeout(() => target.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
+  }
 }
 
 function saveHomesteadResult(result, message, options = {}) {
@@ -3093,8 +3328,8 @@ function saveHomesteadResult(result, message, options = {}) {
     return false;
   }
   const previous = metaProgress;
-  let tavern = previous.tavern;
-  if (result.gold !== undefined && result.gold !== previous.tavern.gold) {
+  let tavern = result.tavern ? JSON.parse(JSON.stringify(result.tavern)) : previous.tavern;
+  if (!result.tavern && result.gold !== undefined && result.gold !== previous.tavern.gold) {
     tavern = {
       ...previous.tavern,
       gold: result.gold,
@@ -3148,7 +3383,233 @@ function latestHomesteadBalances() {
   };
 }
 
-function openHomestead() {
+function getMailboxRunState() {
+  return !state.started && savedRun && isValidRun({ version: SAVE_VERSION, state: savedRun })
+    ? savedRun
+    : null;
+}
+
+function mailboxStoragePrefix(userId) {
+  return `well-of-whispers-mail-outbox:${userId}:`;
+}
+
+function loadPendingMailboxOperations() {
+  const context = window.WellPlayerGroups?.getMailboxContext?.();
+  if (!context?.userId) return [];
+  const prefix = mailboxStoragePrefix(context.userId);
+  const pending = [];
+  try {
+    for (let index = 0; index < window.localStorage.length; index += 1) {
+      const key = window.localStorage.key(index);
+      if (!key?.startsWith(prefix)) continue;
+      const operation = JSON.parse(window.localStorage.getItem(key) || "null");
+      if (operation && operation.key === key && typeof operation.itemId === "string" &&
+        typeof operation.recipientId === "string" && typeof operation.requestId === "string" &&
+        isValidGear(operation.gear)) pending.push(operation);
+    }
+  } catch (error) {
+    console.warn("Не удалось прочитать очередь почтового ящика.", error);
+    homesteadMessage = "Не удалось проверить незавершённые отправки; новые письма временно заблокированы.";
+  }
+  return pending;
+}
+
+function persistMailboxOperation(operation) {
+  try {
+    window.localStorage.setItem(operation.key, JSON.stringify(operation));
+    return true;
+  } catch (error) {
+    console.warn("Не удалось сохранить состояние отправки предмета.", error);
+    throw new Error("Не удалось сохранить локальную квитанцию отправки. Предмет не будет снят с вашего сохранения.");
+  }
+}
+
+function mailboxRequestId() {
+  if (window.crypto?.randomUUID) return window.crypto.randomUUID();
+  const bytes = new Uint8Array(16);
+  window.crypto.getRandomValues(bytes);
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  return [...bytes].map((value, index) => {
+    const hex = value.toString(16).padStart(2, "0");
+    return [4, 6, 8, 10].includes(index) ? `-${hex}` : hex;
+  }).join("");
+}
+
+async function mailboxRpc(name, args = {}) {
+  const api = window.WellPlayerGroups;
+  if (!api?.mailboxRpc) throw new Error("Почтовый ящик не настроен в клиенте групп.");
+  return api.mailboxRpc(name, args);
+}
+
+function writeSavedMailboxRun(nextRun) {
+  try {
+    window.localStorage.setItem(RUN_SAVE_KEY, JSON.stringify({ version: SAVE_VERSION, state: nextRun }));
+  } catch (error) {
+    console.warn("Не удалось сохранить спуск после подготовки почты.", error);
+    return false;
+  }
+  savedRun = nextRun;
+  if (window.WellCloudSave) window.WellCloudSave.scheduleSave(getCloudSaveSnapshot());
+  return true;
+}
+
+async function finishMailboxSend(operation) {
+  let escrow = operation.escrowId
+    ? { id: operation.escrowId }
+    : await mailboxRpc("player_mailbox_send", {
+      p_recipient_id: operation.recipientId,
+      p_request_id: operation.requestId,
+      p_gear: operation.gear,
+    });
+  if (!escrow || typeof escrow.id !== "string") throw new Error("Сервер не подтвердил приём предмета в эскроу.");
+  operation.escrowId = escrow.id;
+  persistMailboxOperation(operation);
+
+  const currentRun = getMailboxRunState();
+  const itemStillExists = currentRun &&
+    [...(currentRun.inventory || []), currentRun.equipment?.weapon, currentRun.equipment?.armor]
+      .filter(Boolean).some((item) => item.id === operation.itemId);
+  if (itemStillExists) {
+    const nextRun = JSON.parse(JSON.stringify(currentRun));
+    nextRun.inventory = nextRun.inventory.filter((item) => item.id !== operation.itemId);
+    for (const type of ["weapon", "armor"]) {
+      if (nextRun.equipment?.[type]?.id === operation.itemId) nextRun.equipment[type] = null;
+    }
+    if (!writeSavedMailboxRun(nextRun)) {
+      throw new Error("Предмет принят сервером в ожидающий эскроу, но локальный спуск не сохранился. Предмет остался у вас; повтори подтверждение позже.");
+    }
+  }
+  operation.removed = true;
+  persistMailboxOperation(operation);
+  if (!window.WellCloudSave?.saveNow) {
+    throw new Error("Немедленное облачное сохранение недоступно; эскроу остаётся закрытым.");
+  }
+  await window.WellCloudSave.saveNow(getCloudSaveSnapshot());
+
+  const receipt = await mailboxRpc("player_mailbox_sender_removed", { p_mail_id: operation.escrowId });
+  if (!receipt || !["ready", "claimed", "delivered"].includes(receipt.status)) {
+    throw new Error("Сервер не подтвердил завершение отправки. Повтори подтверждение; идентификатор эскроу сохранён.");
+  }
+  window.localStorage.removeItem(operation.key);
+  return receipt;
+}
+
+async function sendMailboxGear(gearId, recipientId, recipientName) {
+  const context = window.WellPlayerGroups?.getMailboxContext?.();
+  const run = getMailboxRunState();
+  if (!metaProgress.homestead.atHome || window.WellHomesteadModel.getBestHome(metaProgress.homestead)?.tier !== "mansion") {
+    throw new Error("Отправка доступна только из почтового ящика особняка.");
+  }
+  if (!context?.fresh || !context.members.some((member) => member.user_id === recipientId)) {
+    throw new Error("Получатель не найден в группе с актуальным heartbeat.");
+  }
+  if (!run) throw new Error("Для отправки нужен сохранённый спуск между боями.");
+  const gear = [
+    ...(run.inventory || []),
+    run.equipment?.weapon,
+    run.equipment?.armor,
+  ].filter(Boolean).find((item) => item.id === gearId);
+  if (!isValidGear(gear)) throw new Error("Можно отправить только валидную экипировку из сохранённого инвентаря.");
+  if (!window.confirm(`Передать ${gear.name} (+${gear.bonus}) игроку ${recipientName || "из вашей группы"}? Цена отправки — 0. Предмет останется вашим, пока локальное удаление не сохранится.`)) return;
+  const key = `${mailboxStoragePrefix(context.userId)}${encodeURIComponent(gear.id)}:${encodeURIComponent(recipientId)}`;
+  let operation;
+  try {
+    operation = JSON.parse(window.localStorage.getItem(key) || "null");
+  } catch {
+    throw new Error("Локальная квитанция почты повреждена; предмет не отправлен.");
+  }
+  if (!operation) {
+    operation = {
+      key,
+      requestId: mailboxRequestId(),
+      itemId: gear.id,
+      recipientId,
+      gear: JSON.parse(JSON.stringify(gear)),
+      removed: false,
+    };
+    persistMailboxOperation(operation);
+  }
+  const receipt = await finishMailboxSend(operation);
+  homesteadMessage = `Экипировка сохранена в серверном эскроу и открыта получателю. Статус: ${receipt.status}.`;
+}
+
+async function retryMailboxSend(key) {
+  if (typeof key !== "string" || !key.startsWith("well-of-whispers-mail-outbox:")) {
+    throw new Error("Неверная квитанция отправки.");
+  }
+  let operation;
+  try {
+    operation = JSON.parse(window.localStorage.getItem(key) || "null");
+  } catch {
+    throw new Error("Не удалось прочитать квитанцию отправки.");
+  }
+  if (!operation || operation.key !== key || !isValidGear(operation.gear)) {
+    throw new Error("Квитанция отправки отсутствует или повреждена.");
+  }
+  const receipt = await finishMailboxSend(operation);
+  homesteadMessage = `Отправка подтверждена. Статус эскроу: ${receipt.status}.`;
+}
+
+async function refreshMailbox() {
+  mailboxLoading = true;
+  renderHomestead();
+  try {
+    const result = await mailboxRpc("player_mailbox_list");
+    if (!Array.isArray(result) || result.some((row) =>
+      !row || typeof row.id !== "string" || typeof row.status !== "string"
+    )) throw new Error("Сервер вернул неверный список писем.");
+    mailboxInbox = result.filter((row) => ["ready", "claimed", "delivered"].includes(row.status));
+    homesteadMessage = `Почтовый ящик обновлён: писем для получения — ${mailboxInbox.length}.`;
+  } finally {
+    mailboxLoading = false;
+    renderHomestead();
+  }
+}
+
+async function claimMailboxItem(mailId) {
+  const claim = await mailboxRpc("player_mailbox_claim", { p_mail_id: mailId });
+  if (!claim || claim.id !== mailId || !isValidGear(claim.gear)) {
+    throw new Error("Сервер не вернул валидный предмет для получения.");
+  }
+  const current = metaProgress.homestead;
+  const existingReceipt = current.mailReceipts.find((receipt) => receipt.mailId === mailId);
+  if (!existingReceipt) {
+    if (metaProgress.tavern.stash.length >= 10000) {
+      throw new Error("Постоянный запас переполнен. Эскроу хранит предмет; освободи место и повтори получение.");
+    }
+    const nextHome = JSON.parse(JSON.stringify(current));
+    const nextTavern = JSON.parse(JSON.stringify(metaProgress.tavern));
+    const highestSequence = Math.max(
+      nextTavern.nextGearSequence,
+      ...nextTavern.stash.map((item) => Number(item.id.slice(5))),
+    );
+    const gearId = `gear-${highestSequence + 1}`;
+    const gear = { id: gearId, type: claim.gear.type, name: claim.gear.name, bonus: claim.gear.bonus };
+    nextTavern.stash.push(gear);
+    nextTavern.nextGearSequence = highestSequence + 1;
+    nextTavern.revision += 1;
+    nextTavern.updatedAt = Date.now();
+    nextHome.mailReceipts.push({ mailId, gearId });
+    nextHome.revision += 1;
+    nextHome.updatedAt = Date.now();
+    const saved = saveHomesteadResult({ ok: true, state: nextHome, tavern: nextTavern },
+      `${gear.name} сохранён в постоянном запасе таверны.`);
+    if (!saved) throw new Error("Не удалось сохранить предмет получателя. Серверный эскроу не подтверждён и его можно забрать повторно.");
+  }
+  if (!window.WellCloudSave?.saveNow) {
+    throw new Error("Немедленное облачное сохранение недоступно; серверный эскроу не подтверждён.");
+  }
+  await window.WellCloudSave.saveNow(getCloudSaveSnapshot());
+  const receipt = await mailboxRpc("player_mailbox_ack_claim", { p_mail_id: mailId });
+  if (!receipt || receipt.acknowledged !== true) {
+    throw new Error("Предмет сохранён локально, но серверное подтверждение не получено. Повтори получение; квитанция исключит дубликат.");
+  }
+  homesteadMessage = "Получение подтверждено; предмет добавлен в постоянный запас.";
+}
+
+function openHomestead(anchor = "") {
+  homesteadAnchor = anchor;
   if (state.started && !state.gameOver) {
     homesteadMessage = "Домашняя лавка доступна между спусками.";
     return;
@@ -3169,6 +3630,7 @@ function closeHomestead() {
     if (!saveHomesteadResult(result, "Ты покинул дом; незавершённый сон отменён.")) return false;
   }
   if (ui.homesteadDialog.open) ui.homesteadDialog.close();
+  homesteadAnchor = "";
   selectedDistrict = "upper";
   renderCity();
   return true;
@@ -3258,7 +3720,111 @@ async function handleHomesteadAction(action, data = {}) {
     } else if (action === "clinic") {
       result = model.useClinic(current, metaProgress.tavern.injuries, now);
       options.healInjuries = result.ok;
-      message = result.ok ? `Лечебница сняла ${result.healed} травм. Повторный приём — завтра.` : "";
+      message = result.ok
+        ? `Приём запущен. Снято травм: ${result.healed}. Следующий доступен через 20 часов.`
+        : "";
+    } else if (action === "room-tab") {
+      homesteadAnchor = data.anchor;
+      homesteadMessage = "";
+      renderHomestead();
+      window.setTimeout(() => {
+        const target = ui.homesteadContent.querySelector(`[data-room-section="${CSS.escape(data.anchor)}"]`);
+        target?.scrollIntoView({ behavior: "smooth", block: "start" });
+      }, 0);
+      return;
+    } else if (action === "craft-gear") {
+      const recipe = model.CRAFT_RECIPES[data.recipeId];
+      if (!recipe) throw new Error("Рецепт не найден.");
+      const cost = Object.entries(recipe.recipe)
+        .map(([key, amount]) => `${amount} ${HOME_RESOURCE_NAMES[key]}`).join(" + ");
+      if (!window.confirm(`Создать «${recipe.name}» (+${recipe.bonus}) за ${cost}? Предмет попадёт в постоянный запас таверны.`)) return;
+      if (metaProgress.tavern.stash.length >= 10000) throw new Error("Постоянный запас полон. Создание не выполнено и материалы не списаны.");
+      const gearId = `gear-${metaProgress.tavern.nextGearSequence + 1}`;
+      result = model.craftGear(current, data.recipeId, gearId, now);
+      if (result.ok) {
+        result.tavern = JSON.parse(JSON.stringify(metaProgress.tavern));
+        result.tavern.stash.push(result.gear);
+        result.tavern.nextGearSequence += 1;
+        result.tavern.revision += 1;
+        result.tavern.updatedAt = now;
+        message = `${recipe.name} сохранён в постоянном запасе.`;
+      }
+    } else if (action === "cook-meal") {
+      result = model.cookMeal(current, data.mealId, now);
+      message = result.ok ? `${result.meal.name} приготовлено и добавлено в запас.` : "";
+    } else if (action === "eat-meal") {
+      result = model.eatMeal(current, metaProgress.tavern, data.mealId, now, Math.random,
+        Boolean(state.enemy && !state.gameOver));
+      if (result.ok) {
+        const statName = { attack: "атаку", defense: "защиту", dodge: "уклонение" }[result.meal.stat];
+        message = result.buffTriggered
+          ? `Сытость восстановлена до 100. Сработал бонус: +50% к ${statName} до ${new Date(result.buff.expiresAt).toLocaleTimeString("ru-RU")}.`
+          : result.meal.stat
+            ? "Сытость восстановлена до 100; 50% шанс временного боевого бонуса не сработал."
+            : "Сытость восстановлена до 100.";
+      }
+    } else if (action === "buy-pages") {
+      const count = Number(data.count);
+      const cost = count === 100 ? 300 : count === 1000 ? 3000 : null;
+      if (cost === null || !window.confirm(`Купить ${count.toLocaleString("ru-RU")} пустых страниц за ${cost.toLocaleString("ru-RU")} золотых таверны?`)) return;
+      const balances = latestHomesteadBalances();
+      current = metaProgress.homestead;
+      result = model.buyPages(current, count, balances.gold, homesteadReceiptId(), now);
+      if (result.ok) {
+        result.tavern = { ...metaProgress.tavern, gold: result.gold,
+          revision: metaProgress.tavern.revision + 1, updatedAt: now };
+        message = `Куплено страниц: ${result.count}. Осталось ${result.tavern.gold} золотых.`;
+      }
+    } else if (action === "unequip-book") {
+      result = model.unequipBook(current, now);
+      message = result.ok ? `Книга «${result.book.name}» перемещена в инвентарь.` : "";
+    } else if (action === "buy-basement") {
+      if (!window.confirm(`Отдельно купить подвал особняка за ${model.BASEMENT_GOLD_COST.toLocaleString("ru-RU")} золотых? Откроется тренировочный зал.`)) return;
+      const balances = latestHomesteadBalances();
+      current = metaProgress.homestead;
+      result = model.purchaseBasement(current, balances.gold, homesteadReceiptId(), now);
+      if (result.ok) {
+        result.tavern = { ...metaProgress.tavern, gold: result.gold,
+          revision: metaProgress.tavern.revision + 1, updatedAt: now };
+        message = "Подвал особняка куплен за золото таверны.";
+      }
+    } else if (action === "buy-camouflage") {
+      if (!window.confirm(`Купить одну маскировку за ${model.CAMOUFLAGE_GOLD_COST.toLocaleString("ru-RU")} золота? Ею можно пропустить одного обычного врага, но не элиту или босса.`)) return;
+      const balances = latestHomesteadBalances();
+      current = metaProgress.homestead;
+      result = model.buyCamouflage(current, balances.gold, homesteadReceiptId(), now);
+      if (result.ok) {
+        result.tavern = { ...metaProgress.tavern, gold: result.gold,
+          revision: metaProgress.tavern.revision + 1, updatedAt: now };
+        message = "Маскировка добавлена в инвентарь подвала.";
+      }
+    } else if (action === "dummy-armor") {
+      result = model.setDummyArmor(current, data.armorId, now);
+      message = result.ok ? `На манекен надета броня: ${model.DUMMY_ARMOR[data.armorId].name}.` : "";
+    } else if (action === "dummy-hit") {
+      const attack = state.started ? getAttackPower() : state.attack;
+      result = model.strikeDummy(current, Math.max(1, attack), now);
+      message = result.ok
+        ? `Манекен получил ${result.damage} урона; осталось ${result.state.dummyHp} HP.${result.achievementAwarded ? " Достижение «Манекен повержен» получено!" : ""}`
+        : "";
+    } else if (action === "dummy-reset") {
+      result = model.resetDummy(current, now);
+      message = result.ok ? "Манекен восстановлен до 100 000 HP. Достижение сохраняется." : "";
+    } else if (action === "mail-send") {
+      await sendMailboxGear(data.gearId, data.recipientId, data.recipientName);
+      renderHomestead();
+      return;
+    } else if (action === "mail-retry") {
+      await retryMailboxSend(data.key);
+      renderHomestead();
+      return;
+    } else if (action === "mail-refresh") {
+      await refreshMailbox();
+      return;
+    } else if (action === "mail-claim") {
+      await claimMailboxItem(data.mailId);
+      renderHomestead();
+      return;
     } else if (action === "upgrade-altar") {
       const cost = Number(data.cost);
       if (!window.confirm(`Улучшить алтарь рыбалки за ${cost} имеющихся осколков?`)) return;
@@ -3944,6 +4510,10 @@ function render() {
   const coopBattle = window.WellPlayerGroups?.getBattle();
   const inGroupBattle = Boolean(coopBattle && ["waiting", "active"].includes(coopBattle.status));
   ui.combatActions.hidden = !state.enemy || state.gameOver || inGroupBattle;
+  const camouflageButton = $("camouflage-run-button");
+  camouflageButton.hidden = !state.enemy || state.gameOver || state.enemy.boss || state.enemy.elite;
+  camouflageButton.disabled = metaProgress.homestead.camouflage < 1;
+  camouflageButton.textContent = `Маскировка · ${metaProgress.homestead.camouflage} в инвентаре`;
   ui.merchantActions.hidden = !state.merchantAvailable || state.gameOver;
   ui.buyPotion.disabled = state.potions >= getPotionLimit() || state.gold < MERCHANT_PRICES.potion;
   ui.buyPotion.textContent = `⚗ Зелье · ${MERCHANT_PRICES.potion} ✦`;
@@ -4088,6 +4658,7 @@ $("combat-potion-button").addEventListener("click", () => drinkPotion(true));
 $("guard-button").addEventListener("click", () => {
   if (state.enemy && !state.gameOver) enemyTurn(true);
 });
+$("camouflage-run-button").addEventListener("click", useCamouflage);
 ui.descend.addEventListener("click", descend);
 ui.restart.addEventListener("click", openClassDialog);
 ui.buyPotion.addEventListener("click", () => merchantPurchase("potion"));
@@ -4145,6 +4716,7 @@ ui.cityServices.addEventListener("click", (event) => {
   }
 });
 ui.homesteadOpenButton.addEventListener("click", openHomestead);
+$("profile-crafting-button").addEventListener("click", () => openHomestead("craft"));
 ui.homesteadContent.addEventListener("click", (event) => {
   const button = event.target.closest("button[data-homestead-action]");
   if (button) handleHomesteadAction(button.dataset.homesteadAction, button.dataset);

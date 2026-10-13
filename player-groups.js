@@ -438,6 +438,23 @@
     return window.WellCloudSave.groupRpc(name, args);
   }
 
+  function mailboxRpc(name, args = {}) {
+    if (!/^player_mailbox_[a-z_]+$/.test(name)) throw new Error("Недопустимая операция почтового ящика.");
+    return rpc(name, args);
+  }
+
+  function getMailboxContext() {
+    return {
+      userId: user?.id || null,
+      groupId: group?.id || null,
+      fresh: Boolean(user && group && hasFreshGroupState() && group.members?.length === 2),
+      members: (group?.members || []).map((member) => ({
+        user_id: member.user_id,
+        nickname: member.nickname,
+      })),
+    };
+  }
+
   function isCurrentContext(userId, groupId) {
     return user?.id === userId && group?.id === groupId;
   }
@@ -1019,5 +1036,7 @@
     hint,
     canStartBattle,
     getBattle: () => battle,
+    getMailboxContext,
+    mailboxRpc,
   };
 })();

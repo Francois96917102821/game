@@ -4,7 +4,9 @@ on:
   pull_request:
     paths:
       - "homestead-model.js"
+      - "cloud-save.js"
       - "game.js"
+      - "player-groups.js"
       - "index.html"
       - "styles.css"
       - "tests/homestead.test.html"

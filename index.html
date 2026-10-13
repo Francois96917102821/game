@@ -144,6 +144,25 @@
             <button class="action-button guard-action" id="guard-button" type="button"><span aria-hidden="true">⬡</span> Защищаться</button>
             <button class="action-button ability-action" id="class-ability-button" type="button"><span id="class-ability-icon" aria-hidden="true">✦</span><span id="class-ability-label">Способность</span></button>
           </div>
+          <button class="action-button coop-start-button" id="coop-start-button" type="button" hidden>Позвать напарника на совместный бой</button>
+          <section class="coop-battle-panel" id="coop-battle-panel" aria-label="Совместный бой" hidden>
+            <div class="coop-boss-card">
+              <span class="coop-boss-avatar" id="coop-boss-icon" aria-hidden="true">☠</span>
+              <div class="coop-card-heading"><span>СТРАЖ</span><strong id="coop-boss-hp">—</strong></div>
+              <strong class="coop-boss-name" id="coop-boss-name">Страж колодца</strong>
+              <div class="meter health-meter"><span id="coop-boss-health"></span></div>
+            </div>
+            <div class="coop-players" id="coop-players" aria-label="Участники боя"></div>
+            <p class="coop-turn-message" id="coop-turn-message" aria-live="polite"></p>
+            <div class="coop-log" id="coop-log" aria-live="polite" aria-label="Журнал совместного боя"></div>
+            <div class="coop-actions" id="coop-actions">
+              <button class="action-button attack-action" id="coop-attack-button" type="button">⚔ Ударить</button>
+              <button class="action-button heavy-action" id="coop-heavy-button" type="button">✦ Сокрушительный удар</button>
+              <button class="action-button secondary-action" id="coop-potion-button" type="button">⚗ Выпить зелье</button>
+              <button class="action-button guard-action" id="coop-guard-button" type="button">⬡ Защищаться</button>
+              <button class="action-button coop-leave-button" id="coop-leave-button" type="button">Покинуть бой</button>
+            </div>
+          </section>
           <div class="merchant-actions" id="merchant-actions" aria-label="Прилавок странствующего торговца" hidden>
             <button class="action-button secondary-action" id="buy-potion-button" type="button">⚗ Зелье · 12 ✦</button>
             <button class="action-button" id="buy-weapon-button" type="button">⚔ Заточка · 18 ✦</button>
@@ -240,7 +259,7 @@
       </form>
       <span class="eyebrow">ПУТЬ ВДВОЁМ</span>
       <h2 id="group-dialog-title">Группа игроков</h2>
-      <p class="dialog-intro">Собери группу из двух искателей. Уровни при вступлении должны отличаться менее чем вдвое; группа распустится, если разница достигнет трёх раз.</p>
+      <p class="dialog-intro">Собери группу из двух искателей. Уровни при вступлении должны отличаться менее чем вдвое; группа распустится, если разница достигнет трёх раз. На шестом зале можно позвать напарника на совместный пошаговый бой со стражем; его действия и здоровье будут видны в реальном времени.</p>
       <p class="group-status-message" id="group-status" role="status" aria-live="polite">Группы доступны после входа в облачный аккаунт.</p>
       <section class="group-panel" id="group-empty-panel">
         <label for="group-nickname">Твой ник</label>
@@ -271,7 +290,10 @@
         <span>Групповые уведомления</span>
       </label>
     </dialog>
-    <div class="group-notice" id="group-notice" role="status" aria-live="polite" hidden></div>
+    <div class="group-notice" id="group-notice" role="status" aria-live="polite" hidden>
+      <span id="group-notice-text"></span>
+      <button class="primary-button group-battle-invite-button" id="group-battle-invite-button" type="button" hidden>Вступить в бой со стражем!</button>
+    </div>
     <script src="cloud-config.js"></script>
     <script src="cloud-save.js"></script>
     <script src="player-groups.js"></script>

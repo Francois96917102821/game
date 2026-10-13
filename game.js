@@ -510,6 +510,7 @@ function createState() {
     potions: 2,
     gold: 0,
     groupInboxReceipts: [],
+    coopBattleReceipts: [],
     xp: 0,
     level: 1,
     classId: null,
@@ -638,6 +639,12 @@ function isValidRun(run) {
     !isIntegerBetween(saved.potions, 0, 5) ||
     !isIntegerBetween(saved.gold, 0, 1000000000) ||
     !isValidInboxReceipts(saved.groupInboxReceipts) ||
+    (saved.coopBattleReceipts !== undefined && (
+      !Array.isArray(saved.coopBattleReceipts) || saved.coopBattleReceipts.length > 100000 ||
+      !saved.coopBattleReceipts.every((id) => typeof id === "string" &&
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)) ||
+      new Set(saved.coopBattleReceipts).size !== saved.coopBattleReceipts.length
+    )) ||
     !isIntegerBetween(saved.level, 1, 10000) ||
     !isIntegerBetween(saved.xp, 0, XP_PER_LEVEL * saved.level - 1) ||
     (saved.classId !== undefined && saved.classId !== null &&
@@ -1180,6 +1187,7 @@ function resumeGame() {
   );
   if (state.extraLifeUsed === undefined) state.extraLifeUsed = false;
   if (state.groupInboxReceipts === undefined) state.groupInboxReceipts = [];
+  if (state.coopBattleReceipts === undefined) state.coopBattleReceipts = [];
   if (migratedClass && state.level >= CLASS_UNLOCK_LEVELS.advanced) state.pendingClassLevels = [CLASS_UNLOCK_LEVELS.advanced];
   selectedClassId = state.classId;
   savedRun = null;
@@ -1883,6 +1891,111 @@ function getHeavyAttackMultiplier() {
   return (getCharacterClass().heavyMultiplier || 2.2) + getClassStat("heavyMultiplier");
 }
 
+function getGroupBattlePlayer() {
+  return {
+    hp: state.hp,
+    max_hp: state.maxHp,
+    potions: state.potions,
+    attack: Math.max(1, getAttackPower()),
+    defense: Math.max(0, getArmorDefense()),
+    focus: state.focus,
+    heavy_multiplier: getHeavyAttackMultiplier(),
+  };
+}
+
+function applyGroupBattleUpdate(battle, userId) {
+  if (!battle || !userId || !state.started) return;
+  const own = battle.players?.find((player) => player.user_id === userId);
+  if (own) {
+    state.hp = own.hp;
+    state.potions = own.potions;
+    state.focus = own.focus;
+  }
+  if (battle.status === "waiting" || battle.status === "active") {
+    state.floor = battle.floor;
+    state.room = MAX_ROOMS;
+    state.enemy = {
+      name: battle.boss.name,
+      icon: battle.boss.icon,
+      skin: battle.boss.skin,
+      hp: battle.boss.hp,
+      maxHp: battle.boss.max_hp,
+      damage: battle.boss.damage,
+      xp: battle.xp,
+      gold: battle.gold,
+      boss: true,
+      elite: false,
+    };
+    state.waitingToDescend = false;
+    state.gameOver = false;
+    setCaption("Бьётесь со стражем вместе");
+    setEvent("СОВМЕСТНЫЙ БОЙ", "Каждый искатель делает ход; после обоих ходов страж отвечает атакой.", battle.boss.icon, `РАУНД ${battle.round}`);
+  } else if (battle.status === "victory") {
+    if (state.coopBattleReceipts.includes(battle.id)) return;
+    state.coopBattleReceipts.push(battle.id);
+    state.floor = battle.floor;
+    state.room = MAX_ROOMS;
+    state.enemy = null;
+    state.waitingToDescend = true;
+    state.runBossesDefeated += 1;
+    state.gold = Math.min(1000000000, state.gold + battle.gold);
+    gainXp(battle.xp);
+    advanceQuest("defeat");
+    metaProgress.bossesDefeated = Math.min(1000000000, metaProgress.bossesDefeated + 1);
+    persistMetaProgress();
+    let trophyText = "";
+    if (state.inventory.length < MAX_GEAR) {
+      const gear = createGear(randomInt(0, 1) === 0 ? "weapon" : "armor");
+      state.inventory.push(gear);
+      advanceQuest("gear");
+      addJournal("Найдена экипировка", `${gear.name}: +${gear.bonus} ${gear.type === "weapon" ? "к урону" : "к защите"}.`, gear.type === "weapon" ? "⚔" : "⬡");
+      trophyText = ` Трофей: ${gear.name} (+${gear.bonus}).`;
+    } else {
+      trophyText = " Рюкзак полон — трофей остался в зале.";
+    }
+    const victoryHealing = Math.min(getClassStat("healingOnVictory"), state.maxHp - state.hp);
+    state.hp += victoryHealing;
+    const healing = Math.min(8, state.maxHp - state.hp);
+    state.hp += healing;
+    setEvent(
+      "СТРАЖ ПОВЕРЖЕН ВМЕСТЕ",
+      `Оба искателя получили общую победу: +${battle.xp} опыта и +${battle.gold} монет.${victoryHealing ? ` Класс восстановил ${victoryHealing} здоровья.` : ""}${healing ? ` Передышка вернула ${healing} здоровья.` : ""}${trophyText} Путь вниз открыт.`,
+      "✧",
+      "ПУТЬ ОТКРЫТ",
+    );
+    addJournal("Совместная победа", `${battle.boss.name} повержен отрядом. Открыт путь на ${battle.floor + 1}-й этаж.`, "✧");
+    setCaption("Лестница открыта");
+    playSound("bossVictory");
+  } else if (battle.status === "defeat") {
+    state.enemy = null;
+    state.waitingToDescend = false;
+    state.gameOver = true;
+    awardRunEssence();
+    setEvent("ОТРЯД ПАЛ", `Совместный бой завершился поражением на ${battle.floor}-м этаже.`, "☾");
+    addJournal("Совместный бой прерван", "Страж одолел отряд искателей.", "☾");
+    setCaption("Тишина");
+    playSound("gameOver");
+  } else if (battle.status === "abandoned") {
+    state.floor = battle.floor;
+    state.room = MAX_ROOMS;
+    state.enemy = {
+      name: battle.boss.name,
+      icon: battle.boss.icon,
+      skin: battle.boss.skin,
+      hp: battle.boss.hp,
+      maxHp: battle.boss.max_hp,
+      damage: battle.boss.damage,
+      xp: battle.xp,
+      gold: battle.gold,
+      boss: true,
+      elite: false,
+    };
+    setCaption("Совместный бой оставлен");
+  }
+  updateBestFloor();
+  render();
+}
+
 function createGear(type) {
   const theme = getFloorTheme();
   const names = {
@@ -2248,7 +2361,9 @@ function render() {
   ui.explore.replaceChildren(Object.assign(document.createElement("span"), { textContent: "⌕" }), document.createTextNode(` ${state.room === 0 ? "Войти в первый зал" : "Исследовать зал"}`));
   ui.explore.hidden = !state.started || Boolean(state.enemy) || state.gameOver || state.merchantAvailable || state.waitingToDescend || eventActions.length > 0;
   ui.potion.hidden = !state.started || Boolean(state.enemy) || state.gameOver || state.merchantAvailable || state.waitingToDescend || eventActions.length > 0;
-  ui.combatActions.hidden = !state.enemy || state.gameOver;
+  const coopBattle = window.WellPlayerGroups?.getBattle();
+  const inGroupBattle = Boolean(coopBattle && ["waiting", "active"].includes(coopBattle.status));
+  ui.combatActions.hidden = !state.enemy || state.gameOver || inGroupBattle;
   ui.merchantActions.hidden = !state.merchantAvailable || state.gameOver;
   ui.buyPotion.disabled = state.potions >= getPotionLimit() || state.gold < MERCHANT_PRICES.potion;
   ui.buyPotion.textContent = `⚗ Зелье · ${MERCHANT_PRICES.potion} ✦`;
@@ -2431,6 +2546,19 @@ window.WellCloudSave.initialize({
 window.WellPlayerGroups.initialize({
   getLevel: () => state.level,
   isInDungeon: () => state.started && !state.gameOver,
+  getBattlePlayer: getGroupBattlePlayer,
+  getBossEncounter: () => state.enemy?.boss ? {
+    floor: state.floor,
+    name: state.enemy.name,
+    icon: state.enemy.icon || "☠",
+    skin: state.enemy.skin || "guardian",
+    hp: state.enemy.hp,
+    max_hp: state.enemy.maxHp,
+    damage: state.enemy.damage,
+    xp: state.enemy.xp,
+    gold: state.enemy.gold,
+  } : null,
+  onBattleUpdate: applyGroupBattleUpdate,
   onSharedGold: applySharedGoldReward,
   onSharedEssence: applySharedEssenceReward,
   onUnsharedReward: (kind, amount) => {

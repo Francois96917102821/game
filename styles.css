@@ -225,6 +225,29 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--gold-light); ou
 .combat-focus { grid-column: 1 / -1; padding: 8px 10px; border: 1px solid #34382e; border-radius: 6px; background: #1c201a; }
 .combat-focus .stat-label { margin-bottom: 6px; }
 .focus-meter > span { background: linear-gradient(90deg, #718c66, #c0d88e); }
+.coop-start-button { width: 100%; margin-top: 11px; border-color: #75613e; }
+.coop-start-button[hidden], .coop-battle-panel[hidden] { display: none; }
+.coop-battle-panel { display: grid; gap: 10px; margin-top: 13px; padding: 12px; border: 1px solid #5a4930; border-radius: 8px; background: linear-gradient(145deg, rgba(179, 146, 76, .08), transparent), #191c16; }
+.coop-boss-card, .coop-player-card { display: grid; gap: 7px; padding: 10px; border: 1px solid #3b3e31; border-radius: 6px; background: #1e221b; }
+.coop-boss-avatar { float: right; grid-column: 2; grid-row: 1 / 4; align-self: center; color: #d79585; font-size: 30px; text-align: right; text-shadow: 0 0 15px rgba(205, 113, 93, .5); }
+.coop-boss-card .coop-card-heading, .coop-boss-name, .coop-boss-card .meter { grid-column: 1; }
+.coop-card-heading { display: flex; justify-content: space-between; align-items: center; gap: 8px; color: #aeb2a5; font: 8px "DM Mono", monospace; letter-spacing: .1em; }
+.coop-boss-name { color: var(--gold-light); font-size: 13px; }
+.coop-boss-card .meter { height: 7px; }
+.coop-players { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.coop-player-card { min-width: 0; grid-template-columns: 25px minmax(0, 1fr); align-items: center; }
+.coop-player-avatar { grid-column: 1; grid-row: 1 / 5; display: grid; place-items: center; width: 23px; height: 23px; border: 1px solid #75613e; border-radius: 50%; color: var(--gold-light); font-size: 11px; }
+.coop-player-card.own-player { border-color: #75613e; }
+.coop-player-card .coop-card-heading, .coop-player-card .meter, .coop-player-card small { grid-column: 2; }
+.coop-player-card .coop-card-heading { font-family: inherit; letter-spacing: 0; font-size: 9px; }
+.coop-player-card .coop-card-heading strong { overflow: hidden; color: #dedfd2; text-overflow: ellipsis; white-space: nowrap; }
+.coop-player-card .coop-card-heading span { flex: 0 0 auto; }
+.coop-player-card small { color: #93998b; font-size: 8px; }
+.coop-turn-message { margin: 0; color: var(--gold-light); font-size: 10px; line-height: 1.5; }
+.coop-log { display: grid; max-height: 140px; gap: 5px; overflow-y: auto; padding: 8px; border: 1px solid #30352b; border-radius: 5px; background: #12150f; }
+.coop-log p { margin: 0; color: #c8cabb; font-size: 9px; line-height: 1.4; }
+.coop-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+.coop-leave-button { grid-column: 1 / -1; border-color: #63443c; color: #d79585; }
 .action-button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 43px; border: 1px solid #74603b; border-radius: 6px; background: linear-gradient(180deg, #373323, #28271d); color: #ead4a0; font-size: 11px; font-weight: 700; cursor: pointer; transition: background .18s, border-color .18s; }
 .action-button:hover:not(:disabled) { background: #47402b; border-color: #b08e54; }
 .action-button:disabled { opacity: .4; cursor: not-allowed; }
@@ -319,6 +342,8 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--gold-light); ou
 .group-notification-setting input { accent-color: #b79b65; }
 .group-notice { position: fixed; z-index: 20; right: 20px; bottom: 20px; width: min(350px, calc(100% - 32px)); padding: 13px 15px; border: 1px solid #625237; border-radius: 8px; background: #211f18; color: #e8dfc6; font-size: 11px; line-height: 1.45; box-shadow: 0 12px 35px rgba(0,0,0,.55); }
 .group-notice[hidden] { display: none; }
+.group-battle-invite-button { display: block; width: 100%; margin-top: 10px; padding: 9px 12px; }
+.group-battle-invite-button[hidden] { display: none; }
 .cloud-conflict-dialog { width: min(500px, calc(100% - 28px)); }
 .cloud-conflict-note { padding: 10px; border: 1px solid #635337; border-radius: 6px; background: #262317; color: #e6d19f; font-size: 10px; line-height: 1.45; }
 .dialog-close-form { position: absolute; top: 12px; right: 12px; }
@@ -423,6 +448,8 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--gold-light); ou
   #sound-toggle-label { display: none; }
   .well-scene { height: 245px; }
   .combat-actions { gap: 7px; }
+  .coop-battle-panel { padding: 9px; }
+  .coop-players, .coop-actions { gap: 6px; }
   .merchant-actions { gap: 7px; }
   .action-button { font-size: 10px; }
 }

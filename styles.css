@@ -597,3 +597,17 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--gold-light); ou
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; }
 }
+.housing-dialog { width: min(760px, calc(100% - 28px)); }
+.housing-status { min-height: 18px; margin: 8px 0; color: #aeb2a5; font-size: 11px; line-height: 1.5; }
+.housing-status.error { color: #e4a192; }
+.housing-section { display: grid; gap: 9px; margin: 16px 0; }
+.housing-section h3 { margin: 0; color: var(--gold-light); font-size: 14px; }
+.housing-note, .housing-wallet { margin: 0; color: #aeb2a5; font-size: 10px; line-height: 1.6; }
+.housing-wallet { color: #ded5bb; }
+.housing-card { display: grid; gap: 8px; padding: 11px; border: 1px solid #393d31; border-radius: 7px; background: #191d17; }
+.housing-card > strong { color: #e1e1d5; font-size: 11px; }
+.housing-card .service-button { justify-self: start; max-width: 100%; }
+.housing-card .service-button:disabled { opacity: .5; cursor: not-allowed; }
+.housing-building-select { width: 100%; padding: 9px; border: 1px solid #464b3b; border-radius: 5px; background: #20241c; color: #d8dacd; font: inherit; font-size: 10px; }
+.housing-future-feature { margin: 0; padding: 8px 10px; border-left: 2px solid #4a493c; color: #aeb2a5; font-size: 10px; line-height: 1.55; }
+.housing-return-button { width: 100%; margin-top: 8px; }

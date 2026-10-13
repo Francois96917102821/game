@@ -106,6 +106,18 @@
             <div class="city-services" id="city-services" aria-live="polite"></div>
           </section>
 
+          <dialog class="game-dialog housing-dialog" id="housing-dialog" aria-labelledby="housing-title">
+            <form method="dialog" class="dialog-close-form">
+              <button class="dialog-close" aria-label="Закрыть профиль домов и вернуться в город">×</button>
+            </form>
+            <span class="eyebrow">ГОРОД · ПРОФИЛЬ</span>
+            <h2 id="housing-title">Магазин домов и участков</h2>
+            <p class="dialog-intro">Осколки — редкая внутриигровая премиальная валюта. Каждая покупка за осколки требует отдельного подтверждения; платежей реальными деньгами нет.</p>
+            <p class="housing-status" id="housing-status" role="status" aria-live="polite"></p>
+            <div class="housing-content" id="housing-content"></div>
+            <button class="action-button housing-return-button" id="housing-return-button" type="button">Вернуться в город</button>
+          </dialog>
+
           <div class="dungeon-content" id="dungeon-content" hidden>
             <div class="dungeon-heading">
               <div>
@@ -424,6 +436,7 @@
     <script src="player-groups.js"></script>
     <script src="tavern-model.js"></script>
     <script src="expeditions-model.js"></script>
+    <script src="housing-model.js"></script>
     <script src="game.js"></script>
   </body>
 </html>

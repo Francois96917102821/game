@@ -203,8 +203,64 @@ const ENEMY_SKINS = new Set([
   ...ELITE_TYPES.map((enemy) => enemy.skin),
   "guardian",
 ]);
+const ENEMY_ART = {
+  moss: "enemy-moss",
+  stone: "enemy-stone",
+  shade: "enemy-shade",
+  drowned: "enemy-drowned",
+  eel: "enemy-eel",
+  wraith: "enemy-wraith",
+  root: "enemy-root",
+  spore: "enemy-spore",
+  hound: "enemy-hound",
+  iron: "enemy-iron",
+  ember: "enemy-ember",
+  golem: "enemy-golem",
+  "elite-stone": "enemy-elite-stone",
+  "elite-tide": "enemy-elite-tide",
+  "elite-root": "enemy-elite-root",
+  "elite-forge": "enemy-elite-forge",
+};
+const GEAR_ART = {
+  "Клинок каменного эха": "weapon-well",
+  "Плащ колодезного стража": "armor-well",
+  "Якорный тесак": "weapon-drowned",
+  "Панцирь глубин": "armor-drowned",
+  "Серп живых корней": "weapon-roots",
+  "Кора древнего собора": "armor-roots",
+  "Молот пепельной кузни": "weapon-forge",
+  "Кованый доспех": "armor-forge",
+};
 
 const $ = (id) => document.getElementById(id);
+const GAME_ART_URL = "game-art.svg";
+function createArtIcon(symbol, label, className, decorative = false) {
+  const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  icon.setAttribute("viewBox", "0 0 100 100");
+  icon.setAttribute("focusable", "false");
+  icon.classList.add("art-icon", className);
+  if (decorative) {
+    icon.setAttribute("aria-hidden", "true");
+  } else {
+    icon.setAttribute("role", "img");
+    icon.setAttribute("aria-label", label);
+  }
+  const use = document.createElementNS("http://www.w3.org/2000/svg", "use");
+  use.setAttribute("href", `${GAME_ART_URL}#${symbol}`);
+  icon.append(use);
+  return icon;
+}
+
+function getBaseClassId(classId) {
+  let characterClass = CLASS_BY_ID.get(classId);
+  while (characterClass?.tier > 1) characterClass = CLASS_BY_ID.get(characterClass.parent);
+  return characterClass?.id || "knight";
+}
+
+function getGearArtId(gear) {
+  return GEAR_ART[gear.name] || (gear.type === "weapon" ? "weapon-stats" : "armor-well");
+}
+
 const ui = {
   level: $("level-badge"),
   health: $("health-value"),
@@ -799,7 +855,7 @@ function startGameWithClass(classId) {
   state.attack = randomInt(5, 8) + characterClass.attack - 5 + getUpgradeLevel("power");
   $("player-name").textContent = characterClass.name;
   $("player-subtitle").textContent = characterClass.role;
-  $("portrait-figure").textContent = characterClass.icon;
+  $("portrait-figure").replaceChildren(createArtIcon(`hero-${characterClass.id}`, characterClass.name, "portrait-art"));
   state.potions = Math.min(getPotionLimit(), 2 + getUpgradeLevel("supplies"));
   addJournal("Спуск начался", "Ты переступил порог колодца. Обратного пути пока нет.", "↓");
   addJournal(`Класс: ${characterClass.name}`, characterClass.passive, characterClass.icon);
@@ -843,10 +899,7 @@ function renderClassSelection() {
     option.className = "class-option";
     option.dataset.classId = characterClass.id;
     option.setAttribute("aria-pressed", String(characterClass.id === selectedClassId));
-    const icon = document.createElement("span");
-    icon.className = "class-option-icon";
-    icon.setAttribute("aria-hidden", "true");
-    icon.textContent = characterClass.icon;
+    const icon = createArtIcon(`hero-${characterClass.id}`, characterClass.name, "class-option-icon", true);
     const name = document.createElement("strong");
     name.textContent = characterClass.name;
     const role = document.createElement("small");
@@ -1470,8 +1523,19 @@ function renderJournal() {
 function renderEquipment() {
   const weapon = state.equipment.weapon;
   const armor = state.equipment.armor;
-  ui.equippedWeapon.textContent = weapon ? `${weapon.name} · +${weapon.bonus}` : "Нет";
-  ui.equippedArmor.textContent = armor ? `${armor.name} · +${armor.bonus}` : "Нет";
+  for (const [element, gear, type] of [
+    [ui.equippedWeapon, weapon, "оружие"],
+    [ui.equippedArmor, armor, "броня"],
+  ]) {
+    if (!gear) {
+      element.replaceChildren(document.createTextNode("Нет"));
+      continue;
+    }
+    element.replaceChildren(
+      createArtIcon(getGearArtId(gear), `${gear.name}, ${type}`, "gear-icon"),
+      document.createTextNode(`${gear.name} · +${gear.bonus}`),
+    );
+  }
   ui.inventoryCount.textContent = `${state.inventory.length} / ${MAX_GEAR}`;
   ui.inventory.replaceChildren();
   if (!state.inventory.length) {
@@ -1484,6 +1548,7 @@ function renderEquipment() {
   for (const gear of state.inventory) {
     const item = document.createElement("div");
     item.className = "inventory-item";
+    const icon = createArtIcon(getGearArtId(gear), `${gear.name}, ${gear.type === "weapon" ? "оружие" : "броня"}`, "inventory-art");
     const details = document.createElement("div");
     const name = document.createElement("strong");
     name.textContent = gear.name;
@@ -1496,7 +1561,7 @@ function renderEquipment() {
     equip.dataset.gearId = gear.id;
     equip.textContent = "Надеть";
     equip.disabled = Boolean(state.enemy) || state.gameOver;
-    item.append(details, equip);
+    item.append(icon, details, equip);
     ui.inventory.append(item);
   }
 }
@@ -1510,7 +1575,7 @@ function renderClassProgression() {
   }
   const nodes = getSelectedClassNodes();
   const characterClass = nodes[nodes.length - 1];
-  ui.equippedClass.textContent = nodes.map((node) => `${node.icon} ${node.name}`).join(" → ");
+  ui.equippedClass.textContent = nodes.map((node) => node.name).join(" → ");
   ui.classPassive.textContent = `${getCharacterClass().passive}${characterClass.tier > 1 ? ` ${characterClass.description}` : ""}`;
   ui.equippedSubclass.replaceChildren();
   const stages = [
@@ -1583,7 +1648,12 @@ function render() {
   ui.level.textContent = `УР. ${state.level}`;
   $("player-name").textContent = characterClass ? characterClass.name : "Искатель";
   $("player-subtitle").textContent = characterClass ? characterClass.role : "Последний из наземных";
-  $("portrait-figure").textContent = characterClass ? characterClass.icon : "♙";
+  const baseClassId = getBaseClassId(characterClass?.id);
+  $("portrait-figure").replaceChildren(createArtIcon(
+    `hero-${baseClassId}`,
+    characterClass ? characterClass.name : "Искатель",
+    "portrait-art",
+  ));
   ui.health.textContent = `${state.hp} / ${state.maxHp}`;
   ui.healthBar.style.width = `${(state.hp / state.maxHp) * 100}%`;
   const xpTarget = XP_PER_LEVEL * state.level;
@@ -1626,9 +1696,21 @@ function render() {
     ui.scene.classList.toggle(`floor-${floorTheme.id}`, state.started && theme.id === floorTheme.id);
   }
   ui.enemy.className = `scene-enemy${state.enemy ? ` enemy-${state.enemy.skin || "guardian"}` : ""}`;
-  ui.enemy.textContent = state.enemy ? state.enemy.icon || "☠" : "";
+  if (state.enemy) {
+    const enemyArt = state.enemy.skin === "guardian"
+      ? `guardian-${theme.id}`
+      : ENEMY_ART[state.enemy.skin] || "enemy-stone";
+    ui.enemy.replaceChildren(createArtIcon(enemyArt, state.enemy.name, "scene-art"));
+  } else {
+    ui.enemy.replaceChildren();
+  }
   ui.merchant.textContent = state.merchantAvailable ? "♟" : "";
-  ui.character.textContent = characterClass ? characterClass.icon : "♙";
+  ui.character.setAttribute("aria-label", characterClass ? characterClass.name : "Искатель");
+  ui.character.replaceChildren(createArtIcon(
+    `hero-${baseClassId}`,
+    characterClass ? characterClass.name : "Искатель",
+    "scene-art",
+  ));
   ui.explore.disabled = !state.started || Boolean(state.enemy) || state.gameOver || state.merchantAvailable || state.waitingToDescend;
   ui.potion.disabled = !state.started || state.potions === 0 || state.hp >= state.maxHp || state.gameOver;
   $("combat-potion-button").disabled = state.potions === 0 || state.hp >= state.maxHp || state.gameOver;

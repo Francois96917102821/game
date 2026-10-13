@@ -28,11 +28,11 @@
       <section class="game-layout" aria-label="Игровое поле">
         <aside class="side-panel character-panel">
           <div class="panel-heading"><span>ПУТНИК</span><span class="level-badge" id="level-badge">УР. 1</span></div>
-          <div class="portrait" aria-hidden="true">
-            <div class="portrait-glow"></div>
-            <span class="portrait-figure" id="portrait-figure">♙</span>
-            <span class="portrait-rune rune-one">✦</span>
-            <span class="portrait-rune rune-two">ᛟ</span>
+          <div class="portrait">
+            <div class="portrait-glow" aria-hidden="true"></div>
+            <span class="portrait-figure" id="portrait-figure"></span>
+            <span class="portrait-rune rune-one" aria-hidden="true">✦</span>
+            <span class="portrait-rune rune-two" aria-hidden="true">ᛟ</span>
           </div>
           <h1 class="player-name" id="player-name">Искатель</h1>
           <p class="player-subtitle" id="player-subtitle">Последний из наземных</p>
@@ -58,8 +58,8 @@
               <span id="class-passive">Выбери класс перед первым спуском.</span>
             </div>
             <div class="equipment-slots">
-              <div><span>ОРУЖИЕ</span><strong id="equipped-weapon">Нет</strong></div>
-              <div><span>БРОНЯ</span><strong id="equipped-armor">Нет</strong></div>
+              <div><span>ОРУЖИЕ</span><strong id="equipped-weapon"><span>Нет</span></strong></div>
+              <div><span>БРОНЯ</span><strong id="equipped-armor"><span>Нет</span></strong></div>
             </div>
             <div class="subclass-progress" id="equipped-subclass" aria-live="polite"></div>
             <div class="inventory-heading">РЮКЗАК <span id="inventory-count">0 / 6</span></div>
@@ -98,8 +98,8 @@
             <div class="scene-stone stone-five"></div>
             <div class="scene-stone stone-six"></div>
             <div class="scene-rune">ᛟ</div>
-            <div class="scene-character" id="scene-character" aria-hidden="true">♙</div>
-            <div class="scene-enemy" id="scene-enemy" aria-hidden="true"></div>
+            <div class="scene-character" id="scene-character"></div>
+            <div class="scene-enemy" id="scene-enemy"></div>
             <div class="scene-merchant" id="scene-merchant" aria-hidden="true"></div>
             <div class="scene-caption"><span class="live-dot"></span><span id="scene-caption">Внизу кто-то ждёт</span></div>
             <div class="start-card" id="start-card">

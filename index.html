@@ -223,6 +223,87 @@
       </section>
       <footer class="footer-note"><span>КОЛОДЕЦ ШЁПОТА</span><span>Каждый спуск — новая история</span><span>✧</span></footer>
     </main>
+    <dialog class="game-dialog tavern-dialog" id="tavern-dialog" aria-labelledby="tavern-title">
+      <form method="dialog" class="dialog-close-form">
+        <button class="dialog-close" aria-label="Закрыть таверну и вернуться в город">×</button>
+      </form>
+      <span class="eyebrow">ПОРТОВЫЙ КВАРТАЛ</span>
+      <h2 id="tavern-title">Таверна «Солёный фонарь»</h2>
+      <p class="dialog-intro">Здесь можно подкрепиться, взять временную работу или испытать удачу только на игровое золото.</p>
+      <p class="tavern-status" id="tavern-status" role="status" aria-live="polite"></p>
+      <section class="tavern-wallet" aria-label="Состояние путника">
+        <div><span>КОШЕЛЁК ТАВЕРНЫ</span><strong id="tavern-gold">0 ✦</strong></div>
+        <div><span>СЫТОСТЬ</span><strong id="tavern-satiety">50 / 100</strong><div class="tavern-meter"><span id="tavern-satiety-bar"></span></div></div>
+        <div><span>ТРАВМЫ</span><strong id="tavern-injuries">0 / 3</strong></div>
+      </section>
+      <nav class="tavern-tabs" aria-label="Занятия в таверне">
+        <button type="button" data-tavern-tab="food" aria-pressed="true">Еда</button>
+        <button type="button" data-tavern-tab="work" aria-pressed="false">Работа и отдых</button>
+        <button type="button" data-tavern-tab="games" aria-pressed="false">Игровой стол</button>
+        <button type="button" data-tavern-tab="informant" aria-pressed="false">Информатор</button>
+      </nav>
+      <section class="tavern-pane" data-tavern-pane="food">
+        <p class="tavern-note">Сытость убывает на 5 пунктов за каждый полный час реального времени, включая время вне игры. На нуле штрафа к бою нет. Рецепты хранятся по 3 порции; некоторые блюда также влияют на травмы.</p>
+        <div class="tavern-recipe-list" id="tavern-recipes"></div>
+        <h3>Склад находок</h3>
+        <p class="tavern-note">Уборка приносит случайный предмет экипировки. Выбери один предмет, чтобы взять его в следующий новый спуск; предмет останется на складе, пока спуск не сохранится.</p>
+        <div class="tavern-stash-list" id="tavern-stash"></div>
+      </section>
+      <section class="tavern-pane" data-tavern-pane="work" hidden>
+        <div class="tavern-active-job" id="tavern-active-job"></div>
+        <div class="tavern-job-grid">
+          <article class="tavern-job-card">
+            <h3>Готовка · 1 час</h3><p>Случайный новый рецепт (до 3 порций) и 8–14 золотых.</p>
+            <button class="action-button" type="button" data-tavern-job="cook">Начать готовку</button>
+          </article>
+          <article class="tavern-job-card">
+            <h3>Уборка · 4 часа</h3><p>Случайная экипировка из вещей игры и 18–28 золотых. Трофеи хранятся отдельно от рюкзака.</p>
+            <button class="action-button" type="button" data-tavern-job="cleaning">Взяться за уборку</button>
+          </article>
+          <article class="tavern-job-card">
+            <h3>Официант</h3>
+            <label for="tavern-waiter-hours">Длительность смены</label>
+            <select id="tavern-waiter-hours"><option value="2">2 часа · 16 золотых</option><option value="4">4 часа · 36 золотых</option><option value="8">8 часов · 80 золотых</option></select>
+            <button class="action-button" type="button" data-tavern-job="waiter">Принять смену</button>
+          </article>
+          <article class="tavern-job-card">
+            <h3>Разбор погреба · 8 часов</h3><p>42–60 золотых и шанс 25% навсегда получить +1 к атаке или +2 к максимуму здоровья.</p>
+            <button class="action-button" type="button" data-tavern-job="cellar">Разобрать погреб</button>
+          </article>
+          <article class="tavern-job-card">
+            <h3>Снять комнату · 3 часа</h3><p id="tavern-room-description">За уровень × 2 золотых. По истечении трёх часов полностью лечит травмы.</p>
+            <button class="action-button" type="button" data-tavern-job="room">Снять комнату</button>
+          </article>
+        </div>
+      </section>
+      <section class="tavern-pane" data-tavern-pane="games" hidden>
+        <p class="tavern-note">Только игровое золото, без платежей. Ставка списывается до первого хода; партия и каждый ход сохраняются, поэтому перезагрузка не даёт новой раздачи или переброса.</p>
+        <label class="tavern-bet-label" for="tavern-bet">Ставка</label>
+        <select id="tavern-bet"><option value="5">5 золотых</option><option value="10">10 золотых</option><option value="20">20 золотых</option><option value="50">50 золотых</option></select>
+        <div class="tavern-game-rules">
+          <p><strong>21:</strong> туз считается за 1 или 11; картинки — за 10. Можно взять карту или остановиться. Дилер берёт до 17. Победа возвращает 2× ставки, ничья — 1×, проигрыш — 0.</p>
+          <p><strong>Кости:</strong> пять костей, до двух перебросов; отметь удерживаемые. Общий возврат: пара и ниже — 0×, две пары — 2×, тройка — 3×, стрит — 4×, фул-хаус — 6×, каре — 10×, пять одинаковых — 25×.</p>
+        </div>
+        <div class="tavern-game-panel" id="tavern-game-panel"></div>
+        <div class="tavern-game-start">
+          <button class="primary-button" type="button" data-tavern-game="21">Сыграть в 21</button>
+          <button class="action-button" type="button" data-tavern-game="dice">Бросить кости</button>
+        </div>
+      </section>
+      <section class="tavern-pane" data-tavern-pane="informant" hidden>
+        <div class="tavern-info-card">
+          <h3>Игрок · 3 осколка</h3>
+          <p>Публичных профилей или поискового RPC в текущей версии нет. Информатор не примет плату и не покажет сохранения, почту или частные данные.</p>
+          <button class="action-button" type="button" disabled>Поиск недоступен</button>
+        </div>
+        <div class="tavern-info-card">
+          <h3>Гильдия · 10 осколков</h3>
+          <p>Модели гильдий в игре нет. Поиск не будет выдумывать сведения или списывать осколки.</p>
+          <button class="action-button" type="button" disabled>Поиск недоступен</button>
+        </div>
+      </section>
+      <button class="tavern-return-button" id="tavern-return-button" type="button">← Вернуться в портовый квартал</button>
+    </dialog>
     <dialog class="game-dialog class-dialog" id="class-dialog" aria-labelledby="class-dialog-title">
       <form method="dialog" class="dialog-close-form">
         <button class="dialog-close" aria-label="Закрыть выбор класса">×</button>
@@ -325,6 +406,7 @@
     <script src="cloud-config.js"></script>
     <script src="cloud-save.js"></script>
     <script src="player-groups.js"></script>
+    <script src="tavern-model.js"></script>
     <script src="game.js"></script>
   </body>
 </html>

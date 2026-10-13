@@ -7,6 +7,10 @@ const RUN_SAVE_KEY = "well-of-whispers-active-run";
 const META_SAVE_KEY = "well-of-whispers-camp-progress";
 const SAVE_VERSION = 1;
 const CLOUD_SNAPSHOT_VERSION = 1;
+const TAVERN_DB_NAME = "well-of-whispers-tavern";
+const TAVERN_DB_VERSION = 1;
+const TAVERN_STORE_NAME = "progress";
+const TAVERN_DB_KEY = "player";
 const POTION_LIMIT = 4;
 const MAX_FOCUS = 3;
 const HEAVY_ATTACK_COST = 2;
@@ -58,9 +62,9 @@ const CITY_DISTRICTS = {
   port: {
     title: "Портовый квартал",
     kicker: "ОТКРЫТ ВСЕМ ПУТНИКАМ",
-    description: "Пристанище у воды открыто сразу; услуги, которых ещё нет в игре, отмечены отдельно.",
+    description: "Пристанище у воды открыто сразу; таверна принимает путников, остальные службы отмечены отдельно.",
     services: [
-      { icon: "♨", name: "Таверна", description: "Еда для утоления голода, временная работа, игровой стол и слухи от информатора.", status: "soon", statusLabel: "СКОРО" },
+      { icon: "♨", name: "Таверна", description: "Еда, временная работа, комнаты отдыха и игры на золото. Поиск игроков и гильдий пока недоступен.", status: "ready", statusLabel: "ДОСТУПНО", action: "tavern", actionLabel: "Войти в таверну" },
       { icon: "⚓", name: "Пристань", description: "Одноразовые сюжетные экспедиции по воде.", status: "soon", statusLabel: "СКОРО" },
       { icon: "⚒", name: "Мастерская", description: "Место для творческих заказов и работ.", status: "soon", statusLabel: "СКОРО" },
       { icon: "◈", name: "Гильдия убийц", description: "Заказы на PvP-схватки с другими игроками.", status: "soon", statusLabel: "СКОРО" },
@@ -541,12 +545,34 @@ const ui = {
   metaEssence: $("meta-essence"),
   metaUpgrades: $("meta-upgrades"),
   metaSecrets: $("meta-secrets"),
+  tavernDialog: $("tavern-dialog"),
+  tavernStatus: $("tavern-status"),
+  tavernGold: $("tavern-gold"),
+  tavernSatiety: $("tavern-satiety"),
+  tavernSatietyBar: $("tavern-satiety-bar"),
+  tavernInjuries: $("tavern-injuries"),
+  tavernRecipes: $("tavern-recipes"),
+  tavernStash: $("tavern-stash"),
+  tavernActiveJob: $("tavern-active-job"),
+  tavernGamePanel: $("tavern-game-panel"),
 };
 
 let state = createState();
 let bestFloor = readBestFloor();
 let savedRun = readSavedRun();
+let localMetaReadable = true;
+let localTavernPresent = false;
 let metaProgress = readMetaProgress();
+let tavernDialogBusy = false;
+let tavernStorageReady = false;
+let tavernStorageError = "";
+let tavernWriteConflict = false;
+let tavernMessage = "";
+let pendingTavernState = null;
+let selectedTavernTab = "food";
+let tavernSelectedGameId = null;
+let selectedDiceToHold = [];
+let tavernDatabasePromise = null;
 let selectedClassId = "knight";
 let selectedDistrict = "main";
 let previousTownVisibility = false;
@@ -595,6 +621,7 @@ function createState() {
     equipment: { weapon: null, armor: null },
     inventory: [],
     gearSequence: 0,
+    tavernGearIds: [],
     merchantAvailable: false,
     waitingToDescend: false,
     caption: "Внизу кто-то ждёт",
@@ -613,13 +640,16 @@ function isIntegerBetween(value, min, max) {
   return Number.isInteger(value) && value >= min && value <= max;
 }
 
-function createMetaProgress() {
+function createMetaProgress(now = Date.now()) {
+  const tavern = window.WellTavernModel.createState(now);
+  if (now === 0) tavern.satietyAt = Date.now();
   return {
     essence: 0,
     upgrades: { vitality: 0, power: 0, supplies: 0 },
     bossesDefeated: 0,
     secretsFound: [],
     groupInboxReceipts: [],
+    tavern,
   };
 }
 
@@ -643,25 +673,43 @@ function isValidMetaProgress(progress) {
     progress.secretsFound.length <= SECRET_LORE.length &&
     progress.secretsFound.every((id) => SECRET_LORE.some((secret) => secret.id === id)) &&
     new Set(progress.secretsFound).size === progress.secretsFound.length &&
-    isValidInboxReceipts(progress.groupInboxReceipts)
+    isValidInboxReceipts(progress.groupInboxReceipts) &&
+    (progress.tavern === undefined || window.WellTavernModel.isValidState(progress.tavern))
   );
+}
+
+function normalizeMetaProgress(progress) {
+  const normalized = { ...createMetaProgress(0), ...(progress || {}) };
+  normalized.tavern = progress?.tavern === undefined
+    ? createMetaProgress(0).tavern
+    : window.WellTavernModel.withDefaults(progress.tavern);
+  return normalized;
 }
 
 function readMetaProgress() {
   try {
     const stored = JSON.parse(window.localStorage.getItem(META_SAVE_KEY) || "null");
     if (stored === null) return createMetaProgress();
-    if (isValidMetaProgress(stored)) return stored;
+    if (isValidMetaProgress(stored)) {
+      localTavernPresent = stored.tavern !== undefined;
+      return normalizeMetaProgress(stored);
+    }
+    localMetaReadable = false;
     console.warn("Сохранение лагеря несовместимо; использованы безопасные значения по умолчанию.");
   } catch (error) {
+    localMetaReadable = false;
     console.warn("Не удалось прочитать развитие лагеря.", error);
   }
   return createMetaProgress();
 }
 
 function mergeMetaProgress(left, right) {
-  const first = isValidMetaProgress(left) ? left : createMetaProgress();
-  const second = isValidMetaProgress(right) ? right : createMetaProgress();
+  const first = normalizeMetaProgress(isValidMetaProgress(left) ? left : createMetaProgress(0));
+  const second = normalizeMetaProgress(isValidMetaProgress(right) ? right : createMetaProgress(0));
+  const tavern = second.tavern.updatedAt > first.tavern.updatedAt ||
+    (second.tavern.updatedAt === first.tavern.updatedAt && second.tavern.revision >= first.tavern.revision)
+    ? second.tavern
+    : first.tavern;
   return {
     essence: Math.max(first.essence, second.essence),
     upgrades: Object.fromEntries(Object.keys(META_UPGRADES).map((id) => [
@@ -674,6 +722,7 @@ function mergeMetaProgress(left, right) {
       ...(first.groupInboxReceipts || []),
       ...(second.groupInboxReceipts || []),
     ])],
+    tavern: JSON.parse(JSON.stringify(tavern)),
   };
 }
 
@@ -685,8 +734,166 @@ function persistMetaProgress() {
   } catch (error) {
     console.warn("Не удалось сохранить развитие лагеря.", error);
   }
+  persistTavernToIndexedDb(metaProgress.tavern).catch((error) => {
+    console.warn("Не удалось создать резервную копию таверны в браузере.", error);
+  });
   if (persisted && window.WellCloudSave) window.WellCloudSave.scheduleSave(getCloudSaveSnapshot());
   return persisted;
+}
+
+function openTavernDatabase() {
+  if (!window.indexedDB) return Promise.reject(new Error("IndexedDB недоступна."));
+  if (tavernDatabasePromise) return tavernDatabasePromise;
+  tavernDatabasePromise = new Promise((resolve, reject) => {
+    const request = window.indexedDB.open(TAVERN_DB_NAME, TAVERN_DB_VERSION);
+    request.onupgradeneeded = () => {
+      if (!request.result.objectStoreNames.contains(TAVERN_STORE_NAME)) {
+        request.result.createObjectStore(TAVERN_STORE_NAME);
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error("Не удалось открыть IndexedDB."));
+    request.onblocked = () => reject(new Error("Открытие резервного хранилища заблокировано другой вкладкой."));
+  });
+  return tavernDatabasePromise;
+}
+
+async function persistTavernToIndexedDb(tavern) {
+  if (!window.WellTavernModel.isValidState(tavern)) throw new Error("Состояние таверны не прошло проверку.");
+  const database = await openTavernDatabase();
+  await new Promise((resolve, reject) => {
+    const transaction = database.transaction(TAVERN_STORE_NAME, "readwrite");
+    const store = transaction.objectStore(TAVERN_STORE_NAME);
+    const request = store.get(TAVERN_DB_KEY);
+    request.onsuccess = () => {
+      const existing = request.result;
+      if (!existing || existing.revision <= tavern.revision) {
+        store.put(JSON.parse(JSON.stringify(tavern)), TAVERN_DB_KEY);
+      }
+    };
+    transaction.oncomplete = resolve;
+    transaction.onerror = () => reject(transaction.error || new Error("Не удалось записать резервное хранилище."));
+    transaction.onabort = () => reject(transaction.error || new Error("Запись резервного хранилища отменена."));
+  });
+}
+
+async function commitTavernToIndexedDb(tavern, expectedRevision) {
+  const database = await openTavernDatabase();
+  await new Promise((resolve, reject) => {
+    const transaction = database.transaction(TAVERN_STORE_NAME, "readwrite");
+    const store = transaction.objectStore(TAVERN_STORE_NAME);
+    const request = store.get(TAVERN_DB_KEY);
+    let conflict = false;
+    request.onsuccess = () => {
+      const current = request.result;
+      if (current && current.revision !== expectedRevision) {
+        conflict = true;
+        transaction.abort();
+        return;
+      }
+      store.put(JSON.parse(JSON.stringify(tavern)), TAVERN_DB_KEY);
+    };
+    transaction.oncomplete = resolve;
+    transaction.onerror = () => reject(transaction.error || new Error("Не удалось записать резервное хранилище."));
+    transaction.onabort = () => {
+      const error = conflict
+        ? new Error("Таверна изменилась в другой вкладке. Обнови страницу перед следующим действием.")
+        : transaction.error || new Error("Запись резервного хранилища отменена.");
+      if (conflict) error.code = "TAVERN_REVISION_CONFLICT";
+      reject(error);
+    };
+  });
+}
+
+async function readTavernFromIndexedDb() {
+  const database = await openTavernDatabase();
+  return new Promise((resolve, reject) => {
+    const transaction = database.transaction(TAVERN_STORE_NAME, "readonly");
+    const request = transaction.objectStore(TAVERN_STORE_NAME).get(TAVERN_DB_KEY);
+    request.onsuccess = () => resolve(request.result || null);
+    request.onerror = () => reject(request.error || new Error("Не удалось прочитать резервное хранилище."));
+  });
+}
+
+async function commitTavernProgress(nextTavern) {
+  const expectedRevision = metaProgress.tavern.revision;
+  const committedTavern = JSON.parse(JSON.stringify(nextTavern));
+  committedTavern.revision = expectedRevision + 1;
+  committedTavern.updatedAt = Date.now();
+  if (!window.WellTavernModel.isValidState(committedTavern)) {
+    throw new Error("Состояние таверны не прошло проверку и не было сохранено.");
+  }
+  const nextMeta = { ...metaProgress, tavern: committedTavern };
+  let localSaved = false;
+  let indexedDbSaved = false;
+  tavernWriteConflict = false;
+  try {
+    await commitTavernToIndexedDb(committedTavern, expectedRevision);
+    indexedDbSaved = true;
+  } catch (error) {
+    if (error.code === "TAVERN_REVISION_CONFLICT") {
+      tavernWriteConflict = true;
+      try {
+        const latest = await readTavernFromIndexedDb();
+        if (window.WellTavernModel.isValidState(latest)) {
+          metaProgress.tavern = latest;
+          try {
+            window.localStorage.setItem(META_SAVE_KEY, JSON.stringify(metaProgress));
+          } catch (storageError) {
+            console.warn("Не удалось синхронизировать основное сохранение после конфликта.", storageError);
+          }
+        }
+      } catch (readError) {
+        console.warn("Не удалось восстановить актуальное состояние после конфликта таверны.", readError);
+      }
+      tavernStorageError = error.message;
+      renderTavern();
+      return false;
+    }
+    console.warn("Резерв IndexedDB не принял запись; проверяю основное хранилище.", error);
+  }
+  try {
+    window.localStorage.setItem(META_SAVE_KEY, JSON.stringify(nextMeta));
+    localSaved = true;
+  } catch (error) {
+    console.warn("Основное хранилище заблокировано; сохраняю таверну в резерв.", error);
+  }
+  if (!localSaved && !indexedDbSaved) {
+    tavernStorageError = "Не удалось сохранить изменения. Разреши хранилище браузера и повтори действие; награда не применена.";
+    renderTavern();
+    return false;
+  }
+  metaProgress = nextMeta;
+  tavernStorageError = "";
+  if (window.WellCloudSave) window.WellCloudSave.scheduleSave(getCloudSaveSnapshot());
+  renderTavern();
+  return true;
+}
+
+async function initializeTavernPersistence() {
+  try {
+    const backup = await readTavernFromIndexedDb();
+    if (window.WellTavernModel.isValidState(backup) &&
+      (!localMetaReadable || !localTavernPresent || backup.updatedAt > metaProgress.tavern.updatedAt ||
+        (backup.updatedAt === metaProgress.tavern.updatedAt && backup.revision > metaProgress.tavern.revision))) {
+      metaProgress.tavern = backup;
+      try {
+        window.localStorage.setItem(META_SAVE_KEY, JSON.stringify(metaProgress));
+        localMetaReadable = true;
+        localTavernPresent = true;
+      } catch (error) {
+        console.warn("Резерв таверны загружен; основное хранилище недоступно.", error);
+      }
+    } else if (window.WellTavernModel.isValidState(metaProgress.tavern)) {
+      await persistTavernToIndexedDb(metaProgress.tavern);
+    }
+  } catch (error) {
+    tavernStorageError = localMetaReadable
+      ? ""
+      : "Локальное хранилище недоступно и резерв IndexedDB не открылся. Действия с наградами временно заблокированы.";
+    console.warn("Не удалось восстановить резерв таверны.", error);
+  }
+  tavernStorageReady = true;
 }
 
 function isValidRun(run) {
@@ -777,6 +984,11 @@ function isValidRun(run) {
       )
     )) ||
     (saved.gearSequence !== undefined && !isIntegerBetween(saved.gearSequence, 0, 1000000000)) ||
+    (saved.tavernGearIds !== undefined && (
+      !Array.isArray(saved.tavernGearIds) || saved.tavernGearIds.length > MAX_GEAR ||
+      !saved.tavernGearIds.every((id) => typeof id === "string" && /^gear-\d+$/.test(id)) ||
+      new Set(saved.tavernGearIds).size !== saved.tavernGearIds.length
+    )) ||
     typeof saved.waitingToDescend !== "boolean" ||
     (saved.merchantAvailable !== undefined && typeof saved.merchantAvailable !== "boolean") ||
     !Array.isArray(saved.journal) || saved.journal.length > 7 ||
@@ -909,6 +1121,7 @@ function readSavedRun() {
 }
 
 function saveActiveRun() {
+  let runSaved = true;
   if (state.started) {
     try {
       if (state.gameOver) {
@@ -917,10 +1130,24 @@ function saveActiveRun() {
         window.localStorage.setItem(RUN_SAVE_KEY, JSON.stringify({ version: SAVE_VERSION, state }));
       }
     } catch (error) {
+      runSaved = false;
       console.warn("Не удалось автоматически сохранить спуск.", error);
     }
   }
+  if (runSaved && state.started && state.tavernGearIds?.length) {
+    const usedGear = new Set(state.tavernGearIds);
+    const tavern = metaProgress.tavern;
+    const stash = tavern.stash.filter((item) => !usedGear.has(item.id));
+    if (stash.length !== tavern.stash.length) {
+      tavern.stash = stash;
+      if (usedGear.has(tavern.preparedGearId)) tavern.preparedGearId = null;
+      tavern.revision += 1;
+      tavern.updatedAt = Date.now();
+      persistMetaProgress();
+    }
+  }
   if (window.WellCloudSave) window.WellCloudSave.scheduleSave(getCloudSaveSnapshot());
+  return runSaved;
 }
 
 function getCloudSaveSnapshot() {
@@ -941,6 +1168,9 @@ function getCloudSaveSnapshot() {
 function restoreCloudSave(snapshot) {
   bestFloor = Math.max(bestFloor, snapshot.bestFloor);
   metaProgress = mergeMetaProgress(metaProgress, snapshot.meta);
+  persistTavernToIndexedDb(metaProgress.tavern).catch((error) => {
+    console.warn("Не удалось восстановить резерв таверны из облачной копии.", error);
+  });
   try {
     window.localStorage.setItem(SAVE_KEY, String(bestFloor));
     window.localStorage.setItem(META_SAVE_KEY, JSON.stringify(metaProgress));
@@ -960,11 +1190,19 @@ function restoreCloudSave(snapshot) {
 
 function readLocalCloudSave() {
   let run = null;
-  const raw = window.localStorage.getItem(RUN_SAVE_KEY);
-  if (raw) {
-    const parsed = JSON.parse(raw);
-    if (!isValidRun(parsed)) throw new Error("Локальное сохранение не прошло проверку и оставлено без изменений.");
-    run = parsed;
+  try {
+    const raw = window.localStorage.getItem(RUN_SAVE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (!isValidRun(parsed)) throw new Error("Локальное сохранение не прошло проверку и оставлено без изменений.");
+      run = parsed;
+    }
+  } catch (error) {
+    console.warn("Не удалось прочитать локальный забег для облачной синхронизации.", error);
+    if (state.started && !state.gameOver) run = { version: SAVE_VERSION, state: JSON.parse(JSON.stringify(state)) };
+    else if (savedRun && isValidRun({ version: SAVE_VERSION, state: savedRun })) {
+      run = { version: SAVE_VERSION, state: JSON.parse(JSON.stringify(savedRun)) };
+    }
   }
   return { bestFloor, run, meta: JSON.parse(JSON.stringify(metaProgress)) };
 }
@@ -1087,13 +1325,29 @@ function startGameWithClass(classId) {
   savedRun = null;
   state.started = true;
   state.classId = characterClass.id;
+  state.gearSequence = metaProgress.tavern.nextGearSequence;
+  state.tavernGearIds = [];
+  const preparedGear = metaProgress.tavern.stash.find((item) => item.id === metaProgress.tavern.preparedGearId);
+  if (preparedGear) {
+    state.equipment[preparedGear.type] = JSON.parse(JSON.stringify(preparedGear));
+    state.tavernGearIds.push(preparedGear.id);
+  }
   state.quests = createRunQuests();
   state.runBossesDefeated = 0;
   state.runRewardClaimed = false;
   state.secretFragments = [];
-  state.maxHp = characterClass.maxHp + getUpgradeLevel("vitality") * 3;
+  state.maxHp = Math.max(
+    1,
+    characterClass.maxHp + getUpgradeLevel("vitality") * 3 +
+      metaProgress.tavern.bonuses.maxHp - metaProgress.tavern.injuries * 2,
+  );
   state.hp = state.maxHp;
-  state.attack = randomInt(5, 8) + characterClass.attack - 5 + getUpgradeLevel("power");
+  state.attack = randomInt(5, 8) + characterClass.attack - 5 +
+    getUpgradeLevel("power") + metaProgress.tavern.bonuses.attack;
+  metaProgress.tavern.characterLevel = 1;
+  metaProgress.tavern.revision += 1;
+  metaProgress.tavern.updatedAt = Date.now();
+  persistMetaProgress();
   $("player-name").textContent = characterClass.name;
   $("player-subtitle").textContent = characterClass.role;
   $("portrait-figure").replaceChildren(createArtIcon(`hero-${characterClass.id}`, characterClass.name, "portrait-art"));
@@ -1824,6 +2078,7 @@ function enemyTurn(guarding = false, advanceCooldown = true) {
     awardRunEssence();
     state.gameOver = true;
     state.enemy = null;
+    recordTavernInjury();
     setEvent("ПОСЛЕДНИЙ ВДОХ", `Ты пал на ${state.floor}-м этаже. В лагерь возвращено ${runEssenceReward()} осколков. Лучший спуск: ${bestFloor || state.floor}.`, "☾");
     addJournal("Спуск прерван", "Темнота сомкнулась вокруг. Но легенда колодца останется.", "☾");
     setCaption("Тишина");
@@ -1934,7 +2189,18 @@ function gainXp(amount) {
       addJournal("Новый путь открыт", `На уровне ${state.level} можно выбрать следующий класс.`, "✦");
     }
   }
-  if (leveledUp) playSound("levelUp");
+  if (leveledUp) {
+    metaProgress.tavern.characterLevel = state.level;
+    metaProgress.tavern.revision += 1;
+    metaProgress.tavern.updatedAt = Date.now();
+    persistMetaProgress();
+    playSound("levelUp");
+  }
+}
+
+function recordTavernInjury() {
+  metaProgress.tavern = window.WellTavernModel.createInjury(metaProgress.tavern);
+  persistMetaProgress();
 }
 
 function getAttackPower() {
@@ -2033,6 +2299,7 @@ function applyGroupBattleUpdate(battle, userId) {
   } else if (battle.status === "defeat") {
     state.enemy = null;
     state.waitingToDescend = false;
+    if (!state.gameOver) recordTavernInjury();
     state.gameOver = true;
     awardRunEssence();
     setEvent("ОТРЯД ПАЛ", `Совместный бой завершился поражением на ${battle.floor}-м этаже.`, "☾");
@@ -2417,6 +2684,370 @@ function renderCity() {
     createCityServiceCard(service, selectedDistrict === "upper" && !upperUnlocked)));
 }
 
+function getTavernLevel() {
+  return state.started ? state.level : savedRun?.level || metaProgress.tavern.characterLevel;
+}
+
+function tavernActionButton(label, action, data = {}, className = "action-button") {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = className;
+  button.textContent = label;
+  button.dataset.tavernAction = action;
+  for (const [key, value] of Object.entries(data)) button.dataset[key] = String(value);
+  button.disabled = tavernDialogBusy || !tavernStorageReady || Boolean(tavernStorageError) || Boolean(pendingTavernState);
+  return button;
+}
+
+function openTavern() {
+  if (state.started && !state.gameOver) return;
+  selectedDistrict = "port";
+  renderCity();
+  selectedTavernTab = "food";
+  tavernMessage = "";
+  if (!ui.tavernDialog.open) ui.tavernDialog.showModal();
+  renderTavern();
+}
+
+function closeTavern() {
+  if (ui.tavernDialog.open) ui.tavernDialog.close();
+  selectedDistrict = "port";
+  renderCity();
+}
+
+function tavernTimeRemaining(endsAt) {
+  const seconds = Math.max(0, Math.ceil((endsAt - Date.now()) / 1000));
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const remainder = seconds % 60;
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}`;
+}
+
+function tavernRewardDescription(job) {
+  if (job.kind === "room") return "Лечение травм доступно по завершении трёхчасового срока.";
+  const parts = [`+${job.reward.gold} золотых`];
+  if (job.reward.recipeId) {
+    parts.push(`рецепт «${window.WellTavernModel.RECIPES[job.reward.recipeId].name}»`);
+  }
+  if (job.reward.item) parts.push(`предмет «${job.reward.item.name}» на склад`);
+  if (job.reward.bonus === "attack") parts.push("постоянно +1 к атаке");
+  if (job.reward.bonus === "maxHp") parts.push("постоянно +2 к максимуму здоровья");
+  if (job.kind === "cellar" && !job.reward.bonus) parts.push("характеристика не повысилась");
+  return parts.join(" · ");
+}
+
+function isTavernGearAlreadyInRun(gearId) {
+  const run = savedRun || (state.started ? state : null);
+  if (!run) return false;
+  return (run.tavernGearIds || []).includes(gearId) ||
+    [...(run.inventory || []), run.equipment?.weapon, run.equipment?.armor]
+      .filter(Boolean).some((gear) => gear.id === gearId);
+}
+
+function cardLabel(card) {
+  const rank = card.value === 14 ? "A" : card.value === 13 ? "K" : card.value === 12 ? "Q" : card.value === 11 ? "J" : String(card.value);
+  return `${rank}${card.suit}`;
+}
+
+function renderTavernGame() {
+  ui.tavernGamePanel.replaceChildren();
+  const tavern = metaProgress.tavern;
+  const game = tavern.game;
+  if (game?.kind === "dice" && game.id !== tavernSelectedGameId) {
+    tavernSelectedGameId = game.id;
+    selectedDiceToHold = [...game.held];
+  }
+  const busy = tavernDialogBusy || !tavernStorageReady || Boolean(tavernStorageError) || Boolean(pendingTavernState);
+  for (const button of ui.tavernDialog.querySelectorAll("[data-tavern-game]")) {
+    button.disabled = busy || Boolean(game?.status === "playing");
+  }
+  $("tavern-bet").disabled = busy || Boolean(game?.status === "playing");
+  if (!game) {
+    const empty = document.createElement("p");
+    empty.className = "tavern-game-result";
+    empty.textContent = "Партия не начата. Выбери ставку; она будет списана сразу при первой раздаче.";
+    ui.tavernGamePanel.append(empty);
+    return;
+  }
+  const summary = document.createElement("p");
+  summary.className = "tavern-game-result";
+  summary.textContent = `Ставка ${game.bet} зол. · ${game.status === "playing" ? "партия сохранена, продолжай" : game.result}`;
+  ui.tavernGamePanel.append(summary);
+  const appendButton = (label, action, data = {}) => {
+    const button = tavernActionButton(label, action, data);
+    ui.tavernGamePanel.append(button);
+  };
+  if (game.kind === "21") {
+    const cards = document.createElement("div");
+    cards.className = "tavern-game-cards";
+    const formatCards = (hand) => hand.map((card) => {
+      const span = document.createElement("span");
+      span.className = card.suit === "♥" || card.suit === "♦" ? "red-card" : "";
+      span.textContent = `${cardLabel(card)} `;
+      return span;
+    });
+    const playerLabel = document.createElement("strong");
+    playerLabel.textContent = `Твои карты · ${window.WellTavernModel.cardTotal(game.player)}: `;
+    const dealerLabel = document.createElement("strong");
+    dealerLabel.textContent = `Карты дилера · ${window.WellTavernModel.cardTotal(game.dealer)}: `;
+    const dealerCards = document.createElement("span");
+    dealerCards.append(...formatCards(game.dealer));
+    const playerCards = document.createElement("span");
+    playerCards.append(...formatCards(game.player));
+    cards.append(dealerLabel, dealerCards, document.createElement("br"), playerLabel, playerCards);
+    ui.tavernGamePanel.append(cards);
+    if (game.status === "playing") {
+      appendButton("Взять карту", "hit");
+      appendButton("Остановиться", "stand");
+    } else {
+      const payout = document.createElement("p");
+      payout.className = "tavern-game-result";
+      payout.textContent = `Начислено: ${game.payout} золотых.`;
+      ui.tavernGamePanel.append(payout);
+    }
+  } else {
+    const dice = document.createElement("div");
+    dice.className = "tavern-dice-row";
+    game.dice.forEach((value, index) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "tavern-die";
+      button.dataset.dieIndex = String(index);
+      button.textContent = String(value);
+      button.setAttribute("aria-label", `Кость ${index + 1}: ${value}${selectedDiceToHold.includes(index) ? ", оставить" : ", перебросить"}`);
+      button.setAttribute("aria-pressed", String(selectedDiceToHold.includes(index)));
+      button.disabled = busy || game.status !== "playing" || game.rollsLeft === 0;
+      dice.append(button);
+    });
+    ui.tavernGamePanel.append(dice);
+    if (game.status === "playing") {
+      const status = document.createElement("p");
+      status.className = "tavern-game-result";
+      status.textContent = `Осталось перебросов: ${game.rollsLeft}. Выбери кости, которые оставить, затем нажми «Перебросить».`;
+      ui.tavernGamePanel.append(status);
+      appendButton("Перебросить выбранные", "roll");
+    } else {
+      const payout = document.createElement("p");
+      payout.className = "tavern-game-result";
+      payout.textContent = `Начислено: ${game.payout} золотых.`;
+      ui.tavernGamePanel.append(payout);
+    }
+  }
+}
+
+function renderTavern() {
+  if (!ui.tavernDialog || !metaProgress?.tavern) return;
+  let tavern = metaProgress.tavern;
+  const refreshedSatiety = window.WellTavernModel.updateSatiety(tavern);
+  if (refreshedSatiety.satietyAt !== tavern.satietyAt) {
+    metaProgress.tavern = refreshedSatiety;
+    tavern = refreshedSatiety;
+    persistMetaProgress();
+  }
+  ui.tavernStatus.textContent = tavernStorageError || tavernMessage ||
+    (!tavernStorageReady ? "Восстанавливаю сохранённые дела таверны…" : "Ставки и награды остаются в отдельном кошельке между забегами.");
+  ui.tavernStatus.classList.toggle("error", Boolean(tavernStorageError));
+  if (pendingTavernState) {
+    const retry = tavernActionButton("Повторить сохранение", "retry", {}, "primary-button");
+    retry.disabled = tavernDialogBusy;
+    ui.tavernStatus.append(" ");
+    ui.tavernStatus.append(retry);
+  }
+  ui.tavernGold.textContent = `${tavern.gold} ✦`;
+  ui.tavernSatiety.textContent = `${tavern.satiety} / 100`;
+  ui.tavernSatietyBar.style.width = `${tavern.satiety}%`;
+  ui.tavernInjuries.textContent = `${tavern.injuries} / ${window.WellTavernModel.MAX_INJURIES}`;
+  for (const tab of ui.tavernDialog.querySelectorAll("[data-tavern-tab]")) {
+    const active = tab.dataset.tavernTab === selectedTavernTab;
+    tab.setAttribute("aria-pressed", String(active));
+  }
+  for (const pane of ui.tavernDialog.querySelectorAll("[data-tavern-pane]")) {
+    pane.hidden = pane.dataset.tavernPane !== selectedTavernTab;
+  }
+  ui.tavernRecipes.replaceChildren();
+  for (const recipe of window.WellTavernModel.RECIPE_LIST) {
+    const row = document.createElement("article");
+    row.className = "tavern-recipe";
+    const details = document.createElement("div");
+    const title = document.createElement("strong");
+    title.textContent = `${recipe.name} · ${tavern.recipes[recipe.id]}/3`;
+    const description = document.createElement("span");
+    description.textContent = `${recipe.description}. ${recipe.ingredients}`;
+    details.append(title, description);
+    const button = tavernActionButton("Съесть", "eat", { recipeId: recipe.id });
+    button.disabled = button.disabled || tavern.recipes[recipe.id] < 1;
+    row.append(details, button);
+    ui.tavernRecipes.append(row);
+  }
+  ui.tavernStash.replaceChildren();
+  const availableStash = tavern.stash.filter((item) => !isTavernGearAlreadyInRun(item.id));
+  if (availableStash.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "tavern-note";
+    empty.textContent = "Склад пока пуст.";
+    ui.tavernStash.append(empty);
+  }
+  for (const gear of availableStash) {
+    const row = document.createElement("article");
+    row.className = "tavern-stash-item";
+    const details = document.createElement("div");
+    const title = document.createElement("strong");
+    title.textContent = gear.name;
+    const description = document.createElement("span");
+    description.textContent = `${gear.type === "weapon" ? "Оружие" : "Броня"} · +${gear.bonus} к ${gear.type === "weapon" ? "атаке" : "защите"}`;
+    details.append(title, description);
+    const button = tavernActionButton(
+      tavern.preparedGearId === gear.id ? "Подготовлено" : "Взять в новый спуск",
+      "prepare-gear",
+      { gearId: gear.id },
+    );
+    button.disabled = button.disabled || Boolean(state.started && !state.gameOver);
+    row.append(details, button);
+    ui.tavernStash.append(row);
+  }
+  const activeJob = tavern.activeJob;
+  ui.tavernActiveJob.replaceChildren();
+  ui.tavernActiveJob.hidden = !activeJob;
+  if (activeJob) {
+    const details = document.createElement("div");
+    const title = document.createElement("strong");
+    title.textContent = `${window.WellTavernModel.JOBS[activeJob.kind].title} · ${activeJob.durationMs / window.WellTavernModel.HOUR} ч`;
+    const text = document.createElement("span");
+    const complete = Date.now() >= activeJob.endsAt;
+    text.textContent = complete
+      ? `Время истекло. Награда ожидает получения: ${tavernRewardDescription(activeJob)}.`
+      : `Осталось ${tavernTimeRemaining(activeJob.endsAt)}. Награда заранее закреплена: ${tavernRewardDescription(activeJob)}.`;
+    details.append(title, text);
+    ui.tavernActiveJob.append(details);
+    if (complete) {
+      const claim = tavernActionButton(activeJob.kind === "room" ? "Получить лечение" : "Получить награду", "claim-job");
+      ui.tavernActiveJob.append(claim);
+    }
+  }
+  const canStartJob = !activeJob && !tavernDialogBusy && tavernStorageReady &&
+    !tavernStorageError && !pendingTavernState;
+  for (const button of ui.tavernDialog.querySelectorAll("[data-tavern-job]")) {
+    button.disabled = !canStartJob;
+  }
+  const waiterHours = Number($("tavern-waiter-hours").value);
+  const waiterGold = window.WellTavernModel.JOBS.waiter.gold[waiterHours];
+  ui.tavernDialog.querySelector('[data-tavern-job="waiter"]').textContent =
+    `Принять смену · ${waiterGold} зол.`;
+  const roomPrice = getTavernLevel() * 2;
+  $("tavern-room-description").textContent =
+    `Текущий уровень ${getTavernLevel()}: цена строго ${getTavernLevel()} × 2 = ${roomPrice} зол. После истечения ровно 3 часов полностью лечит травмы.`;
+  const roomButton = ui.tavernDialog.querySelector('[data-tavern-job="room"]');
+  roomButton.textContent = `Снять комнату · ${roomPrice} зол.`;
+  roomButton.disabled = !canStartJob || tavern.injuries === 0 || tavern.gold < roomPrice;
+  $("tavern-waiter-hours").disabled = !canStartJob;
+  renderTavernGame();
+}
+
+function createTavernGear(tavern) {
+  const themes = {
+    well: { weapon: "Клинок каменного эха", armor: "Плащ колодезного стража" },
+    drowned: { weapon: "Якорный тесак", armor: "Панцирь глубин" },
+    roots: { weapon: "Серп живых корней", armor: "Кора древнего собора" },
+    forge: { weapon: "Молот пепельной кузни", armor: "Кованый доспех" },
+  };
+  const type = randomInt(0, 1) === 0 ? "weapon" : "armor";
+  const theme = FLOOR_THEMES[randomInt(0, FLOOR_THEMES.length - 1)];
+  const sequence = tavern.nextGearSequence + 1;
+  tavern.nextGearSequence = sequence;
+  return {
+    id: `gear-${sequence}`,
+    type,
+    name: themes[theme.id][type],
+    bonus: Math.min(type === "weapon" ? 6 : 4, 1 + Math.floor((getTavernLevel() - 1) / 3)),
+  };
+}
+
+async function persistTavernCandidate(candidate) {
+  if (!tavernStorageReady) {
+    tavernMessage = "Подожди завершения восстановления сохранения таверны.";
+    renderTavern();
+    return false;
+  }
+  const saved = await commitTavernProgress(candidate);
+  if (!saved) {
+    if (!tavernWriteConflict) pendingTavernState = JSON.parse(JSON.stringify(candidate));
+    renderTavern();
+    return false;
+  }
+  pendingTavernState = null;
+  tavernMessage = "Изменение сохранено.";
+  renderTavern();
+  return true;
+}
+
+async function handleTavernAction(action, data = {}) {
+  if (tavernDialogBusy) return;
+  if (action === "retry") {
+    if (!pendingTavernState) return;
+    tavernDialogBusy = true;
+    renderTavern();
+    try {
+      await persistTavernCandidate(pendingTavernState);
+    } finally {
+      tavernDialogBusy = false;
+      renderTavern();
+    }
+    return;
+  }
+  if (!tavernStorageReady || tavernStorageError || pendingTavernState) return;
+  tavernDialogBusy = true;
+  renderTavern();
+  try {
+    const now = Date.now();
+    let candidate = window.WellTavernModel.withDefaults(metaProgress.tavern);
+    if (action === "eat") {
+      candidate = window.WellTavernModel.useRecipe(candidate, data.recipeId, now);
+    } else if (action === "start-job") {
+      const kind = data.kind;
+      const options = { level: getTavernLevel() };
+      if (kind === "waiter") options.hours = Number($("tavern-waiter-hours").value);
+      if (kind === "cleaning") options.item = createTavernGear(candidate);
+      candidate = window.WellTavernModel.startJob(candidate, kind, options, now);
+      tavernMessage = `Дело начато. Награда закреплена, получить её можно после окончания таймера.`;
+    } else if (action === "claim-job") {
+      const job = candidate.activeJob;
+      candidate = window.WellTavernModel.claimJob(candidate, now);
+      tavernMessage = job.kind === "room"
+        ? "Комната оплачена и срок истёк: травмы вылечены."
+        : `Награда получена один раз: ${tavernRewardDescription(job)}.`;
+    } else if (action === "prepare-gear") {
+      const gear = candidate.stash.find((item) => item.id === data.gearId);
+      if (!gear || isTavernGearAlreadyInRun(gear.id)) throw new Error("Этот предмет уже подготовлен к сохранённому спуску.");
+      candidate.preparedGearId = candidate.preparedGearId === gear.id ? null : gear.id;
+      candidate.updatedAt = now;
+      tavernMessage = candidate.preparedGearId ? `${gear.name} подготовлен к следующему новому спуску.` : "Подготовка предмета отменена.";
+    } else if (action === "start-game") {
+      const kind = data.kind;
+      const bet = Number($("tavern-bet").value);
+      candidate = window.WellTavernModel.startGame(candidate, kind, bet, now);
+      tavernMessage = `Ставка ${bet} золотых списана. Партия сохранена до каждого хода.`;
+    } else if (action === "hit") {
+      candidate = window.WellTavernModel.hit21(candidate, now);
+      tavernMessage = candidate.game.status === "finished" ? candidate.game.result : "Карта взята; ход сохранён.";
+    } else if (action === "stand") {
+      candidate = window.WellTavernModel.stand21(candidate, now);
+      tavernMessage = candidate.game.result;
+    } else if (action === "roll") {
+      candidate = window.WellTavernModel.rollDice(candidate, selectedDiceToHold, now);
+      selectedDiceToHold = [...candidate.game.held];
+      tavernMessage = candidate.game.status === "finished" ? candidate.game.result : "Переброс сохранён.";
+    } else {
+      throw new Error("Неизвестное действие таверны.");
+    }
+    await persistTavernCandidate(candidate);
+  } catch (error) {
+    tavernMessage = error.message;
+  } finally {
+    tavernDialogBusy = false;
+    renderTavern();
+  }
+}
+
 function render() {
   const theme = getFloorTheme();
   const characterClass = state.classId ? getSelectedClassNodes().slice(-1)[0] : null;
@@ -2553,6 +3184,7 @@ function render() {
   renderMetaProgress();
   renderRunQuests();
   renderCity();
+  if (ui.tavernDialog.open) renderTavern();
   saveActiveRun();
   if (window.WellPlayerGroups) {
     window.WellPlayerGroups.setPlayerState(state.level, state.started && !state.gameOver);
@@ -2700,9 +3332,55 @@ ui.cityServices.addEventListener("click", (event) => {
     openClassDialog();
   } else if (button.dataset.cityAction === "upgrades") {
     $("meta-panel").scrollIntoView({ behavior: "smooth", block: "center" });
+  } else if (button.dataset.cityAction === "tavern") {
+    openTavern();
   }
 });
-window.WellCloudSave.initialize({
+ui.tavernDialog.addEventListener("click", (event) => {
+  const tab = event.target.closest("button[data-tavern-tab]");
+  if (tab) {
+    selectedTavernTab = tab.dataset.tavernTab;
+    renderTavern();
+    return;
+  }
+  const die = event.target.closest("button[data-die-index]");
+  if (die && metaProgress.tavern.game?.status === "playing") {
+    const index = Number(die.dataset.dieIndex);
+    selectedDiceToHold = selectedDiceToHold.includes(index)
+      ? selectedDiceToHold.filter((held) => held !== index)
+      : [...selectedDiceToHold, index].sort((left, right) => left - right);
+    renderTavernGame();
+    return;
+  }
+  const job = event.target.closest("button[data-tavern-job]");
+  if (job) {
+    handleTavernAction("start-job", { kind: job.dataset.tavernJob });
+    return;
+  }
+  const game = event.target.closest("button[data-tavern-game]");
+  if (game) {
+    handleTavernAction("start-game", { kind: game.dataset.tavernGame });
+    return;
+  }
+  const actionButton = event.target.closest("button[data-tavern-action]");
+  if (actionButton) {
+    handleTavernAction(actionButton.dataset.tavernAction, actionButton.dataset);
+  }
+});
+ui.tavernDialog.addEventListener("close", () => {
+  selectedDistrict = "port";
+  renderCity();
+});
+$("tavern-return-button").addEventListener("click", closeTavern);
+$("tavern-waiter-hours").addEventListener("change", renderTavern);
+setInterval(() => {
+  if (ui.tavernDialog.open) renderTavern();
+}, 1000);
+
+async function initializeGameServices() {
+  await initializeTavernPersistence();
+  render();
+  window.WellCloudSave.initialize({
   readLocal: readLocalCloudSave,
   validateRun: isValidRun,
   defaultMeta: createMetaProgress,
@@ -2710,8 +3388,8 @@ window.WellCloudSave.initialize({
   mergeMeta: mergeMetaProgress,
   refresh: render,
   restore: restoreCloudSave,
-});
-window.WellPlayerGroups.initialize({
+  });
+  window.WellPlayerGroups.initialize({
   getLevel: () => state.level,
   isInDungeon: () => state.started && !state.gameOver,
   getBattlePlayer: getGroupBattlePlayer,
@@ -2739,4 +3417,12 @@ window.WellPlayerGroups.initialize({
       render();
     }
   },
+  });
+}
+
+initializeGameServices().catch((error) => {
+  tavernStorageError = "Не удалось восстановить сохранения таверны; новые действия с наградами заблокированы.";
+  tavernStorageReady = true;
+  console.error("Не удалось инициализировать сохранения игры.", error);
+  render();
 });

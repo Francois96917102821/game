@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Tavern tests</title>
+  </head>
+  <body>
+    <h1 id="result">RUNNING</h1>
+    <pre id="log"></pre>
+    <script src="../tavern-model.js"></script>
+    <script>
+      "use strict";
+
+      const output = document.getElementById("log");
+      const failures = [];
+      function assert(condition, message) {
+        if (!condition) throw new Error(message);
+      }
+      function rejects(action, message) {
+        let rejected = false;
+        try { action(); } catch { rejected = true; }
+        assert(rejected, message);
+      }
+      function check(name, action) {
+        try {
+          action();
+          output.textContent += `PASS ${name}\n`;
+        } catch (error) {
+          failures.push(`${name}: ${error.message}`);
+          output.textContent += `FAIL ${name}: ${error.message}\n`;
+        }
+      }
+
+      const model = window.WellTavernModel;
+      const hour = model.HOUR;
+      check("legacy defaults and satiety clock", () => {
+        const migrated = model.withDefaults(null, 1000);
+        assert(migrated.gold === 0 && migrated.injuries === 0 && migrated.satiety === 50, "safe defaults");
+        const afterHour = model.updateSatiety(migrated, 1000 + hour);
+        assert(afterHour.satiety === 45, "one real-time hour lowers satiety by five");
+        assert(afterHour.satietyAt === 1000 + hour, "satiety clock keeps whole-hour boundary");
+      });
+      check("room price and exact three-hour injury treatment", () => {
+        const old = model.createState(1000);
+        old.gold = 40;
+        old.injuries = 2;
+        old.characterLevel = 4;
+        const started = model.startJob(old, "room", { level: 4 }, 1000, () => 0.5);
+        assert(started.gold === 32, "level four room costs exactly eight gold");
+        assert(started.activeJob.durationMs === 3 * hour, "room duration is exactly three hours");
+        rejects(() => model.claimJob(started, started.activeJob.endsAt - 1), "room cannot heal before expiry");
+        assert(started.injuries === 2, "starting the room does not heal immediately");
+        const claimed = model.claimJob(JSON.parse(JSON.stringify(started)), started.activeJob.endsAt);
+        assert(claimed.injuries === 0 && claimed.activeJob === null, "room heals after exact expiry");
+        assert(claimed.jobReceipts.includes(started.activeJob.id), "room result has a one-time receipt");
+      });
+      check("all AFK job times and waiter pay previews", () => {
+        const waiterPay = { 2: 16, 4: 36, 8: 80 };
+        for (const hours of [2, 4, 8]) {
+          const state = model.createState(2000);
+          const job = model.startJob(state, "waiter", { hours }, 2000, () => 0.5);
+          assert(job.activeJob.durationMs === hours * hour, `${hours} hour waiter duration`);
+          assert(job.activeJob.reward.gold === waiterPay[hours], `${hours} hour waiter reward`);
+        }
+        const cooking = model.startJob(model.createState(3000), "cook", {}, 3000, () => 0);
+        assert(cooking.activeJob.durationMs === hour, "cooking takes one hour");
+        const cleaning = model.startJob(model.createState(4000), "cleaning", {
+          item: { id: "gear-1", type: "weapon", name: "Клинок каменного эха", bonus: 1 },
+        }, 4000, () => 0);
+        assert(cleaning.activeJob.durationMs === 4 * hour, "cleaning takes four hours");
+        const cellar = model.startJob(model.createState(5000), "cellar", {}, 5000, () => 0);
+        assert(cellar.activeJob.durationMs === 8 * hour, "cellar takes eight hours");
+      });
+      check("one-time cooking reward, recipe use and cap", () => {
+        const state = model.createState(1000);
+        const job = model.startJob(state, "cook", {}, 1000, () => 0);
+        const result = model.claimJob(JSON.parse(JSON.stringify(job)), job.activeJob.endsAt);
+        const recipeId = job.activeJob.reward.recipeId;
+        assert(result.gold === 8 && result.recipes[recipeId] === 1, "cooking pays gold and a stored recipe");
+        rejects(() => model.claimJob(result, job.activeJob.endsAt + 1), "a claimed job cannot pay twice");
+        const fed = model.useRecipe(result, recipeId, job.activeJob.endsAt + 1);
+        assert(fed.recipes[recipeId] === 0 && fed.satiety > result.satiety, "recipe is consumed and restores satiety");
+      });
+      check("cleaning item is kept in persistent stash", () => {
+        const state = model.createState(1000);
+        const item = { id: "gear-1", type: "armor", name: "Плащ колодезного стража", bonus: 1 };
+        state.nextGearSequence = 1;
+        const job = model.startJob(state, "cleaning", { item }, 1000, () => 0);
+        const claimed = model.claimJob(job, job.activeJob.endsAt);
+        assert(claimed.stash.length === 1 && claimed.stash[0].id === item.id, "item goes to separate stash, not run inventory");
+        assert(claimed.activeJob === null, "completed result is collected exactly once");
+      });
+      check("cellar raises an existing character stat at its stated chance", () => {
+        const job = model.startJob(model.createState(1000), "cellar", {}, 1000, () => 0);
+        assert(job.activeJob.reward.bonus === "attack", "fixed random sample lands inside 25 percent success");
+        const claimed = model.claimJob(job, job.activeJob.endsAt);
+        assert(claimed.bonuses.attack === 1, "attack bonus persists after reward claim");
+      });
+      check("21 persists its deal and settles a wager once", () => {
+        let state = model.createState(1000);
+        state.gold = 100;
+        state = model.startGame(state, "21", 10, 1000, () => 0);
+        assert(state.gold === 90, "stake is removed before play");
+        state = JSON.parse(JSON.stringify(state));
+        rejects(() => model.startGame(state, "21", 10, 1001, () => 0), "reload cannot start a free replacement game");
+        if (state.game.status === "playing") state = model.stand21(state, 1002);
+        assert(state.game.status === "finished" && state.gold >= 90, "stand settles the persisted game");
+        rejects(() => model.stand21(state, 1003), "finished game cannot pay twice");
+      });
+      check("dice hold and two persisted rerolls settle once", () => {
+        let state = model.createState(1000);
+        state.gold = 100;
+        state = model.startGame(state, "dice", 5, 1000, () => 0);
+        assert(state.gold === 95 && state.game.dice.every((die) => die === 1), "stake and first roll persist");
+        state = JSON.parse(JSON.stringify(state));
+        state = model.rollDice(state, [0, 1, 2, 3, 4], 1001, () => 0);
+        assert(state.game.rollsLeft === 1 && state.game.status === "playing", "first hold/reroll is saved");
+        state = JSON.parse(JSON.stringify(state));
+        state = model.rollDice(state, [0, 1, 2, 3, 4], 1002, () => 0);
+        assert(state.game.status === "finished" && state.game.payout === 125 && state.gold === 220, "five of a kind pays 25x once");
+        rejects(() => model.rollDice(state, [], 1003, () => 0), "finished dice game cannot reroll or repay");
+      });
+      check("negative bets and premature claims are rejected", () => {
+        const state = model.createState(1000);
+        rejects(() => model.startGame(state, "dice", 5, 1000), "cannot bet above wallet");
+        rejects(() => model.startJob(state, "room", { level: 100 }, 1000), "cannot take an unaffordable room");
+        assert(state.gold === 0, "failed actions do not change wallet");
+      });
+
+      async function waitFor(predicate, message, timeout = 8000) {
+        const start = Date.now();
+        while (Date.now() - start < timeout) {
+          if (predicate()) return;
+          await new Promise((resolve) => setTimeout(resolve, 40));
+        }
+        throw new Error(message);
+      }
+
+      async function checkBrowserUi() {
+        output.textContent += "UI: seeding profile\n";
+        const town = model.createState(Date.now());
+        town.gold = 100;
+        town.injuries = 1;
+        town.characterLevel = 3;
+        localStorage.setItem("well-of-whispers-camp-progress", JSON.stringify({
+          essence: 0,
+          upgrades: { vitality: 0, power: 0, supplies: 0 },
+          bossesDefeated: 0,
+          secretsFound: [],
+          groupInboxReceipts: [],
+          tavern: town,
+        }));
+        const frame = document.createElement("iframe");
+        frame.title = "Game UI test";
+        frame.style.width = "375px";
+        frame.style.height = "700px";
+        frame.style.border = "0";
+        frame.src = "../index.html?tavern-test=1";
+        const firstLoad = new Promise((resolve, reject) => {
+          frame.addEventListener("load", resolve, { once: true });
+          frame.addEventListener("error", reject, { once: true });
+        });
+        document.body.append(frame);
+        await firstLoad;
+        output.textContent += "UI: frame loaded\n";
+        const gameWindow = frame.contentWindow;
+        const gameDocument = gameWindow.document;
+        gameDocument.querySelector('[data-district="port"]').click();
+        gameDocument.querySelector('[data-city-action="tavern"]').click();
+        await waitFor(() => gameDocument.querySelector("#tavern-dialog").open &&
+          gameDocument.querySelector("#tavern-status").textContent.includes("отдельном кошельке"),
+        `Tavern dialog did not initialize; open=${gameDocument.querySelector("#tavern-dialog").open}; status=${gameDocument.querySelector("#tavern-status").textContent}`);
+        output.textContent += "UI: tavern ready\n";
+        assert(gameWindow.getComputedStyle(gameDocument.querySelector(".tavern-job-grid")).gridTemplateColumns.split(" ").length === 1,
+          "job cards adapt to a narrow viewport");
+        assert(gameDocument.querySelector("#tavern-room-description").textContent.includes("3 × 2 = 6"), "room price uses level × 2");
+        assert(gameDocument.querySelector('[data-tavern-game="21"]').disabled === false, "21 is an active game, not a placeholder");
+        gameDocument.querySelector('[data-tavern-tab="work"]').click();
+        const roomButton = gameDocument.querySelector('[data-tavern-job="room"]');
+        assert(roomButton.textContent === "Снять комнату · 6 зол.", "room button displays exact price");
+        roomButton.click();
+        await waitFor(() => gameDocument.querySelector("#tavern-active-job").textContent.includes("Осталось"), "room countdown did not start");
+        output.textContent += "UI: room started\n";
+        const storedAfterRoom = JSON.parse(localStorage.getItem("well-of-whispers-camp-progress"));
+        assert(storedAfterRoom.tavern.gold === 94 && storedAfterRoom.tavern.injuries === 1, "room charges gold without instant healing");
+        assert(storedAfterRoom.tavern.activeJob.durationMs === 3 * hour, "saved room has exact duration");
+        gameDocument.querySelector("#tavern-return-button").click();
+        const reload = new Promise((resolve, reject) => {
+          frame.addEventListener("load", resolve, { once: true });
+          frame.addEventListener("error", reject, { once: true });
+        });
+        frame.src = "../index.html?tavern-test=reload";
+        await reload;
+        const reloaded = frame.contentWindow.document;
+        reloaded.querySelector('[data-district="port"]').click();
+        reloaded.querySelector('[data-city-action="tavern"]').click();
+        await waitFor(() => reloaded.querySelector("#tavern-dialog").open &&
+          reloaded.querySelector("#tavern-status").textContent.includes("отдельном кошельке"),
+        "tavern did not restore after reload");
+        output.textContent += "UI: room restored\n";
+        assert(reloaded.querySelector("#tavern-active-job").textContent.includes("Комната"), "active room survives reload");
+        assert(JSON.parse(localStorage.getItem("well-of-whispers-camp-progress")).tavern.gold === 94, "wallet survives reload");
+        reloaded.querySelector('[data-tavern-tab="informant"]').click();
+        assert([...reloaded.querySelectorAll(".tavern-info-card button")].every((button) => button.disabled), "unsupported informant services cannot charge");
+        reloaded.querySelector('[data-tavern-tab="games"]').click();
+        const storagePrototype = frame.contentWindow.Storage.prototype;
+        storagePrototype.setItem = function rejectLocalStorage() { throw new DOMException("blocked", "QuotaExceededError"); };
+        storagePrototype.getItem = function rejectLocalStorageRead() { throw new DOMException("blocked", "SecurityError"); };
+        assert(reloaded.querySelector('[data-tavern-game="21"]').disabled === false,
+          "21 remains enabled while an AFK room is running");
+        reloaded.querySelector('[data-tavern-game="21"]').click();
+        await waitFor(() => reloaded.querySelector("#tavern-game-panel").textContent.includes("Ставка 5"),
+          `game could not save through IndexedDB when localStorage refused; status=${reloaded.querySelector("#tavern-status").textContent}; panel=${reloaded.querySelector("#tavern-game-panel").textContent}`);
+        const gameBeforeReload = reloaded.querySelector("#tavern-game-panel").textContent;
+        output.textContent += "UI: IDB saved after localStorage rejection\n";
+        const storageReload = new Promise((resolve, reject) => {
+          frame.addEventListener("load", resolve, { once: true });
+          frame.addEventListener("error", reject, { once: true });
+        });
+        frame.src = "../index.html?tavern-test=storage-reload";
+        await storageReload;
+        output.textContent += "UI: storage-fallback frame loaded\n";
+        const fallback = frame.contentWindow.document;
+        fallback.querySelector('[data-district="port"]').click();
+        fallback.querySelector('[data-city-action="tavern"]').click();
+        output.textContent += `UI: storage-fallback status=${fallback.querySelector("#tavern-status").textContent}\n`;
+        await waitFor(() => fallback.querySelector("#tavern-dialog").open &&
+          fallback.querySelector("#tavern-status").textContent.includes("отдельном кошельке"),
+        "IndexedDB state did not restore after storage failure");
+        output.textContent += "UI: IDB recovered after reload\n";
+        fallback.querySelector('[data-tavern-tab="games"]').click();
+        assert(fallback.querySelector("#tavern-game-panel").textContent === gameBeforeReload,
+          "the exact 21 hand/result survives reload after localStorage read/write refusal");
+        output.textContent += "PASS responsive town-to-tavern UI, room/reload, blocked informant, IndexedDB fallback\n";
+        frame.remove();
+      }
+
+      checkBrowserUi().catch((error) => failures.push(`browser UI: ${error.message}`)).finally(() => {
+        if (failures.length) {
+          output.textContent += `${failures.length} FAILURE(S)\n${failures.join("\n")}\n`;
+          document.getElementById("result").textContent = "FAIL";
+          document.getElementById("result").dataset.result = "fail";
+        } else {
+          document.getElementById("result").textContent = "PASS";
+          document.getElementById("result").dataset.result = "pass";
+        }
+      });
+    </script>
+  </body>
+</html>

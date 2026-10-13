@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - francois96917102821-well-dungeon-web-game
   workflow_dispatch:
 
 permissions:

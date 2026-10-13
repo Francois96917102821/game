@@ -132,37 +132,135 @@ const DUNGEON_EVENT_ACTIONS = new Map([
   ["ore-force", "Ударить сильнее"],
   ["fish-net", "Закинуть сеть"],
   ["fish-shiny", "Искать блеск на дне"],
+  ["door-listen", "Прислушаться к механизму"],
+  ["door-force", "Открыть силой"],
+  ["hunt-track", "Выслеживать зверя"],
+  ["hunt-bait", "Поставить приманку"],
+  ["echo-duel", "Вызвать на поединок"],
+  ["echo-share", "Обменяться припасами · 5 монет"],
+  ["smuggler-buy", "Купить тайник · 10 монет"],
+  ["smuggler-catch", "Перехватить контрабанду"],
+  ["maze-mark", "Отмечать повороты"],
+  ["maze-dash", "Срезать через темноту"],
+  ["roaming-buy", "Купить реликвию · 12 монет"],
+  ["roaming-pass", "Отказаться от сделки"],
+  ["hermit-rest", "Принять угощение"],
+  ["hermit-trade", "Выслушать наставление · 5 монет"],
+  ["altar-summon", "Принять испытание"],
+  ["altar-offer", "Оставить подношение · 6 монет"],
+  ["book-study", "Изучить страницы"],
+  ["book-seal", "Запечатать книгу"],
+  ["ruins-search", "Осмотреть зал"],
+  ["ruins-salvage", "Собрать уцелевшее"],
+  ["grove-drink", "Испить росу"],
+  ["grove-harvest", "Собрать семена"],
+  ["rune-strength", "Коснуться руны силы"],
+  ["rune-vitality", "Коснуться руны жизни"],
+  ["wonder-touch", "Коснуться сияния"],
+  ["wonder-gather", "Собрать дары пещеры"],
+  ["wreck-dive", "Нырнуть в трюм"],
+  ["wreck-scavenge", "Обыскать палубу"],
 ]);
 const DUNGEON_EVENTS = [
   {
-    minFloor: 1, title: "ГОБЛИН-ВОР", icon: "♟",
+    minFloor: 1, weight: 10, title: "ГОБЛИН-ВОР", icon: "♟",
     text: "Мелкий вор юркнул в щель, унося чей-то кошель. Можно настичь его или выкупить добычу.",
     actions: ["goblin-chase", "goblin-bribe"],
   },
   {
-    minFloor: 1, title: "ЦЕННАЯ НАХОДКА", icon: "✧",
+    minFloor: 1, weight: 10, title: "ЦЕННАЯ НАХОДКА", icon: "✧",
     text: "Под плитой мерцает запечатанный ларец. Тихое открытие безопаснее, но печать обещает больше добычи.",
     actions: ["find-careful", "find-break"],
   },
   {
-    minFloor: 2, title: "РАЗБОР ЗАВАЛОВ", icon: "⚒",
+    minFloor: 2, weight: 10, title: "РАЗБОР ЗАВАЛОВ", icon: "⚒",
     text: "Камни перекрыли старый проход. Можно расчистить путь или поискать лаз между обломками.",
     actions: ["rubble-clear", "rubble-squeeze"],
   },
   {
-    minFloor: 2, title: "ОСКОЛКИ ПОД ВОДОЙ", icon: "♆",
+    minFloor: 2, weight: 10, title: "ОСКОЛКИ ПОД ВОДОЙ", icon: "♆",
     text: "В затопленной нише видны сияющие осколки. Глубокое погружение опасно, зато у кромки тоже что-то блестит.",
     actions: ["dive-deep", "dive-shallow"],
   },
   {
-    minFloor: 3, title: "РУДНАЯ ЖИЛА", icon: "⚒",
+    minFloor: 3, weight: 10, title: "РУДНАЯ ЖИЛА", icon: "⚒",
     text: "В стене проступила богатая жила. Точный удар даст надёжную заготовку, сильный может расколоть больше руды.",
     actions: ["ore-careful", "ore-force"],
   },
   {
-    minFloor: 4, title: "ПОДЗЕМНАЯ РЫБАЛКА", icon: "≋",
+    minFloor: 4, weight: 10, title: "ПОДЗЕМНАЯ РЫБАЛКА", icon: "≋",
     text: "В тёмном ручье мелькнула рыба. Сеть пригодится для еды, а у дна, похоже, лежит что-то блестящее.",
     actions: ["fish-net", "fish-shiny"],
+  },
+  {
+    minFloor: 2, weight: 3, title: "ДВЕРЬ С ИСПЫТАНИЕМ", icon: "⚿",
+    text: "На двери проступают два знака: один отвечает на спокойный ритм, другой — на решительный удар.",
+    actions: ["door-listen", "door-force"],
+  },
+  {
+    minFloor: 2, weight: 4, title: "СЛЕД ЗВЕРЯ", icon: "♧",
+    text: "Свежие следы ведут к логову под корнями. Можно выследить зверя или выманить его добычу приманкой.",
+    actions: ["hunt-track", "hunt-bait"],
+  },
+  {
+    minFloor: 3, weight: 2, title: "ОТГОЛОСОК ИСКАТЕЛЯ", icon: "◈",
+    text: "Перед тобой возникла тень прежнего путника — лишь безвредное эхо подземелья, не другой игрок. Оно предлагает испытать силу или обменяться припасами.",
+    actions: ["echo-duel", "echo-share"],
+  },
+  {
+    minFloor: 4, weight: 3, title: "БЕЗУМНЫЙ КОНТРАБАНДИСТ", icon: "♜",
+    text: "Сумасшедший торговец шепчет о тайнике. Можно купить его карту или попытаться задержать беглеца.",
+    actions: ["smuggler-buy", "smuggler-catch"],
+  },
+  {
+    minFloor: 3, weight: 3, title: "ЛАБИРИНТ", icon: "⌘",
+    text: "Коридоры меняются местами за спиной. Отмечай путь не спеша или рискни срезать через тёмный ход.",
+    actions: ["maze-mark", "maze-dash"],
+  },
+  {
+    minFloor: 3, weight: 2, title: "БЛУЖДАЮЩИЙ МАГАЗИН", icon: "♙",
+    text: "Крошечная лавка прокатилась по рельсам прямо к тебе. Хозяин предлагает реликвию или честно отпускает без покупки.",
+    actions: ["roaming-buy", "roaming-pass"],
+  },
+  {
+    minFloor: 3, weight: 3, title: "СТАРЫЙ ОТШЕЛЬНИК", icon: "☼",
+    text: "В корнях устроился отшельник. Он делится тёплым отваром и готов обучить стойкому приёму за несколько монет.",
+    actions: ["hermit-rest", "hermit-trade"],
+  },
+  {
+    minFloor: 4, weight: 2, title: "АЛТАРЬ ПРИЗЫВА", icon: "ᛟ",
+    text: "Пустой алтарь гудит в такт сердцу. Можно принять вызов его стража или оставить скромное подношение.",
+    actions: ["altar-summon", "altar-offer"],
+  },
+  {
+    minFloor: 2, weight: 3, title: "ИСТЛЕВШАЯ КНИГА", icon: "▤",
+    text: "На рассыпающихся страницах осталась одна целая глава. Прочти её или закрой книгу, прежде чем чернила проснутся.",
+    actions: ["book-study", "book-seal"],
+  },
+  {
+    minFloor: 4, weight: 2, title: "ЗАБРОШЕННЫЕ РУИНЫ", icon: "⌂",
+    text: "В зале пустых статуй под пылью видны следы старого снаряжения. Осмотр может стоить сил, но уцелевшее тоже пригодится.",
+    actions: ["ruins-search", "ruins-salvage"],
+  },
+  {
+    minFloor: 4, weight: 3, title: "ПОДЗЕМНАЯ РОЩА", icon: "♧",
+    text: "Бледные листья собирают чистую росу, а у корней созрели твёрдые семена. Можно восстановиться или унести запас на будущее.",
+    actions: ["grove-drink", "grove-harvest"],
+  },
+  {
+    minFloor: 3, weight: 3, title: "РУННЫЙ КАМЕНЬ", icon: "ᛟ",
+    text: "На гладком камне проступили две руны: одна укрепляет удар, другая — жизненную стойкость.",
+    actions: ["rune-strength", "rune-vitality"],
+  },
+  {
+    minFloor: 5, weight: 2, title: "ПЕЩЕРА ЧУДЕС", icon: "✦",
+    text: "Кристаллы здесь тихо поют. Сияние обещает редкую реликвию, а у входа можно собрать безопасные самоцветы.",
+    actions: ["wonder-touch", "wonder-gather"],
+  },
+  {
+    minFloor: 5, weight: 1, title: "ЗАТОНУВШИЙ КОРАБЛЬ", icon: "⚓",
+    text: "В затопленном трюме зацепилась цепь с грузом. Палуба хранит меньше сокровищ, зато осматривать её безопаснее.",
+    actions: ["wreck-dive", "wreck-scavenge"],
   },
 ];
 const FLOOR_THEMES = [
@@ -1087,7 +1185,16 @@ function explore() {
   const eventChance = Math.min(0.28, 0.1 + (state.floor - 1) * 0.04);
   if (Math.random() < eventChance) {
     const availableEvents = DUNGEON_EVENTS.filter((event) => event.minFloor <= state.floor);
-    const dungeonEvent = availableEvents[randomInt(0, availableEvents.length - 1)];
+    const totalWeight = availableEvents.reduce((total, event) => total + event.weight, 0);
+    let eventRoll = Math.random() * totalWeight;
+    let dungeonEvent = availableEvents[availableEvents.length - 1];
+    for (const event of availableEvents) {
+      eventRoll -= event.weight;
+      if (eventRoll < 0) {
+        dungeonEvent = event;
+        break;
+      }
+    }
     setEvent(dungeonEvent.title, dungeonEvent.text, dungeonEvent.icon, "ВЫБЕРИ ДЕЙСТВИЕ", dungeonEvent.actions);
     setCaption("Решение за тобой");
     addJournal(dungeonEvent.title, dungeonEvent.text, dungeonEvent.icon);
@@ -1182,11 +1289,22 @@ function finishDungeonEvent(kicker, text, icon, journalTitle, sound = "loot") {
   render();
 }
 
+function getDungeonEventActionCost(action) {
+  return {
+    "goblin-bribe": 3,
+    "echo-share": 5,
+    "smuggler-buy": 10,
+    "roaming-buy": 12,
+    "hermit-trade": 5,
+    "altar-offer": 6,
+  }[action] || 0;
+}
+
 function resolveDungeonEvent(action) {
   if (
     !state.started || state.gameOver || state.enemy || state.merchantAvailable ||
     !state.event.actions?.includes(action) ||
-    (action === "goblin-bribe" && state.gold < 3)
+    state.gold < getDungeonEventActionCost(action)
   ) return;
   state.event.actions = [];
 
@@ -1264,6 +1382,150 @@ function resolveDungeonEvent(action) {
     state.gold += gold;
     addEventEssence(1);
     finishDungeonEvent("БЛЕСК НА ДНЕ", `Среди камней нашлись жемчужина и ${gold} монет. Её сияние укрепило лагерь на 1 осколок.`, "✧", "Жемчужина из ручья");
+  } else if (action === "door-listen") {
+    const gold = 5 + state.floor;
+    state.gold += gold;
+    const healing = Math.min(3, state.maxHp - state.hp);
+    state.hp += healing;
+    finishDungeonEvent("ТИХИЙ ЩЕЛЧОК", `Ты уловил ритм замка и избежал ловушки. За дверью ${gold} монет${healing ? ` и восстановлено ${healing} здоровья` : ""}.`, "⚿", "Открытая дверь");
+  } else if (action === "door-force") {
+    const damage = damageFromEvent(4, 7);
+    const gear = claimEventGear("armor");
+    finishDungeonEvent("ДВЕРЬ ПОДДАЛАСЬ", `Механизм сломан: потеряно ${damage} здоровья.${gear}`, "⚿", "Испытание двери");
+  } else if (action === "hunt-track") {
+    const scale = 1 + (state.floor - 1) * 0.1;
+    spawnEnemy(false, false, {
+      name: "Подземный зверь", icon: "♧", skin: "hound",
+      hp: Math.round((10 + state.floor * 2) * scale),
+      damage: Math.ceil((3 + Math.floor(state.floor / 3)) * scale),
+      xp: 12 + state.floor, gold: 12 + state.floor,
+    });
+    return;
+  } else if (action === "hunt-bait") {
+    const gold = 6 + state.floor;
+    state.gold += gold;
+    const healing = Math.min(randomInt(4, 7), state.maxHp - state.hp);
+    state.hp += healing;
+    finishDungeonEvent("ДОБЫЧА У ЛОГОВА", `Зверь не вышел, но приманка отвлекла его: найдено ${gold} монет${healing ? ` и восстановлено ${healing} здоровья` : ""}.`, "♧", "След охотника");
+  } else if (action === "echo-duel") {
+    const scale = 1 + (state.floor - 1) * 0.12;
+    spawnEnemy(false, false, {
+      name: "Тень прежнего искателя", icon: "◈", skin: "shade",
+      hp: Math.round((12 + state.floor * 2) * scale),
+      damage: Math.ceil((4 + Math.floor(state.floor / 3)) * scale),
+      xp: 14 + state.floor, gold: 15 + state.floor,
+    });
+    return;
+  } else if (action === "echo-share") {
+    state.gold -= 5;
+    const healing = Math.min(7, state.maxHp - state.hp);
+    state.hp += healing;
+    addEventEssence(1);
+    finishDungeonEvent("ПАМЯТЬ О ПУТНИКЕ", `Эхо приняло припасы и оставило знак для лагеря. ${healing ? `Восстановлено ${healing} здоровья; ` : ""}получен 1 осколок.`, "◈", "Обмен с эхом", "rune");
+  } else if (action === "smuggler-buy") {
+    state.gold -= 10;
+    const gear = claimEventGear(randomInt(0, 1) ? "weapon" : "armor");
+    finishDungeonEvent("ТАЙНЫЙ ТОВАР", `Контрабандист продал реликвию за 10 монет.${gear}`, "♜", "Сделка с контрабандистом", "merchant");
+  } else if (action === "smuggler-catch") {
+    const damage = damageFromEvent(2, 5);
+    const gold = 12 + state.floor;
+    state.gold += gold;
+    finishDungeonEvent("ПОТЕРЯННЫЙ ТАЙНИК", `Контрабандист скрылся, оставив ${gold} монет. В суматохе ты потерял ${damage} здоровья.`, "♜", "Тайник контрабандиста");
+  } else if (action === "maze-mark") {
+    const gold = 4 + state.floor;
+    state.gold += gold;
+    finishDungeonEvent("ВЫХОД НАЙДЕН", `Отмечая повороты, ты нашёл короткий путь и ${gold} монет без единой царапины.`, "⌘", "Выход из лабиринта");
+  } else if (action === "maze-dash") {
+    const damage = damageFromEvent(4, 8);
+    const gear = claimEventGear("weapon");
+    finishDungeonEvent("СМЕЛЫЙ МАРШРУТ", `Ты проскочил опасный коридор, потерял ${damage} здоровья и нашёл реликвию.${gear}`, "⌘", "Опасный поворот");
+  } else if (action === "roaming-buy") {
+    state.gold -= 12;
+    const gear = claimEventGear(randomInt(0, 1) ? "weapon" : "armor");
+    finishDungeonEvent("ЛАВКА УЕХАЛА", `За 12 монет хозяин лавки продал тебе реликвию и покатил дальше.${gear}`, "♙", "Покупка в блуждающей лавке", "merchant");
+  } else if (action === "roaming-pass") {
+    const gold = 3 + state.floor;
+    state.gold += gold;
+    finishDungeonEvent("ЛЁГКОЕ РАССТАВАНИЕ", `Ты отказался от товара, а хозяин оставил ${gold} монет за добрую беседу.`, "♙", "Блуждающая лавка");
+  } else if (action === "hermit-rest") {
+    const healing = Math.min(randomInt(8, 12), state.maxHp - state.hp);
+    state.hp += healing;
+    finishDungeonEvent("ЧАШКА ОТШЕЛЬНИКА", healing ? `Настой вернул ${healing} здоровья. Старик провожает тебя к выходу.` : "Ты полон сил; отшельник всё равно угощает тёплым настоем.", "☼", "Угощение отшельника", "heal");
+  } else if (action === "hermit-trade") {
+    state.gold -= 5;
+    state.attack += 1;
+    finishDungeonEvent("УРОК СТАРИКА", "За 5 монет отшельник показал, как находить слабое место. Сила удара навсегда выросла на 1.", "☼", "Наставление отшельника", "rune");
+  } else if (action === "altar-summon") {
+    const scale = 1 + (state.floor - 1) * 0.14;
+    spawnEnemy(false, false, {
+      name: "Страж алтаря", icon: "ᛟ", skin: "golem",
+      hp: Math.round((16 + state.floor * 2) * scale),
+      damage: Math.ceil((5 + Math.floor(state.floor / 3)) * scale),
+      xp: 18 + state.floor, gold: 18 + state.floor,
+    });
+    return;
+  } else if (action === "altar-offer") {
+    state.gold -= 6;
+    addEventEssence(1);
+    const healing = Math.min(5, state.maxHp - state.hp);
+    state.hp += healing;
+    finishDungeonEvent("АЛТАРЬ УТИХ", `Подношение принято. Лагерь получил 1 осколок${healing ? `, восстановлено ${healing} здоровья` : ""}.`, "ᛟ", "Подношение алтарю", "rune");
+  } else if (action === "book-study") {
+    state.attack += 1;
+    finishDungeonEvent("ЗАПОМНЕННАЯ ГЛАВА", "Ты успел разобрать один боевой приём до того, как чернила поблёкли. Сила удара навсегда выросла на 1.", "▤", "Страница из истлевшей книги", "rune");
+  } else if (action === "book-seal") {
+    const gold = 7 + state.floor;
+    state.gold += gold;
+    const damage = damageFromEvent(1, 3);
+    finishDungeonEvent("КНИГА ЗАПЕЧАТАНА", `Чернила погасли: найдено ${gold} монет, но едкий пар отнял ${damage} здоровья.`, "▤", "Запечатанная книга");
+  } else if (action === "ruins-search") {
+    const damage = damageFromEvent(3, 6);
+    const gear = claimEventGear("armor");
+    finishDungeonEvent("РЕЛИКВИЯ РУИН", `Ты поднял пыль и получил ${damage} урона, но нашёл уцелевшую броню.${gear}`, "⌂", "Осмотр заброшенных руин");
+  } else if (action === "ruins-salvage") {
+    const gold = 8 + state.floor;
+    state.gold += gold;
+    const potion = state.potions < getPotionLimit();
+    if (potion) state.potions += 1;
+    finishDungeonEvent("ПОЛЕЗНЫЙ ХЛАМ", `Из руин вынесено ${gold} монет${potion ? " и зелье" : ""}.`, "⌂", "Находки в руинах");
+  } else if (action === "grove-drink") {
+    const healing = Math.min(randomInt(9, 14), state.maxHp - state.hp);
+    state.hp += healing;
+    finishDungeonEvent("РОСА С КОРНЕЙ", healing ? `Чистая роса восстановила ${healing} здоровья.` : "Роса свежа, но ты и так полон сил.", "♧", "Передышка в подземной роще", "heal");
+  } else if (action === "grove-harvest") {
+    state.maxHp += 4;
+    const healing = Math.min(4, state.maxHp - state.hp);
+    state.hp += healing;
+    finishDungeonEvent("СЕМЕНА РОЩИ", `Ты сохранил семена: максимум здоровья навсегда вырос на 4${healing ? `, восстановлено ${healing}` : ""}.`, "♧", "Дар подземной рощи", "rune");
+  } else if (action === "rune-strength") {
+    state.attack += 1;
+    finishDungeonEvent("РУНА ОТКЛИКНУЛАСЬ", "Камень рассыпался искрами. Сила удара навсегда выросла на 1.", "ᛟ", "Руна силы", "rune");
+  } else if (action === "rune-vitality") {
+    state.maxHp += 5;
+    const healing = Math.min(8, state.maxHp - state.hp);
+    state.hp += healing;
+    finishDungeonEvent("РУНА ЖИЗНИ", `Камень согрел ладонь: максимум здоровья вырос на 5${healing ? `, восстановлено ${healing}` : ""}.`, "ᛟ", "Руна жизни", "rune");
+  } else if (action === "wonder-touch") {
+    const damage = damageFromEvent(4, 8);
+    const gear = claimEventGear(randomInt(0, 1) ? "weapon" : "armor");
+    addEventEssence(1);
+    finishDungeonEvent("ЧУДО КРИСТАЛЛОВ", `Сияние обожгло на ${damage} здоровья, но подарило реликвию и 1 осколок.${gear}`, "✦", "Дар пещеры чудес", "rune");
+  } else if (action === "wonder-gather") {
+    const gold = 9 + state.floor;
+    state.gold += gold;
+    finishDungeonEvent("САМОЦВЕТЫ У ВХОДА", `Ты собрал самоцветы на ${gold} монет и не потревожил кристаллы.`, "✦", "Самоцветы пещеры");
+  } else if (action === "wreck-dive") {
+    const damage = damageFromEvent(5, 9);
+    const gold = 12 + state.floor;
+    state.gold += gold;
+    addEventEssence(1);
+    finishDungeonEvent("ДОБЫЧА ИЗ ТРЮМА", `В трюме нашлось ${gold} монет. Погружение отняло ${damage} здоровья; лагерь получил 1 осколок.`, "⚓", "Затонувший груз", "rune");
+  } else if (action === "wreck-scavenge") {
+    const gold = 7 + state.floor;
+    state.gold += gold;
+    const potion = state.potions < getPotionLimit();
+    if (potion) state.potions += 1;
+    finishDungeonEvent("НАХОДКА НА ПАЛУБЕ", `Среди снастей нашлось ${gold} монет${potion ? " и зелье" : ""}.`, "⚓", "Обыск затонувшей палубы");
   }
 }
 
@@ -1879,7 +2141,7 @@ function render() {
     button.className = "action-button";
     button.dataset.eventAction = action;
     button.textContent = DUNGEON_EVENT_ACTIONS.get(action);
-    button.disabled = action === "goblin-bribe" && state.gold < 3;
+    button.disabled = state.gold < getDungeonEventActionCost(action);
     ui.eventActions.append(button);
   }
   ui.eventActions.hidden = eventActions.length === 0;

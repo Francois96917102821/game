@@ -188,6 +188,7 @@ begin
     raise exception '2.5:1 inbox rows should be acknowledged after processing';
   end if;
 
+  perform set_config('request.jwt.claim.sub', '11111111-1111-4111-8111-111111111111', true);
   v_result := public.start_player_group_battle(
     9, 'Хранитель колодца', '☠', 'guardian', 90, 100, 8, 40, 50,
     '{"hp":20,"max_hp":40,"potions":1,"attack":25,"defense":2,"focus":2,"heavy_multiplier":2.5}'::jsonb
@@ -210,7 +211,6 @@ begin
   ) then
     raise exception 'Starting a group battle should notify the partner';
   end if;
-
   v_updates := public.consume_player_group_inbox();
   if not exists (
     select 1 from jsonb_array_elements(v_updates) as update_item(value)

@@ -615,3 +615,34 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--gold-light); ou
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; }
 }
+.gang-form, .dungeon-kit {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 12px 0;
+}
+.gang-form input, .dungeon-kit select {
+  min-width: 0;
+  max-width: 100%;
+  padding: 10px;
+  color: inherit;
+  background: #18201d;
+  border: 1px solid #647059;
+  border-radius: 6px;
+}
+.ghost-panel, .pvp-panel {
+  padding: 16px;
+  margin: 12px 0;
+  border: 1px solid #647059;
+  border-radius: 10px;
+}
+.combat-rules, #pvp-status, #ghost-status, #dungeon-trophies {
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
+.combat-rules { grid-column: 1 / -1; }
+@media (max-width: 520px) {
+  .gang-form > *, .dungeon-kit > * { flex: 1 1 100%; }
+  .pvp-panel .coop-actions, .ghost-panel .coop-actions { grid-template-columns: 1fr; }
+}

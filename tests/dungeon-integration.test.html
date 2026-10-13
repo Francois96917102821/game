@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="ru">
+<meta charset="utf-8">
+<title>Dungeon integration</title>
+<h1 id="result">RUNNING</h1>
+<pre id="log"></pre>
+<script>
+"use strict";
+(async () => {
+  const output = document.getElementById("log");
+  const failures = [];
+  function assert(condition, message) {
+    if (!condition) throw new Error(message);
+  }
+  function check(name, work) {
+    try { work(); output.textContent += `PASS ${name}\n`; }
+    catch (error) { failures.push(`${name}: ${error.stack}`); }
+  }
+  localStorage.clear();
+  const frame = document.createElement("iframe");
+  frame.style.width = "390px";
+  frame.style.height = "800px";
+  frame.src = "../index.html?dungeon-integration=1";
+  document.body.append(frame);
+  await new Promise((resolve) => frame.addEventListener("load", resolve, { once: true }));
+  const app = frame.contentWindow;
+  const doc = app.document;
+  app.startGameWithClass("knight");
+  const saved = () => app.getCloudSaveSnapshot();
+  function prepareEnemy(kind = "keeper") {
+    app.eval("state.room = 1; state.enemy = null; state.gameOver = false; state.hp = state.maxHp; state.liveDuelId = null; state.ghostDuel = null; state.event.actions = [];");
+    app.spawnSpecificEnemy(kind);
+  }
+  check("old meta saves normalize and reputation/trophies merge", () => {
+    const old = app.createMetaProgress();
+    delete old.orderReputation;
+    delete old.dungeonTrophies;
+    assert(app.isValidMetaProgress(old), "legacy meta rejected");
+    const normalized = app.normalizeMetaProgress(old);
+    assert(normalized.orderReputation === 0, "legacy reputation default");
+    const a = { ...normalized, orderReputation: 5, dungeonTrophies: { courage: 2 } };
+    const b = { ...normalized, orderReputation: 8, dungeonTrophies: { valor: 1 } };
+    const merged = app.mergeMetaProgress(a, b);
+    assert(merged.orderReputation === 8 && merged.dungeonTrophies.courage === 2 &&
+      merged.dungeonTrophies.valor === 1 && app.isValidMetaProgress(merged), "merge invalid");
+    assert(!app.isValidMetaProgress({ ...a, orderReputation: -1 }), "bad reputation accepted");
+    const receiptA = { id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", reputation: 5, trophies: ["courage"] };
+    const receiptB = { id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", reputation: 8, trophies: ["courage"] };
+    const independent = app.mergeMetaProgress(
+      { ...normalized, orderReputation: 5, dungeonTrophies: { courage: 1 }, dungeonVictories: [receiptA] },
+      { ...normalized, orderReputation: 8, dungeonTrophies: { courage: 1 }, dungeonVictories: [receiptB] },
+    );
+    assert(independent.orderReputation === 13 && independent.dungeonTrophies.courage === 2, "independent victories lost");
+    const again = app.mergeMetaProgress(independent, independent);
+    assert(again.orderReputation === 13 && again.dungeonTrophies.courage === 2, "merge duplicated victory");
+  });
+  check("potion and stance share one extra action without taking a round", () => {
+    prepareEnemy();
+    app.eval("state.hp -= 10;");
+    const before = saved().run.state;
+    app.drinkPotion(true);
+    let state = saved().run.state;
+    assert(state.hp > before.hp && state.potions === before.potions - 1, "potion not used");
+    assert(state.enemy.round === 0 && state.extraActionUsed, "potion consumed a round");
+    app.useCombatExtra("stance");
+    assert(saved().run.state.stance === "balanced", "second extra allowed");
+    app.attackEnemy();
+    state = saved().run.state;
+    assert(state.enemy.round === 1 && !state.extraActionUsed, "round did not reopen extra slot");
+    assert(app.isValidRun(saved().run), "combat save invalid");
+  });
+  check("equipment cooldown survives changing offhand", () => {
+    prepareEnemy();
+    app.useCombatExtra("offhand");
+    assert(saved().run.state.combatProgress.cooldowns.shield === 4, "shield not on cooldown");
+    app.attackEnemy();
+    const select = doc.getElementById("offhand-select");
+    select.value = "torch";
+    select.dispatchEvent(new app.Event("change"));
+    assert(saved().run.state.offhand === "torch", "swap failed");
+    assert(saved().run.state.combatProgress.cooldowns.shield > 0, "swap reset shield cooldown");
+    assert(saved().run.state.extraActionUsed, "combat swap should spend extra");
+  });
+  check("Monty initial and second choice survive saves", () => {
+    app.eval("state.enemy=null; state.combatProgress=null; state.extraActionUsed=false; state.monty=window.DungeonModel.createMonty(() => 0);");
+    app.setEvent("ТРИ ДВЕРИ", "Выбери.", "⚿", "ВЫБОР", ["monty-0", "monty-1", "monty-2"]);
+    assert(app.isValidRun(saved().run), "3 choices invalid in save");
+    app.resolveDungeonEvent("monty-1");
+    assert(saved().run.state.monty.revealed === 2, "prize or choice exposed");
+    assert(app.isValidRun(saved().run), "second choice invalid");
+    app.resolveDungeonEvent("monty-switch");
+    assert(saved().run.state.monty === null && saved().run.state.inventory.length > 0, "prize missing");
+  });
+  check("keeper drops both unique trophies and player-level reputation", () => {
+    prepareEnemy();
+    const before = saved();
+    app.defeatEnemy();
+    const after = saved();
+    assert(after.meta.orderReputation === before.meta.orderReputation + before.run.state.level, "incorrect reputation");
+    assert(after.meta.dungeonTrophies.keeperKey === 1 && after.meta.dungeonTrophies.keeperHeart === 1, "keeper drops");
+    assert(app.isValidMetaProgress(after.meta) && app.isValidRun(after.run), "reward save invalid");
+  });
+  check("worldeater encounter and victory affect persistent satiety", () => {
+    prepareEnemy("worldeater");
+    assert(saved().meta.tavern.satiety === 10, "encounter hunger");
+    assert(saved().run.state.enemy.armor === .65 && saved().run.state.enemy.concentration === 1, "boss stats");
+    const before = saved();
+    assert(app.isValidRun(before.run), "special elite save rejected outside room 3");
+    app.defeatEnemy();
+    const after = saved();
+    assert(after.meta.tavern.satiety === 100, "victory hunger");
+    assert(after.meta.orderReputation === before.meta.orderReputation + before.run.state.level * 10, "special reputation");
+    assert(["wealth", "blood", "knowledge", "fate", "statPotion", "elite"].every((id) =>
+      after.meta.dungeonTrophies[id] > 0), "special rewards missing");
+    assert(app.isValidMetaProgress(after.meta), "special reward meta invalid");
+  });
+  check("ghost is explicitly marked, consumes turns, awards no farm currency", () => {
+    app.startGhostDuel();
+    const before = saved();
+    assert(doc.getElementById("ghost-panel").hidden === false && doc.getElementById("explore-button").hidden, "ghost UI lock");
+    assert(app.isValidRun(before.run), "ghost save invalid");
+    app.eval("state.ghostDuel.ghost.hp=1; state.ghostDuel.player.attack=1000; state.ghostDuel.player.accuracy=1;");
+    const rng = app.Math.random;
+    app.Math.random = () => 0;
+    app.ghostAction("attack");
+    app.Math.random = rng;
+    const after = saved();
+    assert(!after.run.state.ghostDuel && after.run.state.gold === before.run.state.gold &&
+      after.meta.essence === before.meta.essence && after.meta.orderReputation === before.meta.orderReputation, "ghost rewards exploitable");
+  });
+  check("PvE mutual death is a defeat without monster rewards", () => {
+    prepareEnemy();
+    const before = saved();
+    app.eval("state.hp=1; state.enemy.hp=1; state.enemy.accuracy=1; state.enemy.concentration=0; state.enemy.damage=1000; state.abilityCooldown=3;");
+    const rng = app.Math.random;
+    app.Math.random = () => .1;
+    app.attackEnemy();
+    app.Math.random = rng;
+    const after = saved();
+    assert(!after.run && after.meta.orderReputation === before.meta.orderReputation, "mutual kill yielded victory");
+  });
+  check("390px mobile controls fit panel", () => {
+    app.startGameWithClass("knight");
+    assert(doc.documentElement.scrollWidth <= 390, `page overflow: ${doc.documentElement.scrollWidth}`);
+    const panel = doc.getElementById("gang-form");
+    assert(panel.getBoundingClientRect().right <= 390, "command controls overflow");
+  });
+  if (failures.length) {
+    output.textContent += failures.join("\n");
+    document.getElementById("result").dataset.result = "fail";
+    document.getElementById("result").textContent = "FAIL";
+  } else {
+    document.getElementById("result").dataset.result = "pass";
+    document.getElementById("result").textContent = "PASS";
+  }
+})().catch((error) => {
+  document.getElementById("result").dataset.result = "fail";
+  document.getElementById("log").textContent += error.stack;
+});
+</script>

@@ -16,6 +16,21 @@ const MAX_FOCUS = 3;
 const HEAVY_ATTACK_COST = 2;
 const MAX_GEAR = 6;
 const SOUND_PREFERENCE_KEY = "well-of-whispers-sound-enabled";
+const ELITE_TRAITS = {
+  curse: "Проклинающий", ghost: "Призрачный", warlike: "Воинственный",
+  experienced: "Опытный", punisher: "Карающий", wounded: "Раненый",
+  protected: "Защищённый", piercing: "Пробивающий",
+};
+const DUNGEON_TROPHIES = {
+  courage: "Доказательство отваги", valor: "Скрижаль доблести",
+  admBlood: "Кровь адмов", elite: "Элитный трофей",
+  keeperKey: "Ключ хранителя", keeperHeart: "Сердце хранителя",
+  rawFish: "Сырая рыба", shell: "Ракушка", fishEye: "Рыбий глаз",
+  fishFat: "Рыбий жир", fishScale: "Рыбья чешуя",
+  wealth: "Манускрипт богатства", blood: "Манускрипт крови",
+  knowledge: "Манускрипт знаний", fate: "Камень судьбы",
+  statPotion: "Зелье характеристик",
+};
 const META_UPGRADES = {
   vitality: { name: "Крепкое сердце", description: "+3 здоровья в новом забеге", costs: [2, 4, 6] },
   power: { name: "Точная рука", description: "+1 к силе удара в новом забеге", costs: [2, 4, 6] },
@@ -190,6 +205,8 @@ const RUN_QUESTS = [
   { id: "secret", title: "Слушатель шёпота", text: "Открой тайные знаки", target: 1, reward: 18, icon: "ᛟ" },
 ];
 const DUNGEON_EVENT_ACTIONS = new Map([
+  ["monty-0", "Дверь 1"], ["monty-1", "Дверь 2"], ["monty-2", "Дверь 3"],
+  ["monty-stay", "Оставить выбор"], ["monty-switch", "Сменить дверь"],
   ["goblin-chase", "Погнаться за вором"],
   ["goblin-bribe", "Выкупить кошель · 3 монеты"],
   ["find-careful", "Открыть осторожно"],
@@ -264,8 +281,8 @@ const DUNGEON_EVENTS = [
   },
   {
     minFloor: 2, weight: 3, title: "ДВЕРЬ С ИСПЫТАНИЕМ", icon: "⚿",
-    text: "На двери проступают два знака: один отвечает на спокойный ритм, другой — на решительный удар.",
-    actions: ["door-listen", "door-force"],
+    text: "Три одинаковые двери закрывают тупик. Только одна скрывает вещь. После выбора смотритель покажет пустую дверь.",
+    actions: ["monty-0", "monty-1", "monty-2"],
   },
   {
     minFloor: 2, weight: 4, title: "СЛЕД ЗВЕРЯ", icon: "♧",
@@ -273,8 +290,8 @@ const DUNGEON_EVENTS = [
     actions: ["hunt-track", "hunt-bait"],
   },
   {
-    minFloor: 3, weight: 2, title: "ОТГОЛОСОК ИСКАТЕЛЯ", icon: "◈",
-    text: "Перед тобой возникла тень прежнего путника — лишь безвредное эхо подземелья, не другой игрок. Оно предлагает испытать силу или обменяться припасами.",
+    minFloor: 1, weight: 2, title: "БИТВА С ИГРОКОМ", icon: "◈",
+    text: "В проходе слышны шаги. Вызови онлайн-напарника; без живого соперника состоится явно отмеченный бой с призраком, без денежных наград.",
     actions: ["echo-duel", "echo-share"],
   },
   {
@@ -644,6 +661,13 @@ function createState() {
     secretFragments: [],
     extraLifeUsed: false,
     enemy: null,
+    stance: "balanced",
+    offhand: "shield",
+    extraActionUsed: false,
+    combatProgress: null,
+    monty: null,
+    ghostDuel: null,
+    liveDuelId: null,
     guarding: false,
     abilityCooldown: 0,
     abilityGuarding: false,
@@ -681,6 +705,9 @@ function createMetaProgress(now = Date.now()) {
     secretsFound: [],
     groupInboxReceipts: [],
     tavern,
+    orderReputation: 0,
+    dungeonTrophies: {},
+    dungeonVictories: [],
     harbor: window.WellExpeditionsModel.createState(),
     homestead: window.WellHomesteadModel.createState(now),
   };
@@ -707,6 +734,22 @@ function isValidMetaProgress(progress) {
     progress.secretsFound.every((id) => SECRET_LORE.some((secret) => secret.id === id)) &&
     new Set(progress.secretsFound).size === progress.secretsFound.length &&
     isValidInboxReceipts(progress.groupInboxReceipts) &&
+    (progress.orderReputation === undefined || isIntegerBetween(progress.orderReputation, 0, 1000000000)) &&
+    (progress.dungeonTrophies === undefined || (
+      progress.dungeonTrophies && typeof progress.dungeonTrophies === "object" &&
+      !Array.isArray(progress.dungeonTrophies) &&
+      Object.entries(progress.dungeonTrophies).every(([key, count]) =>
+        Object.prototype.hasOwnProperty.call(DUNGEON_TROPHIES, key) && isIntegerBetween(count, 0, 1000000000))
+    )) &&
+    (progress.dungeonVictories === undefined || (
+      Array.isArray(progress.dungeonVictories) && progress.dungeonVictories.length <= 100000 &&
+      new Set(progress.dungeonVictories.map((receipt) => receipt?.id)).size === progress.dungeonVictories.length &&
+      progress.dungeonVictories.every((receipt) => receipt && typeof receipt.id === "string" &&
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(receipt.id) &&
+        isIntegerBetween(receipt.reputation, 1, 100000) &&
+        Array.isArray(receipt.trophies) && receipt.trophies.length <= 16 &&
+        receipt.trophies.every((key) => Object.prototype.hasOwnProperty.call(DUNGEON_TROPHIES, key)))
+    )) &&
     (progress.tavern === undefined || window.WellTavernModel.isValidState(progress.tavern)) &&
     (progress.harbor === undefined || window.WellExpeditionsModel.isValidState(progress.harbor)) &&
     (progress.homestead === undefined || window.WellHomesteadModel.isValidState(progress.homestead))
@@ -720,6 +763,11 @@ function normalizeMetaProgress(progress) {
     : window.WellTavernModel.withDefaults(progress.tavern);
   normalized.harbor = window.WellExpeditionsModel.withDefaults(progress?.harbor);
   normalized.homestead = window.WellHomesteadModel.withDefaults(progress?.homestead);
+  normalized.orderReputation = progress?.orderReputation ?? 0;
+  normalized.dungeonTrophies = { ...(progress?.dungeonTrophies || {}) };
+  normalized.dungeonVictories = (progress?.dungeonVictories || []).map((receipt) => ({
+    ...receipt, trophies: [...receipt.trophies],
+  }));
   return normalized;
 }
 
@@ -743,6 +791,25 @@ function readMetaProgress() {
 function mergeMetaProgress(left, right) {
   const first = normalizeMetaProgress(isValidMetaProgress(left) ? left : createMetaProgress(0));
   const second = normalizeMetaProgress(isValidMetaProgress(right) ? right : createMetaProgress(0));
+  const victoryById = new Map();
+  for (const receipt of [...first.dungeonVictories, ...second.dungeonVictories]) {
+    const existing = victoryById.get(receipt.id);
+    if (!existing || JSON.stringify(receipt) < JSON.stringify(existing)) victoryById.set(receipt.id, receipt);
+  }
+  const dungeonVictories = [...victoryById.values()].sort((a, b) => a.id.localeCompare(b.id));
+  const reputationSum = (receipts) => receipts.reduce((sum, receipt) => sum + receipt.reputation, 0);
+  const trophySum = (receipts, key) => receipts.reduce((sum, receipt) =>
+    sum + receipt.trophies.filter((trophy) => trophy === key).length, 0);
+  const orderReputation = Math.min(1000000000, Math.max(
+    0, first.orderReputation - reputationSum(first.dungeonVictories),
+    second.orderReputation - reputationSum(second.dungeonVictories),
+  ) + reputationSum(dungeonVictories));
+  const dungeonTrophies = Object.fromEntries(Object.keys(DUNGEON_TROPHIES).map((key) => [
+    key, Math.min(1000000000, Math.max(
+      0, (first.dungeonTrophies[key] || 0) - trophySum(first.dungeonVictories, key),
+      (second.dungeonTrophies[key] || 0) - trophySum(second.dungeonVictories, key),
+    ) + trophySum(dungeonVictories, key)),
+  ]));
   const useSecondTavern = second.tavern.updatedAt > first.tavern.updatedAt ||
     (second.tavern.updatedAt === first.tavern.updatedAt && second.tavern.revision >= first.tavern.revision)
   const tavernSource = useSecondTavern ? second : first;
@@ -814,6 +881,9 @@ function mergeMetaProgress(left, right) {
       Math.max(first.upgrades[id], second.upgrades[id]),
     ])),
     bossesDefeated: Math.max(first.bossesDefeated, second.bossesDefeated),
+    orderReputation,
+    dungeonTrophies,
+    dungeonVictories,
     secretsFound: [...new Set([...first.secretsFound, ...second.secretsFound])],
     groupInboxReceipts: [...new Set([
       ...(first.groupInboxReceipts || []),
@@ -835,6 +905,7 @@ function persistMetaProgress() {
       const missingDebits = (currency) => local.homestead.receipts
         .filter((receipt) => !currentReceipts.has(receipt.id))
         .reduce((total, receipt) => total + receipt[`${currency}Cost`], 0);
+      const dungeonMerged = mergeMetaProgress(metaProgress, local);
       metaProgress = {
         ...metaProgress,
         essence: Math.max(0, metaProgress.essence - missingDebits("essence")),
@@ -843,6 +914,9 @@ function persistMetaProgress() {
           gold: Math.max(0, metaProgress.tavern.gold - missingDebits("gold")),
         },
         homestead: window.WellHomesteadModel.merge(metaProgress.homestead, local.homestead),
+        orderReputation: dungeonMerged.orderReputation,
+        dungeonTrophies: dungeonMerged.dungeonTrophies,
+        dungeonVictories: dungeonMerged.dungeonVictories,
       };
     }
     window.localStorage.setItem(META_SAVE_KEY, JSON.stringify(metaProgress));
@@ -1066,6 +1140,27 @@ function isValidRun(run) {
       new Set(saved.pendingSubclassLevels).size !== saved.pendingSubclassLevels.length
     )) ||
     (saved.extraLifeUsed !== undefined && typeof saved.extraLifeUsed !== "boolean") ||
+    (saved.stance !== undefined && !["balanced", "defensive", "offensive"].includes(saved.stance)) ||
+    (saved.offhand !== undefined && !["shield", "torch", "staff"].includes(saved.offhand)) ||
+    (saved.extraActionUsed !== undefined && typeof saved.extraActionUsed !== "boolean") ||
+    (saved.combatProgress != null && !window.DungeonModel.isValidFighter(saved.combatProgress)) ||
+    (saved.liveDuelId != null && (typeof saved.liveDuelId !== "string" ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(saved.liveDuelId))) ||
+    (saved.ghostDuel != null && (
+      !window.DungeonModel.isValidFighter(saved.ghostDuel.player) ||
+      !window.DungeonModel.isValidFighter(saved.ghostDuel.ghost) ||
+      !Number.isFinite(saved.ghostDuel.deadline) ||
+      !isIntegerBetween(saved.ghostDuel.round, 1, 1000000) ||
+      saved.enemy != null || saved.liveDuelId != null
+    )) ||
+    (saved.monty != null && (
+      !isIntegerBetween(saved.monty.prizeDoor, 0, 2) ||
+      !(saved.monty.selected === null || isIntegerBetween(saved.monty.selected, 0, 2)) ||
+      !(saved.monty.revealed === null || (
+        isIntegerBetween(saved.monty.revealed, 0, 2) &&
+        saved.monty.revealed !== saved.monty.selected && saved.monty.revealed !== saved.monty.prizeDoor
+      ))
+    )) ||
     (saved.abilityCooldown !== undefined && !isIntegerBetween(saved.abilityCooldown, 0, 3)) ||
     (saved.abilityGuarding !== undefined && typeof saved.abilityGuarding !== "boolean") ||
     (saved.abilityDodge !== undefined && typeof saved.abilityDodge !== "boolean") ||
@@ -1153,7 +1248,10 @@ function isValidRun(run) {
       typeof saved.enemy.boss !== "boolean" ||
       saved.enemy.boss !== (saved.room === MAX_ROOMS) ||
       (saved.enemy.elite !== undefined && typeof saved.enemy.elite !== "boolean") ||
-      (saved.enemy.elite === true && (saved.enemy.boss || saved.room !== 3)) ||
+      (saved.enemy.elite === true && saved.enemy.boss) ||
+      (saved.enemy.special != null && !["keeper", "mimic", "water", "worldeater", "captain"].includes(saved.enemy.special)) ||
+      (saved.enemy.trait !== undefined && !Object.prototype.hasOwnProperty.call(ELITE_TRAITS, saved.enemy.trait)) ||
+      (saved.enemy.fighter != null && !window.DungeonModel.isValidFighter(saved.enemy.fighter)) ||
       saved.room === 0 || saved.waitingToDescend || saved.merchantAvailable === true
     ) return false;
   } else if (saved.waitingToDescend && saved.room !== MAX_ROOMS) {
@@ -1176,7 +1274,7 @@ function isValidRun(run) {
     typeof saved.event.icon === "string" && saved.event.icon.length <= 8 &&
     typeof saved.event.tag === "string" && saved.event.tag.length <= 100 &&
     (saved.event.actions === undefined || (
-      Array.isArray(saved.event.actions) && saved.event.actions.length <= 2 &&
+      Array.isArray(saved.event.actions) && saved.event.actions.length <= 3 &&
       saved.event.actions.every((action) => DUNGEON_EVENT_ACTIONS.has(action)) &&
       new Set(saved.event.actions).size === saved.event.actions.length
     ));
@@ -1338,7 +1436,7 @@ function randomInt(min, max) {
 }
 
 function addJournal(title, text, symbol = "✧") {
-  state.journal.unshift({ title, text, symbol, floor: state.floor });
+  state.journal.unshift({ title, text: text.slice(0, 300), symbol, floor: state.floor });
   state.journal = state.journal.slice(0, 7);
 }
 
@@ -1396,6 +1494,10 @@ function renderMetaProgress() {
   ui.metaSecrets.textContent = found.length
     ? `${found.length}/${SECRET_LORE.length} записей · ${found.map((secret) => secret.title).join(" · ")} · Стражей побеждено: ${metaProgress.bossesDefeated}`
     : `0/${SECRET_LORE.length} записей · исследуй тайные залы · Стражей побеждено: ${metaProgress.bossesDefeated}`;
+  $("order-reputation").textContent = String(metaProgress.orderReputation);
+  $("dungeon-trophies").textContent = Object.entries(metaProgress.dungeonTrophies)
+    .filter(([, count]) => count > 0)
+    .map(([key, count]) => `${DUNGEON_TROPHIES[key]}: ${count}`).join(" · ") || "Трофеев пока нет.";
 }
 
 function advanceQuest(questId) {
@@ -1412,7 +1514,7 @@ function advanceQuest(questId) {
 }
 
 function setEvent(kicker, text, icon, tag, actions = []) {
-  state.event = { kicker, text, icon, tag: tag || `ЭТАЖ ${state.floor}`, actions };
+  state.event = { kicker, text: text.slice(0, 300), icon, tag: tag || `ЭТАЖ ${state.floor}`, actions };
   ui.eventKicker.textContent = state.event.kicker;
   ui.eventText.textContent = state.event.text;
   ui.eventIcon.textContent = state.event.icon;
@@ -1622,6 +1724,13 @@ function resumeGame() {
   if (state.extraLifeUsed === undefined) state.extraLifeUsed = false;
   if (state.groupInboxReceipts === undefined) state.groupInboxReceipts = [];
   if (state.coopBattleReceipts === undefined) state.coopBattleReceipts = [];
+  if (state.stance === undefined) state.stance = "balanced";
+  if (state.offhand === undefined) state.offhand = "shield";
+  if (state.extraActionUsed === undefined) state.extraActionUsed = false;
+  if (state.combatProgress === undefined) state.combatProgress = null;
+  if (state.monty === undefined) state.monty = null;
+  if (state.ghostDuel === undefined) state.ghostDuel = null;
+  if (state.liveDuelId === undefined) state.liveDuelId = null;
   if (migratedClass && state.level >= CLASS_UNLOCK_LEVELS.advanced) state.pendingClassLevels = [CLASS_UNLOCK_LEVELS.advanced];
   selectedClassId = state.classId;
   savedRun = null;
@@ -1630,7 +1739,7 @@ function resumeGame() {
 }
 
 function explore() {
-  if (!state.started || state.enemy || state.gameOver || state.merchantAvailable || state.waitingToDescend) return;
+  if (!state.started || state.enemy || dungeonDuelLocked() || state.gameOver || state.merchantAvailable || state.waitingToDescend || state.event.actions?.length) return;
   state.room += 1;
   state.guarding = false;
   updateBestFloor();
@@ -1658,6 +1767,7 @@ function explore() {
       }
     }
     setEvent(dungeonEvent.title, dungeonEvent.text, dungeonEvent.icon, "ВЫБЕРИ ДЕЙСТВИЕ", dungeonEvent.actions);
+    if (dungeonEvent.actions.includes("monty-0")) state.monty = window.DungeonModel.createMonty();
     setCaption("Решение за тобой");
     addJournal(dungeonEvent.title, dungeonEvent.text, dungeonEvent.icon);
     render();
@@ -1665,19 +1775,23 @@ function explore() {
   }
 
   const roll = Math.random();
-  if (roll < 0.37) {
+  if (roll < 0.49) {
     spawnEnemy(false);
-  } else if (roll < 0.55) {
+  } else if (roll < 0.62) {
+    if (Math.random() < 0.12) {
+      spawnSpecificEnemy("mimic");
+      return;
+    }
     const reward = randomInt(5, 12) + state.floor;
     addGold(reward);
     const foundPotion = Math.random() < 0.28 && state.potions < getPotionLimit();
     if (foundPotion) state.potions += 1;
-    const loot = `Под осыпавшимися камнями нашлось ${reward} монет${foundPotion ? " и зелье" : ""}.`;
+    const loot = `Под осыпавшимися камнями нашлось ${reward} монет${foundPotion ? " и зелье" : ""}.${claimChestLoot()}`;
     setEvent("ТАЙНИК НАЙДЕН", loot, "✦");
     addJournal("Спрятанная добыча", loot, "✦");
     setCaption("Здесь кто-то был");
     playSound("loot");
-  } else if (roll < 0.67) {
+  } else if (roll < 0.70) {
     const healing = Math.min(randomInt(6, 11), state.maxHp - state.hp);
     state.hp += healing;
     setEvent("ПЕРЕДЫШКА", healing > 0 ? `${getFloorTheme().spring} Ты восстановил ${healing} здоровья.` : `${getFloorTheme().spring} Ты уже полон сил.`, "◌");
@@ -1796,6 +1910,37 @@ function claimEventGear(type) {
   return ` Найдено: ${gear.name} (+${gear.bonus} ${type === "weapon" ? "к силе" : "к защите"}), предмет в рюкзаке.`;
 }
 
+function claimChestLoot() {
+  if (state.inventory.length >= MAX_GEAR) return " Рюкзак полон: вещь осталась за дверью.";
+  return claimEventGear(Math.random() < 0.5 ? "weapon" : "armor");
+}
+
+function dungeonDuelLocked() {
+  return Boolean(state.ghostDuel || state.liveDuelId || window.WellPvp?.isBusy());
+}
+
+function resolveMonty(action) {
+  if (!state.monty) return;
+  if (/^monty-[012]$/.test(action)) {
+    state.monty = window.DungeonModel.chooseMonty(state.monty, Number(action.slice(-1)));
+    setEvent("СМОТРИТЕЛЬ ОТКРЫЛ ДВЕРЬ", `Дверь ${state.monty.revealed + 1} пуста. Ты выбрал дверь ${state.monty.selected + 1}. Сменишь выбор на оставшуюся?`, "⚿", "ВТОРОЙ ВЫБОР", ["monty-stay", "monty-switch"]);
+    render();
+    return;
+  }
+  const result = window.DungeonModel.finishMonty(state.monty, action === "monty-switch");
+  state.monty = null;
+  if (result.won) {
+    finishDungeonEvent("ДВЕРЬ С ПРИЗОМ", `За дверью ${result.door + 1} лежала вещь из обычного сундука.${claimChestLoot()}`, "✧", "Удачный выбор");
+  } else {
+    const loss = randomInt(0, 2);
+    if (loss === 0) spawnEnemy(false);
+    else if (loss === 1) {
+      const damage = damageFromEvent(3, 6);
+      finishDungeonEvent("ЛОВУШКА ЗА ДВЕРЬЮ", `Под порогом щёлкнул механизм: потеряно ${damage} здоровья.`, "⌁", "Дверная ловушка", "trap");
+    } else finishDungeonEvent("ПУСТАЯ КОМНАТА", "За порогом только пыль. Ни добычи, ни опасности.", "⚿", "Пустая дверь");
+  }
+}
+
 function finishDungeonEvent(kicker, text, icon, journalTitle, sound = "loot") {
   setEvent(kicker, text, icon);
   addJournal(journalTitle, text, icon);
@@ -1817,11 +1962,15 @@ function getDungeonEventActionCost(action) {
 
 function resolveDungeonEvent(action) {
   if (
-    !state.started || state.gameOver || state.enemy || state.merchantAvailable ||
+    !state.started || state.gameOver || state.enemy || dungeonDuelLocked() || state.merchantAvailable ||
     !state.event.actions?.includes(action) ||
     state.gold < getDungeonEventActionCost(action)
   ) return;
   state.event.actions = [];
+  if (action.startsWith("monty-")) {
+    resolveMonty(action);
+    return;
+  }
 
   if (action === "goblin-chase") {
     const scale = 1 + (state.floor - 1) * 0.12;
@@ -1880,6 +2029,10 @@ function resolveDungeonEvent(action) {
     addGold(gold);
     finishDungeonEvent("БОГАТАЯ ЖИЛА", `Сильный удар расколол жилу: ты получил ${gold} монет, но потерял ${damage} здоровья.`, "⚒", "Богатая рудная жила");
   } else if (action === "fish-net") {
+    if (Math.random() < 0.2) {
+      spawnSpecificEnemy("water");
+      return;
+    }
     if (state.hp < state.maxHp) {
       const healing = Math.min(randomInt(8, 13), state.maxHp - state.hp);
       state.hp += healing;
@@ -1923,13 +2076,7 @@ function resolveDungeonEvent(action) {
     state.hp += healing;
     finishDungeonEvent("ДОБЫЧА У ЛОГОВА", `Зверь не вышел, но приманка отвлекла его: найдено ${gold} монет${healing ? ` и восстановлено ${healing} здоровья` : ""}.`, "♧", "След охотника");
   } else if (action === "echo-duel") {
-    const scale = 1 + (state.floor - 1) * 0.12;
-    spawnEnemy(false, false, {
-      name: "Тень прежнего искателя", icon: "◈", skin: "shade",
-      hp: Math.round((12 + state.floor * 2) * scale),
-      damage: Math.ceil((4 + Math.floor(state.floor / 3)) * scale),
-      xp: 14 + state.floor, gold: 15 + state.floor,
-    });
+    requestDungeonDuel(true);
     return;
   } else if (action === "echo-share") {
     state.gold -= 5;
@@ -2072,6 +2219,11 @@ function revealSecret() {
 }
 
 function spawnEnemy(isBoss, isElite = false, eventEnemy = null) {
+  if (!isBoss && !isElite && !eventEnemy) {
+    const specialRoll = Math.random();
+    if (specialRoll < 0.02 && state.floor >= 4) return spawnSpecificEnemy("worldeater");
+    if (specialRoll < 0.07) return spawnSpecificEnemy("keeper");
+  }
   if (isElite && window.WellPlayerGroups) window.WellPlayerGroups.hint("rare", state.floor);
   const theme = getFloorTheme();
   const roomEnemies = getRoomEnemies();
@@ -2100,7 +2252,28 @@ function spawnEnemy(isBoss, isElite = false, eventEnemy = null) {
     gold: Math.round(base.gold * (isElite ? 1.2 : 1)),
     boss: Boolean(base.boss),
     elite: isElite,
+    special: base.special || null,
+    round: 0,
+    armor: base.armor || 0,
+    concentration: base.concentration ?? 0.25,
+    accuracy: base.accuracy ?? 0.85,
+    bleeding: 0,
   };
+  if (isElite && !base.special) {
+    const trait = Object.keys(ELITE_TRAITS)[randomInt(0, 7)];
+    const eliteFighter = window.DungeonModel.createElite(window.DungeonModel.createFighter({
+      hp: state.enemy.hp, maxHp: state.enemy.maxHp, attack: state.enemy.damage,
+      armor: state.enemy.armor, concentration: state.enemy.concentration, accuracy: state.enemy.accuracy,
+    }), trait);
+    Object.assign(state.enemy, {
+      hp: eliteFighter.hp, maxHp: eliteFighter.maxHp, damage: eliteFighter.attack,
+      armor: eliteFighter.armor, concentration: eliteFighter.concentration,
+      accuracy: eliteFighter.accuracy, bleeding: eliteFighter.bleeding, trait,
+      name: `${ELITE_TRAITS[trait]} · ${state.enemy.name}`,
+    });
+  }
+  state.combatProgress = null;
+  state.extraActionUsed = false;
   state.extraLifeUsed = false;
   const encounterTitle = isBoss ? `СТРАЖ · ${theme.name.toUpperCase()}` : isElite ? "ЭЛИТНЫЙ ХРАНИТЕЛЬ" : "ОБИТАТЕЛЬ ГЛУБИНЫ";
   const encounterText = `${state.enemy.name} преграждает путь. Здоровье: ${state.enemy.hp}${isElite ? ". Победа принесёт усиленную награду." : "."}`;
@@ -2111,109 +2284,226 @@ function spawnEnemy(isBoss, isElite = false, eventEnemy = null) {
   render();
 }
 
-function attackEnemy(multiplier = 1, focusCost = 0, usedAbility = false) {
-  if (!state.enemy || state.gameOver || state.focus < focusCost) return;
-  if (focusCost > 0) state.focus -= focusCost;
-  else state.focus = Math.min(MAX_FOCUS, state.focus + 1);
-  let damage = Math.max(1, Math.floor((getAttackPower() + randomInt(0, 3)) * multiplier));
-  if (state.enemy.hp === state.enemy.maxHp && getClassStat("bonusDamage")) {
-    damage += Math.ceil(getAttackPower() * getClassStat("bonusDamage"));
+function spawnSpecificEnemy(kind) {
+  const foes = {
+    keeper: { name: "Хранитель прохода", icon: "⚿", skin: "stone", hp: 22, damage: 6, xp: 18, gold: 10 },
+    mimic: { name: "Мимик", icon: "⌑", skin: "hound", hp: 18, damage: 6, xp: 16, gold: 12 },
+    water: { name: "Водяной", icon: "♆", skin: "drowned", hp: 20, damage: 6, xp: 18, gold: 12 },
+    worldeater: { name: "Пожиратель миров · демон", icon: "☠", skin: "elite-forge",
+      hp: 44, damage: 12, xp: 40, gold: 20, armor: 0.65, concentration: 1 },
+  };
+  const foe = foes[kind];
+  if (!foe) throw new Error("Неизвестный особый противник.");
+  if (kind === "worldeater") {
+    metaProgress.tavern.satiety = 10;
+    metaProgress.tavern.satietyAt = Date.now();
+    metaProgress.tavern.updatedAt = Date.now();
+    metaProgress.tavern.revision += 1;
+    persistMetaProgress();
   }
-  if (getClassStat("missingHealthDamage")) {
-    damage += Math.ceil(getAttackPower() * getClassStat("missingHealthDamage") * (1 - state.hp / state.maxHp));
-  }
-  const critical = focusCost === 0 && Math.random() < getClassStat("criticalChance");
-  if (critical) damage *= 2;
-  if (state.enemy.hp <= state.enemy.maxHp * 0.2 && Math.random() < getClassStat("executeChance")) {
-    damage = state.enemy.hp;
-  }
-  damage = Math.min(damage, state.enemy.hp);
-  state.enemy.hp = Math.max(0, state.enemy.hp - damage);
-  const healing = focusCost === 0 ? Math.min(
-    Math.ceil(damage * getClassStat("lifesteal")),
-    state.maxHp - state.hp,
-  ) : 0;
-  state.hp += healing;
-  const focusMessage = focusCost > 0
-    ? ` Сокрушительный удар расходует ${focusCost} запаса силы.`
-    : state.focus > 0
-      ? ` Запас силы: ${state.focus} из ${MAX_FOCUS}.`
-      : "";
-  setEvent(
-    focusCost > 0 ? "СОКРУШИТЕЛЬНЫЙ УДАР" : usedAbility ? getCharacterClass().ability.name.toUpperCase() : "УДАР НАНЕСЁН",
-    `${usedAbility ? `${getCharacterClass().ability.description} ` : ""}Ты наносишь ${damage} урона${critical ? " — критический удар" : ""}.${healing ? ` Кровь возвращает ${healing} здоровья.` : ""}${focusMessage} У ${state.enemy.name} осталось ${state.enemy.hp} здоровья.`,
-    usedAbility ? getCharacterClass().ability.icon : "⚔",
-  );
-  ui.scene.classList.add("hit");
-  window.setTimeout(() => ui.scene.classList.remove("hit"), 180);
-  playSound(focusCost > 0 ? "heavyAttack" : "attack");
-  if (state.enemy.hp <= 0) {
-    defeatEnemy();
-    return;
-  }
-  enemyTurn(false, !usedAbility);
+  spawnEnemy(false, kind === "worldeater", { ...foe, special: kind });
 }
 
-function enemyTurn(guarding = false, advanceCooldown = true) {
-  const damageOverTime = Math.ceil(state.enemy.maxHp * getClassStat("damageOverTime"));
-  if (damageOverTime > 0) {
-    state.enemy.hp = Math.max(0, state.enemy.hp - damageOverTime);
-    if (state.enemy.hp === 0) {
-      if (advanceCooldown) state.abilityCooldown = Math.max(0, state.abilityCooldown - 1);
-      setEvent("ПРОКЛЯТИЕ СРАБОТАЛО", `${state.enemy.name} пал от урона чар.`, "☾");
-      defeatEnemy();
+function attackEnemy(multiplier = 1, focusCost = 0, usedAbility = false) {
+  if (!state.enemy || state.gameOver || state.focus < focusCost) return;
+  runPveRound(multiplier, focusCost, usedAbility);
+}
+
+function getDungeonFighter() {
+  const ability = getCharacterClass().ability;
+  const attack = getAttackPower() +
+    Math.ceil(getAttackPower() * getClassStat("missingHealthDamage") * (1 - state.hp / state.maxHp)) +
+    (state.enemy && state.enemy.hp === state.enemy.maxHp ? Math.ceil(getAttackPower() * getClassStat("bonusDamage")) : 0);
+  return window.DungeonModel.createFighter({
+    ...(state.combatProgress || {}),
+    hp: state.hp, maxHp: state.maxHp, attack,
+    armor: Math.min(0.75, getArmorDefense() * 0.06 + (state.stance === "defensive" ? 0.2 : 0)),
+    accuracy: 0.9, concentration: state.stance === "offensive" ? 0.5 : 0.35,
+    agility: Math.min(1, getDodgeChance() * 2), evasion: Math.min(0.5, getDodgeChance()),
+    potions: state.potions, focus: state.focus, offhand: state.offhand,
+    skillType: ability.type, skillDamage: ability.type === "guard" ? Math.ceil(state.maxHp * 0.25) : Math.ceil(attack * 0.8),
+    skillCooldown: state.abilityCooldown, skillCooldownMax: 3,
+    revivalChance: getClassStat("extraLife") ? 1 : 0, revivalUsed: state.extraLifeUsed,
+    criticalChance: getClassStat("criticalChance"), executeChance: getClassStat("executeChance"),
+    lifesteal: getClassStat("lifesteal"),
+    poisonDamage: state.combatProgress?.poisonDamage || 0,
+  });
+}
+
+function runPveRound(multiplier = 1, focusCost = 0, forcedSkill = false) {
+  if (!state.enemy || state.gameOver || dungeonDuelLocked()) return;
+  const enemy = state.enemy;
+  let player = getDungeonFighter();
+  if (focusCost) state.focus -= focusCost;
+  else state.focus = Math.min(MAX_FOCUS, state.focus + 1);
+  player.focus = state.focus;
+  player.damageMultiplier = multiplier * (state.stance === "offensive" ? 1.2 : 1);
+  if (forcedSkill) player.concentration = 2;
+  player = window.DungeonModel.pveModifiers(player, enemy, state.stance === "defensive");
+  const foe = window.DungeonModel.createFighter({
+    ...(enemy.fighter || {}), hp: enemy.hp, maxHp: enemy.maxHp,
+    attack: enemy.damage, armor: enemy.armor || 0,
+    accuracy: enemy.accuracy ?? 0.85, concentration: enemy.concentration ?? 0.25,
+    bleeding: enemy.bleeding || 0, skillDamage: Math.ceil(enemy.damage * 0.5),
+    poisonDamage: Math.ceil(enemy.maxHp * getClassStat("damageOverTime")),
+    skillType: "blast", skillCooldownMax: enemy.trait === "experienced" ? 0 : 2,
+  });
+  const result = window.DungeonModel.pveRound(player, foe);
+  state.hp = result.actor.hp;
+  state.extraLifeUsed = result.actor.revivalUsed;
+  state.abilityCooldown = Math.min(3, result.actor.skillCooldown || 0);
+  state.combatProgress = result.actor;
+  enemy.hp = result.target.hp;
+  enemy.fighter = result.target;
+  enemy.bleeding = result.target.bleeding;
+  enemy.round = (enemy.round || 0) + 1;
+  state.extraActionUsed = false;
+  setEvent("РАУНД ЗАВЕРШЁН", result.log.join(" ").slice(0, 300), "⚔", `РАУНД ${enemy.round}`);
+  addJournal("Раунд боя", result.log.join(" ").slice(0, 300), "⚔");
+  if (state.hp <= 0) {
+    finishDungeonDefeat(true);
+  } else if (enemy.hp <= 0) {
+    defeatEnemy();
+  }
+  playSound(state.gameOver ? "gameOver" : "attack");
+  render();
+}
+
+function finishDungeonDefeat(rewardEssence) {
+  if (rewardEssence) awardRunEssence();
+  state.gameOver = true;
+  state.enemy = null;
+  state.combatProgress = null;
+  recordTavernInjury();
+  setEvent("СПУСК ПРЕРВАН", rewardEssence
+    ? `Ты пал на ${state.floor}-м этаже. В лагерь возвращено ${runEssenceReward()} осколков.`
+    : "Поединок проигран. За PvP и бой с призраком осколки и золото не выдаются.", "☾");
+  setCaption("Тишина");
+}
+
+function canRequestDungeonDuel() {
+  const coop = window.WellPlayerGroups?.getBattle();
+  return state.started && !state.gameOver && !state.enemy && !state.ghostDuel && !state.liveDuelId &&
+    !state.merchantAvailable && !state.waitingToDescend &&
+    !(coop && ["waiting", "active"].includes(coop.status)) &&
+    !(state.event.actions?.length);
+}
+
+function requestDungeonDuel(randomEncounter) {
+  if (!canRequestDungeonDuel()) return;
+  window.WellPvp.start(randomEncounter);
+}
+
+function startGhostDuel() {
+  const player = getDungeonFighter();
+  const ghost = window.DungeonModel.createFighter({
+    hp: player.maxHp, maxHp: player.maxHp, attack: player.attack,
+    armor: player.armor, accuracy: player.accuracy, concentration: player.concentration,
+    agility: player.agility, evasion: player.evasion, offhand: player.offhand,
+  });
+  state.ghostDuel = { player, ghost, deadline: Date.now() + 40000, round: 1 };
+  setEvent("ПРИЗРАК · НЕ ОНЛАЙН-ИГРОК", "Живого соперника нет. Ты сражаешься с ИИ по снимку своих показателей. По 40 секунд на ход; золота, опыта, репутации и осколков за этот бой нет.", "◈");
+  render();
+}
+
+function ghostAction(action) {
+  const duel = state.ghostDuel;
+  if (!duel || state.gameOver) return;
+  try {
+    const result = window.DungeonModel.pvpTurn(duel.player, duel.ghost, action);
+    duel.player = result.actor;
+    duel.ghost = result.target;
+    let finished = result.finished;
+    let playerWon = result.winner === "actor";
+    let log = result.log;
+    if (!finished) {
+      const reply = window.DungeonModel.pvpTurn(duel.ghost, duel.player, "attack");
+      duel.ghost = reply.actor;
+      duel.player = reply.target;
+      log = [...log, ...reply.log];
+      finished = reply.finished;
+      playerWon = reply.winner === "target";
+    }
+    state.hp = duel.player.hp;
+    state.potions = duel.player.potions;
+    state.focus = duel.player.focus;
+    state.offhand = duel.player.offhand;
+    state.combatProgress = duel.player;
+    state.extraLifeUsed = duel.player.revivalUsed;
+    duel.round += 1;
+    duel.deadline = action === "skip" ? duel.deadline + 40000 : Date.now() + 40000;
+    setEvent("ПРИЗРАК · БОЙ С ИИ", log.join(" ").slice(0, 300), "◈", `ХОД ${duel.round}`);
+    if (finished) {
+      state.ghostDuel = null;
+      if (!playerWon) finishDungeonDefeat(false);
+      else setEvent("ПРИЗРАК РАССЕЯЛСЯ", "Ты одолел снимок искателя. Награды нет; путь свободен.", "◈");
+    }
+    render();
+  } catch (error) {
+    console.error("Не удалось провести ход с призраком.", error);
+    setEvent("ХОД НЕ ПРИНЯТ", error.message, "◈");
+    render();
+  }
+}
+
+function applyPvpBattle(battle, userId) {
+  const own = battle.players.find((player) => player.user_id === userId);
+  if (!own || !state.started || state.gameOver) return;
+  state.hp = own.hp;
+  state.potions = own.potions;
+  state.focus = own.focus;
+  state.offhand = own.offhand;
+  state.combatProgress = window.DungeonModel.createFighter({
+    ...(own.fighter || own), maxHp: own.max_hp ?? own.maxHp,
+    cooldowns: {
+      shield: own.shield_cooldown ?? own.cooldowns?.shield ?? 0,
+      torch: own.torch_cooldown ?? own.cooldowns?.torch ?? 0,
+      staff: own.staff_cooldown ?? own.cooldowns?.staff ?? 0,
+    },
+  });
+  state.extraLifeUsed = Boolean(own.revivalUsed);
+  if (battle.status === "finished") {
+    state.liveDuelId = null;
+    if (battle.winner_id !== userId) finishDungeonDefeat(false);
+    else setEvent("ДУЭЛЬ ЗАВЕРШЕНА", "Ты победил напарника. За PvP нет золота, осколков, опыта или репутации.", "◈");
+  } else {
+    state.liveDuelId = battle.id;
+    setEvent("ОНЛАЙН PvP", "Ходы идут по очереди. Сервер отводит 40 секунд; три пропуска подряд означают поражение. Действия — в панели дуэли.", "◈");
+  }
+  render();
+}
+
+function useCombatExtra(action) {
+  if (!state.enemy || state.gameOver || dungeonDuelLocked() || state.extraActionUsed) return;
+  state.extraActionUsed = true;
+  if (action === "stance") {
+    state.stance = { balanced: "defensive", defensive: "offensive", offensive: "balanced" }[state.stance];
+    setEvent("СТОЙКА ИЗМЕНЕНА", `Стойка: ${{ balanced: "сбалансированная", defensive: "защитная", offensive: "атакующая" }[state.stance]}. Дополнительное действие потрачено; теперь проведи раунд.`, "⬡");
+  } else if (action === "escape") {
+    if (state.enemy.special === "captain") {
+      setEvent("ПУТЬ ПЕРЕКРЫТ", "Капитан связал тебя ближним боем. Побег невозможен.", "⬡");
+    } else if (Math.random() < 0.5 && !state.enemy.boss) {
+      state.enemy = null;
+      state.combatProgress = null;
+      setEvent("ТЫ УШЁЛ ОТ БОЯ", "Противник остался позади. Опыт, репутация и добыча не получены.", "↓");
+    } else setEvent("ПОБЕГ НЕ УДАЛСЯ", "Враг перекрыл проход. Дополнительное действие потрачено; проведи раунд.", "⬡");
+  } else if (action === "offhand") {
+    const fighter = getDungeonFighter();
+    const cooldown = fighter.cooldowns[state.offhand];
+    if (cooldown > 0) {
+      state.extraActionUsed = false;
       return;
     }
+    fighter.cooldowns[state.offhand] = state.offhand === "torch" ? 2 : 4;
+    if (state.offhand === "shield") fighter.barrier += Math.ceil(state.maxHp * 0.2);
+    else if (state.offhand === "torch") state.enemy.bleeding = (state.enemy.bleeding || 0) + 2;
+    else {
+      state.hp = Math.min(state.maxHp, state.hp + 8);
+      fighter.hp = state.hp;
+    }
+    state.combatProgress = fighter;
+    setEvent("ОСОБЕННОСТЬ ПРЕДМЕТА", "Дополнительный предмет использован. Откат сохранён за типом предмета, а не за слотом. Теперь проведи раунд.", "✦");
   }
-  if (guarding) state.focus = Math.min(MAX_FOCUS, state.focus + 1);
-  const rawDamage = randomInt(Math.max(1, state.enemy.damage - 2), state.enemy.damage);
-  const armorDefense = getArmorDefense();
-  const reducedDamage = Math.max(1, rawDamage - armorDefense);
-  const dodgeChance = getDodgeChance();
-  const abilityDodge = state.abilityDodge;
-  const dodged = !guarding && (abilityDodge || Math.random() < dodgeChance);
-  state.abilityDodge = false;
-  const abilityGuarding = state.abilityGuarding;
-  let damage = dodged ? 0 : Math.max(
-    1,
-    abilityGuarding
-      ? Math.ceil(reducedDamage * 0.25)
-      : guarding || state.guarding
-        ? Math.ceil(reducedDamage * 0.4)
-        : reducedDamage,
-  );
-  state.abilityGuarding = false;
-  state.guarding = false;
-  const savedByMastery = state.hp - damage <= 0 && getClassStat("extraLife") && !state.extraLifeUsed;
-  if (savedByMastery) {
-    damage = state.hp - 1;
-    state.extraLifeUsed = true;
-  }
-  state.hp = Math.max(0, state.hp - damage);
-  if (state.hp === 0) {
-    awardRunEssence();
-    state.gameOver = true;
-    state.enemy = null;
-    recordTavernInjury();
-    setEvent("ПОСЛЕДНИЙ ВДОХ", `Ты пал на ${state.floor}-м этаже. В лагерь возвращено ${runEssenceReward()} осколков. Лучший спуск: ${bestFloor || state.floor}.`, "☾");
-    addJournal("Спуск прерван", "Темнота сомкнулась вокруг. Но легенда колодца останется.", "☾");
-    setCaption("Тишина");
-  } else {
-    const focusMessage = guarding ? ` Запас силы: ${state.focus} из ${MAX_FOCUS}.` : "";
-    const armorMessage = armorDefense ? ` Броня поглотила ${Math.min(armorDefense, rawDamage - 1)} урона.` : "";
-    setEvent(
-      dodged ? "УКЛОНЕНИЕ" : "ВРАГ АТАКУЕТ",
-      savedByMastery
-        ? `Упорство мастерства спасает тебя от смертельного удара ${state.enemy.name}.`
-        : dodged
-        ? `Ты увернулся от атаки ${state.enemy.name}.`
-        : `${state.enemy.name} наносит ${damage} урона${guarding ? ", но твоя защита смягчает удар" : ""}.${armorMessage}${focusMessage}`,
-      dodged ? "◈" : "⬡",
-    );
-    setCaption(dodged ? "Удар прошёл мимо" : "Бой продолжается");
-  }
-  if (advanceCooldown) state.abilityCooldown = Math.max(0, state.abilityCooldown - 1);
-  playSound(state.gameOver ? "gameOver" : guarding ? "guard" : dodged ? "dodge" : "enemyAttack");
   render();
 }
 
@@ -2230,42 +2520,80 @@ function awardRunEssence() {
 function useClassAbility() {
   const ability = getCharacterClass().ability;
   if (!state.enemy || state.gameOver || state.abilityCooldown > 0 || !ability) return;
-  state.abilityCooldown = 3;
-  if (ability.type === "guard") {
-    state.abilityGuarding = true;
-    state.focus = Math.min(MAX_FOCUS, state.focus + 1);
-    setEvent(ability.name.toUpperCase(), `${ability.description} Запас силы: ${state.focus} из ${MAX_FOCUS}.`, ability.icon);
-    enemyTurn(false, false);
-    return;
-  }
-  if (ability.type === "shadow") state.abilityDodge = true;
-  attackEnemy(ability.type === "blast" ? 1.8 : 1.5, 0, true);
+  runPveRound(1, 0, true);
 }
 
 function defeatEnemy() {
   const enemy = state.enemy;
+  const reputation = state.level * (enemy.special === "worldeater" ? 10 : 1);
+  metaProgress.orderReputation = Math.min(1000000000, metaProgress.orderReputation + reputation);
+  const trophy = (key) => {
+    metaProgress.dungeonTrophies[key] = Math.min(1000000000, (metaProgress.dungeonTrophies[key] || 0) + 1);
+  };
+  const collected = [];
+  const trophyKeys = [];
+  const giveTrophy = (key) => { trophy(key); trophyKeys.push(key); collected.push(DUNGEON_TROPHIES[key]); };
+  if (enemy.elite) giveTrophy("elite");
+  if (enemy.special === "keeper") {
+    giveTrophy("keeperKey");
+    giveTrophy("keeperHeart");
+  }
+  if (enemy.special === "water") {
+    giveTrophy("rawFish");
+    giveTrophy(["shell", "fishEye", "fishFat", "fishScale"][randomInt(0, 3)]);
+  }
+  if (enemy.special === "worldeater") {
+    ["wealth", "blood", "knowledge", "fate", "statPotion"].forEach(giveTrophy);
+    metaProgress.tavern.satiety = 100;
+    metaProgress.tavern.satietyAt = Date.now();
+    metaProgress.tavern.updatedAt = Date.now();
+    metaProgress.tavern.revision += 1;
+  } else {
+    if (Math.random() < 0.15) giveTrophy("courage");
+    if (Math.random() < 0.06) giveTrophy("valor");
+    if (Math.random() < 0.03) giveTrophy("admBlood");
+  }
+  if (metaProgress.dungeonVictories.length < 100000) {
+    metaProgress.dungeonVictories.push({ id: window.crypto.randomUUID(), reputation, trophies: trophyKeys });
+  } else {
+    console.warn("Летопись боёв достигла предела; новая репутация сохранена в базовом счётчике.");
+  }
   state.enemy = null;
+  state.combatProgress = null;
   state.abilityGuarding = false;
   state.abilityDodge = false;
   addGold(enemy.gold);
   gainXp(enemy.xp);
   advanceQuest("defeat");
-  let gearMessage = "";
+  let gearMessage = ` Репутация ордена: +${reputation}.${collected.length ? ` Трофеи: ${collected.join(", ")}.` : ""}`;
   const lootChance = Math.min(0.8, 0.3 + getClassStat("lootChance"));
   if (enemy.boss || Math.random() < lootChance) {
     if (state.inventory.length < MAX_GEAR) {
       const gear = createGear(randomInt(0, 1) === 0 ? "weapon" : "armor");
       state.inventory.push(gear);
       advanceQuest("gear");
-      gearMessage = ` Найдено: ${gear.name} (+${gear.bonus} ${gear.type === "weapon" ? "к силе" : "к защите"}), предмет в рюкзаке.`;
+      gearMessage += ` Найдено: ${gear.name} (+${gear.bonus} ${gear.type === "weapon" ? "к силе" : "к защите"}), предмет в рюкзаке.`;
       addJournal("Найдена экипировка", `${gear.name}: +${gear.bonus} ${gear.type === "weapon" ? "к урону" : "к защите"}.`, gear.type === "weapon" ? "⚔" : "⬡");
     } else {
-      gearMessage = " Рюкзак полон: трофей остался в зале.";
+      gearMessage += " Рюкзак полон: трофей остался в зале.";
     }
   }
   const victoryHealing = getClassStat("healingOnVictory");
   const healed = Math.min(victoryHealing, state.maxHp - state.hp);
   state.hp += healed;
+  if (Math.random() < 0.08) {
+    state.attack += 1;
+    gearMessage += " Руна усиления прибавила 1 к атаке.";
+  }
+  if (Math.random() < 0.02 && state.inventory.length < MAX_GEAR) {
+    const admGear = createGear(Math.random() < 0.5 ? "weapon" : "armor");
+    admGear.name = admGear.type === "weapon" ? "Клинок адмов" : "Доспех адмов";
+    admGear.bonus = Math.min(10, admGear.bonus + 2);
+    state.inventory.push(admGear);
+    gearMessage += ` Найдено: ${admGear.name}.`;
+    advanceQuest("gear");
+  }
+  persistMetaProgress();
   if (enemy.boss) {
     state.runBossesDefeated += 1;
     metaProgress.bossesDefeated = Math.min(1000000000, metaProgress.bossesDefeated + 1);
@@ -2468,7 +2796,7 @@ function createGear(type) {
 }
 
 function equipGear(gearId) {
-  if (!state.started || state.gameOver || state.enemy) return;
+  if (!state.started || state.gameOver || state.enemy || dungeonDuelLocked()) return;
   const index = state.inventory.findIndex((item) => item.id === gearId);
   if (index < 0) return;
   const gear = state.inventory[index];
@@ -2487,7 +2815,7 @@ function equipGear(gearId) {
 }
 
 function useCamouflage() {
-  if (!state.enemy || state.gameOver || state.enemy.boss || state.enemy.elite) return;
+  if (!state.enemy || state.gameOver || state.extraActionUsed || state.enemy.boss || state.enemy.elite || dungeonDuelLocked()) return;
   const previous = metaProgress;
   const result = window.WellHomesteadModel.consumeCamouflage(metaProgress.homestead, Date.now());
   if (!result.ok) {
@@ -2511,15 +2839,16 @@ function useCamouflage() {
 }
 
 function drinkPotion(inCombat = false) {
-  if (!state.started || state.potions <= 0 || state.hp >= state.maxHp || state.gameOver) return;
+  if (!state.started || state.potions <= 0 || state.hp >= state.maxHp || state.gameOver || dungeonDuelLocked() ||
+    (state.enemy && state.extraActionUsed)) return;
+  if (state.enemy) state.extraActionUsed = true;
   state.potions -= 1;
   const healing = Math.min(14 + getClassStat("potionHealing"), state.maxHp - state.hp);
   state.hp += healing;
   setEvent("ЗЕЛЬЕ ВЫПИТО", `Ты восстановил ${healing} здоровья.`, "⚗");
   addJournal("Зелье здоровья", `Восстановлено ${healing} здоровья.`, "⚗");
   playSound("heal");
-  if (inCombat && state.enemy) enemyTurn(false);
-  else render();
+  render();
 }
 
 function descend() {
@@ -2673,7 +3002,7 @@ function renderEquipment() {
     equip.type = "button";
     equip.dataset.gearId = gear.id;
     equip.textContent = "Надеть";
-    equip.disabled = Boolean(state.enemy) || state.gameOver;
+    equip.disabled = Boolean(state.enemy) || state.gameOver || dungeonDuelLocked();
     item.append(icon, details, equip);
     ui.inventory.append(item);
   }
@@ -4510,9 +4839,42 @@ function render() {
   const coopBattle = window.WellPlayerGroups?.getBattle();
   const inGroupBattle = Boolean(coopBattle && ["waiting", "active"].includes(coopBattle.status));
   ui.combatActions.hidden = !state.enemy || state.gameOver || inGroupBattle;
+  const dueling = dungeonDuelLocked();
+  if (dueling) {
+    ui.explore.hidden = true;
+    ui.potion.hidden = true;
+    ui.explore.disabled = true;
+    ui.potion.disabled = true;
+    ui.descend.hidden = true;
+  }
+  $("gang-form").hidden = !state.started || state.gameOver || dueling;
+  $("gang-button").disabled = !canRequestDungeonDuel();
+  $("gang-form").querySelector('button[type="submit"]').disabled = !canRequestDungeonDuel();
+  $("dungeon-kit").hidden = !state.started || state.gameOver || Boolean(state.liveDuelId);
+  $("offhand-select").value = state.offhand || "shield";
+  $("offhand-select").disabled = Boolean(state.enemy && state.extraActionUsed) || inGroupBattle || window.WellPvp?.isBusy();
+  const cooldown = state.combatProgress?.cooldowns?.[state.offhand] || 0;
+  $("offhand-button").disabled = state.extraActionUsed || cooldown > 0;
+  $("offhand-button").textContent = `${{ shield: "Щит", torch: "Факел", staff: "Посох" }[state.offhand]} · ${cooldown ? `откат ${cooldown}` : "готово"}`;
+  $("escape-button").disabled = state.extraActionUsed || state.enemy?.special === "captain";
+  $("guard-button").disabled = state.extraActionUsed;
+  $("combat-potion-button").disabled ||= state.extraActionUsed;
+  $("combat-extra-status").textContent = `Доп. действие: ${state.extraActionUsed ? "потрачено" : "1 доступно"}. Стойка: ${{ balanced: "баланс", defensive: "защита", offensive: "атака" }[state.stance]}. Удар / классовая способность запускают весь раунд.`;
+  $("ghost-panel").hidden = !state.ghostDuel;
+  if (state.ghostDuel) {
+    const duel = state.ghostDuel;
+    $("ghost-status").textContent = `Призрак: ${duel.ghost.hp}/${duel.ghost.maxHp} HP · ход ${duel.round} · ${Math.max(0, Math.ceil((duel.deadline - Date.now()) / 1000))} с · пропуски ${duel.player.skips}/3`;
+    for (const button of $("ghost-panel").querySelectorAll("[data-ghost-action]")) {
+      const action = button.dataset.ghostAction;
+      button.disabled = ["shield", "torch", "staff"].includes(action) &&
+        (duel.player.offhand !== action || duel.player.cooldowns[action] > 1) ||
+        action === "heavy" && duel.player.focus < 2 ||
+        action === "potion" && (!duel.player.potions || duel.player.hp >= duel.player.maxHp);
+    }
+  }
   const camouflageButton = $("camouflage-run-button");
   camouflageButton.hidden = !state.enemy || state.gameOver || state.enemy.boss || state.enemy.elite;
-  camouflageButton.disabled = metaProgress.homestead.camouflage < 1;
+  camouflageButton.disabled = state.extraActionUsed || metaProgress.homestead.camouflage < 1;
   camouflageButton.textContent = `Маскировка · ${metaProgress.homestead.camouflage} в инвентаре`;
   ui.merchantActions.hidden = !state.merchantAvailable || state.gameOver;
   ui.buyPotion.disabled = state.potions >= getPotionLimit() || state.gold < MERCHANT_PRICES.potion;
@@ -4523,7 +4885,7 @@ function render() {
   ui.buyArmor.textContent = `⬡ Броня · ${MERCHANT_PRICES.armor} ✦`;
   ui.buyHealing.disabled = state.hp >= state.maxHp || state.gold < MERCHANT_PRICES.healing;
   ui.buyHealing.textContent = `✚ Лечение · ${MERCHANT_PRICES.healing} ✦`;
-  ui.descend.hidden = !state.waitingToDescend || state.gameOver;
+  ui.descend.hidden = !state.waitingToDescend || state.gameOver || dueling;
   ui.restart.hidden = !state.gameOver;
   ui.startCard.hidden = state.started;
   ui.startCard.classList.toggle("has-save", Boolean(savedRun));
@@ -4656,9 +5018,30 @@ $("attack-button").addEventListener("click", () => attackEnemy());
 $("heavy-button").addEventListener("click", () => attackEnemy(getHeavyAttackMultiplier(), HEAVY_ATTACK_COST));
 $("combat-potion-button").addEventListener("click", () => drinkPotion(true));
 $("guard-button").addEventListener("click", () => {
-  if (state.enemy && !state.gameOver) enemyTurn(true);
+  useCombatExtra("stance");
 });
 $("camouflage-run-button").addEventListener("click", useCamouflage);
+$("offhand-button").addEventListener("click", () => useCombatExtra("offhand"));
+$("escape-button").addEventListener("click", () => useCombatExtra("escape"));
+$("ghost-panel").addEventListener("click", (event) => {
+  const button = event.target.closest("[data-ghost-action]");
+  if (button) ghostAction(button.dataset.ghostAction);
+});
+$("offhand-select").addEventListener("change", (event) => {
+  const offhand = event.target.value;
+  if (!["shield", "torch", "staff"].includes(offhand) || state.liveDuelId || state.gameOver) return;
+  if (state.ghostDuel) ghostAction(`equip-${offhand}`);
+  else if (!state.enemy || !state.extraActionUsed) {
+    state.offhand = offhand;
+    if (state.enemy) state.extraActionUsed = true;
+    render();
+  }
+});
+setInterval(() => {
+  if (!state.ghostDuel) return;
+  for (let skip = 0; state.ghostDuel && Date.now() >= state.ghostDuel.deadline && skip < 3; skip += 1) ghostAction("skip");
+  if (state.ghostDuel) render();
+}, 1000);
 ui.descend.addEventListener("click", descend);
 ui.restart.addEventListener("click", openClassDialog);
 ui.buyPotion.addEventListener("click", () => merchantPurchase("potion"));
@@ -4825,9 +5208,17 @@ async function initializeGameServices() {
     }
   },
   });
+  window.WellPvp.initialize({
+    getFighter: getDungeonFighter,
+    getBattleId: () => state.liveDuelId,
+    canDuel: canRequestDungeonDuel,
+    inDungeon: () => state.started && !state.gameOver,
+    onBattle: applyPvpBattle,
+    onGhost: startGhostDuel,
+  });
 }
 
-initializeGameServices().catch((error) => {
+const gameServicesReady = initializeGameServices().catch((error) => {
   tavernStorageError = "Не удалось восстановить сохранения таверны; новые действия с наградами заблокированы.";
   tavernStorageReady = true;
   console.error("Не удалось инициализировать сохранения игры.", error);

@@ -342,10 +342,16 @@
     setBusy(true);
     setStatus(isSignUp ? "Создаю аккаунт…" : "Выполняю вход…");
     try {
+      const body = { email, password };
+      if (isSignUp) {
+        body.options = {
+          emailRedirectTo: new URL(window.location.pathname, window.location.origin).href,
+        };
+      }
       const result = await request(isSignUp ? "signup" : "token?grant_type=password", {
         service: "auth",
         method: "POST",
-        body: { email, password },
+        body,
         token: config.supabaseAnonKey,
       });
       if (!setSession(result)) {
@@ -494,9 +500,17 @@
   }
 
   function handleAuthRedirect() {
-    if (!window.location.hash) return false;
+    if (!window.location.hash) return null;
     const params = new URLSearchParams(window.location.hash.slice(1));
-    if (!params.has("access_token") || !params.has("refresh_token")) return false;
+    const errorCode = params.get("error_code") || params.get("error");
+    if (errorCode) {
+      window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+      const message = errorCode === "otp_expired"
+        ? "Ссылка подтверждения устарела или уже использована. Зарегистрируйся ещё раз, чтобы получить новую."
+        : "Не удалось подтвердить почту по этой ссылке. Попробуй зарегистрироваться ещё раз.";
+      return { error: message };
+    }
+    if (!params.has("access_token") || !params.has("refresh_token")) return null;
     const accepted = setSession({
       access_token: params.get("access_token"),
       refresh_token: params.get("refresh_token"),
@@ -505,7 +519,7 @@
     });
     window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
     if (accepted) setStatus("Почта подтверждена. Проверяю облачный аккаунт…");
-    return accepted;
+    return { accepted };
   }
 
   async function initialize(options) {
@@ -544,9 +558,11 @@
       return;
     }
 
-    const redirected = handleAuthRedirect();
-    loadSession();
-    if (redirected) loadSession();
+    const authCallback = handleAuthRedirect();
+    if (!authCallback) loadSession();
+    if (authCallback?.error) {
+      setStatus(authCallback.error, true);
+    }
     if (session) {
       try {
         await ensureSession();
@@ -560,7 +576,7 @@
         ui.authForm.hidden = false;
         setStatus(`Облачная сессия завершилась: ${error.message}. Войди снова.`, true);
       }
-    } else {
+    } else if (!authCallback?.error) {
       setStatus("Локальный прогресс сохранён. Войди или создай аккаунт, чтобы включить облако.");
     }
     window.setInterval(() => {

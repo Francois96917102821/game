@@ -24,12 +24,12 @@
           <div class="panel-heading"><span>ПУТНИК</span><span class="level-badge" id="level-badge">УР. 1</span></div>
           <div class="portrait" aria-hidden="true">
             <div class="portrait-glow"></div>
-            <span class="portrait-figure">♙</span>
+            <span class="portrait-figure" id="portrait-figure">♙</span>
             <span class="portrait-rune rune-one">✦</span>
             <span class="portrait-rune rune-two">ᛟ</span>
           </div>
-          <h1 class="player-name">Искатель</h1>
-          <p class="player-subtitle">Последний из наземных</p>
+          <h1 class="player-name" id="player-name">Искатель</h1>
+          <p class="player-subtitle" id="player-subtitle">Последний из наземных</p>
 
           <div class="stat-block">
             <div class="stat-label"><span>ЗДОРОВЬЕ</span><span id="health-value">30 / 30</span></div>
@@ -47,10 +47,15 @@
           </div>
           <section class="equipment-panel" aria-labelledby="equipment-heading">
             <div class="equipment-heading" id="equipment-heading">ЭКИПИРОВКА</div>
+            <div class="class-profile">
+              <strong id="equipped-class">Класс не выбран</strong>
+              <span id="class-passive">Выбери класс перед первым спуском.</span>
+            </div>
             <div class="equipment-slots">
               <div><span>ОРУЖИЕ</span><strong id="equipped-weapon">Нет</strong></div>
               <div><span>БРОНЯ</span><strong id="equipped-armor">Нет</strong></div>
             </div>
+            <div class="subclass-progress" id="equipped-subclass" aria-live="polite"></div>
             <div class="inventory-heading">РЮКЗАК <span id="inventory-count">0 / 6</span></div>
             <div class="inventory-list" id="inventory-list" aria-live="polite">
               <p class="inventory-empty">Рюкзак пуст. Экипировка иногда выпадает с врагов.</p>
@@ -92,7 +97,7 @@
               <p id="start-description">Спускайся по забытым залам, собирай добычу и выясни, кто зовёт со дна.</p>
               <p class="saved-summary" id="saved-summary" hidden></p>
               <button class="primary-button resume-button" id="resume-button" type="button" hidden>Продолжить спуск <span aria-hidden="true">→</span></button>
-              <button class="primary-button" id="start-button" type="button">Начать спуск <span aria-hidden="true">↓</span></button>
+              <button class="primary-button" id="start-button" type="button">Выбрать класс <span aria-hidden="true">↓</span></button>
             </div>
           </div>
 
@@ -152,6 +157,23 @@
       </section>
       <footer class="footer-note"><span>КОЛОДЕЦ ШЁПОТА</span><span>Каждый спуск — новая история</span><span>✧</span></footer>
     </main>
+    <dialog class="game-dialog class-dialog" id="class-dialog" aria-labelledby="class-dialog-title">
+      <form method="dialog" class="dialog-close-form">
+        <button class="dialog-close" aria-label="Закрыть выбор класса">×</button>
+      </form>
+      <span class="eyebrow">ПУТЬ ИСКАТЕЛЯ</span>
+      <h2 id="class-dialog-title">Выбери свой класс</h2>
+      <p class="dialog-intro">На 3-м уровне выбери одну из трёх специализаций своего класса. На 6-м и 9-м уровнях выбранный подкласс станет сильнее.</p>
+      <div class="class-options" id="class-options" role="group" aria-label="Доступные классы"></div>
+      <div class="class-details" id="class-details" aria-live="polite"></div>
+      <button class="primary-button dialog-confirm" id="choose-class-button" type="button">Начать спуск этим классом <span aria-hidden="true">↓</span></button>
+    </dialog>
+    <dialog class="game-dialog subclass-dialog" id="subclass-dialog" aria-labelledby="subclass-dialog-title">
+      <span class="eyebrow" id="subclass-level">УРОВЕНЬ 3</span>
+      <h2 id="subclass-dialog-title">Новая специализация</h2>
+      <p class="dialog-intro">Выбери подкласс, чтобы получить его особенность. Выбор нельзя изменить в этом забеге.</p>
+      <div class="subclass-choices" id="subclass-choices" role="group" aria-label="Подклассы"></div>
+    </dialog>
     <script src="game.js"></script>
   </body>
 </html>

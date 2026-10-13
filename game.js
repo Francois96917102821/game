@@ -9,7 +9,74 @@ const POTION_LIMIT = 4;
 const MAX_FOCUS = 3;
 const HEAVY_ATTACK_COST = 2;
 const MAX_GEAR = 6;
+const SUBCLASS_LEVELS = [3, 6, 9];
 const MERCHANT_PRICES = { potion: 12, weapon: 18, armor: 24, healing: 8 };
+const CHARACTER_CLASSES = [
+  {
+    id: "warrior", name: "Воин", icon: "⚔", role: "Защитник",
+    description: "Крепкий боец, который выдерживает натиск врагов.",
+    maxHp: 38, attack: 5, defense: 1, heavyMultiplier: 2.2, passive: "Получает на 1 урон меньше от каждой атаки.",
+    subclasses: [
+      { id: "guardian", name: "Страж", description: "Ещё 1 единица защиты.", effect: "defense" },
+      { id: "slayer", name: "Губитель", description: "+2 к силе атаки.", effect: "attack" },
+      { id: "champion", name: "Чемпион", description: "Сокрушительный удар сильнее на 50%.", effect: "heavy" },
+    ],
+  },
+  {
+    id: "ranger", name: "Следопыт", icon: "➶", role: "Охотник",
+    description: "Меткий путешественник, находящий трофеи и слабости врагов.",
+    maxHp: 30, attack: 6, defense: 0, heavyMultiplier: 2.2, passive: "Чаще находит экипировку после победы.",
+    subclasses: [
+      { id: "sniper", name: "Снайпер", description: "+2 к силе атаки.", effect: "attack" },
+      { id: "tracker", name: "Зверолов", description: "Ещё 15% шанс найти экипировку.", effect: "loot" },
+      { id: "survivor", name: "Выживший", description: "+1 единица защиты и +4 к здоровью.", effect: "defense-health" },
+    ],
+  },
+  {
+    id: "mage", name: "Маг", icon: "✦", role: "Заклинатель",
+    description: "Хрупкий чародей, превращающий запас силы в разрушительную магию.",
+    maxHp: 26, attack: 7, defense: 0, heavyMultiplier: 2.6, passive: "Сокрушительный удар наносит больше урона.",
+    subclasses: [
+      { id: "evoker", name: "Чародей", description: "Сокрушительный удар сильнее на 50%.", effect: "heavy" },
+      { id: "frostmage", name: "Ледяной маг", description: "Враги наносят на 2 урона меньше.", effect: "defense-2" },
+      { id: "mender", name: "Целитель", description: "Зелья восстанавливают ещё 6 здоровья.", effect: "potion" },
+    ],
+  },
+  {
+    id: "rogue", name: "Плут", icon: "◈", role: "Ловкач",
+    description: "Быстрый дуэлянт, умеющий уворачиваться и наносить точные удары.",
+    maxHp: 28, attack: 6, defense: 0, heavyMultiplier: 2.2, passive: "Имеет 15% шанс полностью уклониться от атаки.",
+    subclasses: [
+      { id: "assassin", name: "Ассасин", description: "Сокрушительный удар сильнее на 50%.", effect: "heavy" },
+      { id: "shadow", name: "Теневой танцор", description: "Ещё 10% шанс уклониться от атаки.", effect: "dodge" },
+      { id: "cutpurse", name: "Головорез", description: "+2 к силе атаки и +10% к поиску добычи.", effect: "attack-loot" },
+    ],
+  },
+  {
+    id: "paladin", name: "Паладин", icon: "☼", role: "Хранитель",
+    description: "Защитник, который лечится после побед и стоит на пути тьмы.",
+    maxHp: 36, attack: 5, defense: 1, heavyMultiplier: 2.2, passive: "Восстанавливает 3 здоровья после каждой победы.",
+    subclasses: [
+      { id: "oathkeeper", name: "Клятвохранитель", description: "Ещё 1 единица защиты.", effect: "defense" },
+      { id: "inquisitor", name: "Инквизитор", description: "+2 к силе атаки.", effect: "attack" },
+      { id: "luminary", name: "Светоносец", description: "После победы восстанавливает ещё 4 здоровья.", effect: "heal" },
+    ],
+  },
+  {
+    id: "berserker", name: "Берсерк", icon: "✹", role: "Неистовый боец",
+    description: "Рискует здоровьем ради тяжёлых ударов и натиска без остановки.",
+    maxHp: 34, attack: 7, defense: 0, heavyMultiplier: 2.2, passive: "Ниже половины здоровья атаки наносят ещё 2 урона.",
+    subclasses: [
+      { id: "reaver", name: "Разоритель", description: "Сокрушительный удар сильнее на 50%.", effect: "heavy" },
+      { id: "ironhide", name: "Железная шкура", description: "+2 единицы защиты.", effect: "defense-2" },
+      { id: "blooddrinker", name: "Кровопийца", description: "Восстанавливает 4 здоровья после победы.", effect: "heal" },
+    ],
+  },
+];
+const CLASS_BY_ID = new Map(CHARACTER_CLASSES.map((characterClass) => [characterClass.id, characterClass]));
+const SUBCLASS_BY_ID = new Map(CHARACTER_CLASSES.flatMap((characterClass) =>
+  characterClass.subclasses.map((subclass) => [subclass.id, { ...subclass, classId: characterClass.id }])
+));
 const FLOOR_THEMES = [
   {
     id: "well",
@@ -108,6 +175,17 @@ const ui = {
   startTitle: $("start-title"),
   startDescription: $("start-description"),
   startButton: $("start-button"),
+  classDialog: $("class-dialog"),
+  classOptions: $("class-options"),
+  classDetails: $("class-details"),
+  chooseClassButton: $("choose-class-button"),
+  subclassDialog: $("subclass-dialog"),
+  subclassOptions: $("subclass-options"),
+  subclassLevel: $("subclass-level"),
+  subclassChoices: $("subclass-choices"),
+  equippedClass: $("equipped-class"),
+  classPassive: $("class-passive"),
+  equippedSubclass: $("equipped-subclass"),
   resumeButton: $("resume-button"),
   savedSummary: $("saved-summary"),
   roomCount: $("room-count"),
@@ -145,6 +223,7 @@ const ui = {
 let state = createState();
 let bestFloor = readBestFloor();
 let savedRun = readSavedRun();
+let selectedClassId = "warrior";
 let audioContext = null;
 let soundEnabled = false;
 
@@ -161,6 +240,10 @@ function createState() {
     gold: 0,
     xp: 0,
     level: 1,
+    classId: null,
+    subclassId: null,
+    subclassRank: 0,
+    pendingSubclassLevels: [],
     enemy: null,
     guarding: false,
     focus: 0,
@@ -198,6 +281,18 @@ function isValidRun(run) {
     !isIntegerBetween(saved.gold, 0, 1000000000) ||
     !isIntegerBetween(saved.level, 1, 10000) ||
     !isIntegerBetween(saved.xp, 0, XP_PER_LEVEL * saved.level - 1) ||
+    (saved.classId !== undefined && saved.classId !== null && !CLASS_BY_ID.has(saved.classId)) ||
+    (saved.subclassId !== undefined && saved.subclassId !== null &&
+      (!SUBCLASS_BY_ID.has(saved.subclassId) || SUBCLASS_BY_ID.get(saved.subclassId).classId !== saved.classId)) ||
+    (saved.subclassRank !== undefined && (
+      !isIntegerBetween(saved.subclassRank, 0, 3) || (saved.subclassRank > 0 && !saved.subclassId)
+    )) ||
+    (saved.pendingSubclassLevels !== undefined && (
+      !Array.isArray(saved.pendingSubclassLevels) || saved.pendingSubclassLevels.length > 1 ||
+      !saved.pendingSubclassLevels.every((level) => level === 3 && level <= saved.level) ||
+      new Set(saved.pendingSubclassLevels).size !== saved.pendingSubclassLevels.length ||
+      (saved.pendingSubclassLevels.length > 0 && !saved.classId)
+    )) ||
     typeof saved.guarding !== "boolean" ||
     (saved.focus !== undefined && !isIntegerBetween(saved.focus, 0, MAX_FOCUS)) ||
     (saved.inventory !== undefined && (
@@ -218,6 +313,14 @@ function isValidRun(run) {
     typeof saved.caption !== "string" || saved.caption.length > 100 ||
     (saved.room === MAX_ROOMS && !saved.enemy && !saved.waitingToDescend)
   ) return false;
+
+  if (saved.classId) {
+    if (
+      (saved.pendingSubclassLevels?.length && saved.subclassId) ||
+      (saved.subclassRank && !saved.subclassId) ||
+      (saved.subclassId && saved.subclassRank !== SUBCLASS_LEVELS.filter((level) => saved.level >= level).length)
+    ) return false;
+  }
 
   const storedGear = [
     ...(saved.inventory || []),
@@ -372,12 +475,23 @@ function getRoomEnemies() {
   return ENEMY_TYPES.filter((enemy) => enemy.theme === getFloorTheme().id);
 }
 
-function startGame() {
+function startGameWithClass(classId) {
+  const characterClass = CLASS_BY_ID.get(classId);
+  if (!characterClass) return;
+  selectedClassId = classId;
+  if (ui.classDialog.open) ui.classDialog.close();
   state = createState();
   savedRun = null;
   state.started = true;
-  state.attack = randomInt(5, 8);
+  state.classId = characterClass.id;
+  state.maxHp = characterClass.maxHp;
+  state.hp = characterClass.maxHp;
+  state.attack = randomInt(5, 8) + characterClass.attack - 5;
+  $("player-name").textContent = characterClass.name;
+  $("player-subtitle").textContent = characterClass.role;
+  $("portrait-figure").textContent = characterClass.icon;
   addJournal("Спуск начался", "Ты переступил порог колодца. Обратного пути пока нет.", "↓");
+  addJournal(`Класс: ${characterClass.name}`, characterClass.passive, characterClass.icon);
   setEvent("ПЕРВЫЙ ЗАЛ", getFloorTheme().entrance, "↓", `ЭТАЖ ${state.floor}`);
   setCaption("Путь начинается");
   ui.startCard.hidden = true;
@@ -386,13 +500,112 @@ function startGame() {
   render();
 }
 
+function getCharacterClass() {
+  return CLASS_BY_ID.get(state.classId) || CHARACTER_CLASSES[0];
+}
+
+function getSubclassEffects() {
+  const subclass = state.subclassId ? SUBCLASS_BY_ID.get(state.subclassId) : null;
+  return subclass ? [subclass] : [];
+}
+
+function getClassStat(effect) {
+  return getSubclassEffects().some((subclass) => subclass.effect === effect) ? state.subclassRank : 0;
+}
+
+function renderClassSelection() {
+  ui.classOptions.replaceChildren();
+  for (const characterClass of CHARACTER_CLASSES) {
+    const option = document.createElement("button");
+    option.type = "button";
+    option.className = "class-option";
+    option.dataset.classId = characterClass.id;
+    option.setAttribute("aria-pressed", String(characterClass.id === selectedClassId));
+    const icon = document.createElement("span");
+    icon.className = "class-option-icon";
+    icon.setAttribute("aria-hidden", "true");
+    icon.textContent = characterClass.icon;
+    const name = document.createElement("strong");
+    name.textContent = characterClass.name;
+    const role = document.createElement("small");
+    role.textContent = characterClass.role;
+    option.append(icon, name, role);
+    ui.classOptions.append(option);
+  }
+  const characterClass = CLASS_BY_ID.get(selectedClassId);
+  ui.classDetails.replaceChildren();
+  const details = document.createElement("p");
+  details.textContent = characterClass.description;
+  const stats = document.createElement("p");
+  stats.textContent = `Здоровье: ${characterClass.maxHp} · Урон: ${characterClass.attack}–${characterClass.attack + 3}`;
+  const passive = document.createElement("p");
+  passive.textContent = `Особенность: ${characterClass.passive}`;
+  ui.classDetails.append(details, stats, passive);
+}
+
+function openClassDialog() {
+  renderClassSelection();
+  ui.classDialog.showModal();
+}
+
+function renderSubclassChoices() {
+  const level = state.pendingSubclassLevels[0];
+  if (!level) return;
+  ui.subclassLevel.textContent = `Уровень ${level}`;
+  ui.subclassChoices.replaceChildren();
+  for (const subclass of getCharacterClass().subclasses) {
+    const option = document.createElement("button");
+    option.type = "button";
+    option.className = "subclass-option";
+    option.dataset.subclassId = subclass.id;
+    const name = document.createElement("strong");
+    name.textContent = subclass.name;
+    const description = document.createElement("span");
+    description.textContent = subclass.description;
+    option.append(name, description);
+    ui.subclassChoices.append(option);
+  }
+  ui.subclassLevel.setAttribute("aria-label", `Выбери подкласс на ${level}-м уровне`);
+  if (!ui.subclassDialog.open) ui.subclassDialog.showModal();
+}
+
+function chooseSubclass(subclassId) {
+  const subclass = SUBCLASS_BY_ID.get(subclassId);
+  if (
+    !subclass || subclass.classId !== state.classId ||
+    state.subclassId || state.pendingSubclassLevels[0] !== 3
+  ) return;
+  const level = state.pendingSubclassLevels.shift();
+  state.subclassId = subclassId;
+  state.subclassRank = SUBCLASS_LEVELS.filter((unlockLevel) => state.level >= unlockLevel).length;
+  if (subclass.effect === "defense-health") {
+    state.maxHp += 4;
+    state.hp += 4;
+  }
+  setEvent("НОВАЯ СПЕЦИАЛИЗАЦИЯ", `Открыт подкласс «${subclass.name}»: ${subclass.description}`, "✦", `УРОВЕНЬ ${level}`);
+  addJournal("Новый подкласс", `${subclass.name}: ${subclass.description}`, "✦");
+  if (!state.pendingSubclassLevels.length) ui.subclassDialog.close();
+  render();
+}
+
 function resumeGame() {
   if (!savedRun) return;
   state = savedRun;
+  const migratedClass = !state.classId;
   if (state.focus === undefined) state.focus = 0;
   if (state.equipment === undefined) state.equipment = { weapon: null, armor: null };
   if (state.inventory === undefined) state.inventory = [];
   if (state.gearSequence === undefined) state.gearSequence = 0;
+  if (migratedClass) state.classId = "warrior";
+  if (state.subclassId === undefined) state.subclassId = null;
+  if (state.subclassRank === undefined) state.subclassRank = state.subclassId
+    ? SUBCLASS_LEVELS.filter((level) => state.level >= level).length
+    : 0;
+  if (state.pendingSubclassLevels === undefined) state.pendingSubclassLevels = [];
+  if (migratedClass) {
+    state.pendingSubclassLevels = state.level >= SUBCLASS_LEVELS[0] ? [SUBCLASS_LEVELS[0]] : [];
+  }
+  selectedClassId = state.classId;
   savedRun = null;
   render();
   playTone(220, 0.09);
@@ -525,7 +738,9 @@ function enemyTurn(guarding = false) {
   const rawDamage = randomInt(Math.max(1, state.enemy.damage - 2), state.enemy.damage);
   const armorDefense = getArmorDefense();
   const reducedDamage = Math.max(1, rawDamage - armorDefense);
-  const damage = Math.max(1, guarding || state.guarding ? Math.ceil(reducedDamage * 0.4) : reducedDamage);
+  const dodgeChance = getDodgeChance();
+  const dodged = !guarding && Math.random() < dodgeChance;
+  const damage = dodged ? 0 : Math.max(1, guarding || state.guarding ? Math.ceil(reducedDamage * 0.4) : reducedDamage);
   state.guarding = false;
   state.hp = Math.max(0, state.hp - damage);
   if (state.hp === 0) {
@@ -537,10 +752,16 @@ function enemyTurn(guarding = false) {
   } else {
     const focusMessage = guarding ? ` Запас силы: ${state.focus} из ${MAX_FOCUS}.` : "";
     const armorMessage = armorDefense ? ` Броня поглотила ${Math.min(armorDefense, rawDamage - 1)} урона.` : "";
-    setEvent("ВРАГ АТАКУЕТ", `${state.enemy.name} наносит ${damage} урона${guarding ? ", но твоя защита смягчает удар" : ""}.${armorMessage}${focusMessage}`, "⬡");
-    setCaption("Бой продолжается");
+    setEvent(
+      dodged ? "УКЛОНЕНИЕ" : "ВРАГ АТАКУЕТ",
+      dodged
+        ? `Ты увернулся от атаки ${state.enemy.name}.`
+        : `${state.enemy.name} наносит ${damage} урона${guarding ? ", но твоя защита смягчает удар" : ""}.${armorMessage}${focusMessage}`,
+      dodged ? "◈" : "⬡",
+    );
+    setCaption(dodged ? "Удар прошёл мимо" : "Бой продолжается");
   }
-  playTone(guarding ? 185 : 125, 0.1);
+  playTone(guarding ? 185 : dodged ? 270 : 125, 0.1);
   render();
 }
 
@@ -550,7 +771,8 @@ function defeatEnemy() {
   state.gold += enemy.gold;
   gainXp(enemy.xp);
   let gearMessage = "";
-  if (enemy.boss || Math.random() < 0.3) {
+  const lootChance = Math.min(0.8, 0.3 + (state.classId === "ranger" ? 0.2 : 0) + getClassStat("loot") * 0.15 + getClassStat("attack-loot") * 0.1);
+  if (enemy.boss || Math.random() < lootChance) {
     if (state.inventory.length < MAX_GEAR) {
       const gear = createGear(randomInt(0, 1) === 0 ? "weapon" : "armor");
       state.inventory.push(gear);
@@ -560,18 +782,22 @@ function defeatEnemy() {
       gearMessage = " Рюкзак полон: трофей остался в зале.";
     }
   }
+  const victoryHealing = (state.classId === "paladin" ? 3 : 0) +
+    getClassStat("heal") * 4;
+  const healed = Math.min(victoryHealing, state.maxHp - state.hp);
+  state.hp += healed;
   if (enemy.boss) {
     state.waitingToDescend = true;
     const bonus = Math.min(8, state.maxHp - state.hp);
     state.hp += bonus;
-    setEvent("СТРАЖ ПОВЕРЖЕН", `Ты получил ${enemy.xp} опыта и ${enemy.gold} монет.${bonus ? ` Передышка вернула ${bonus} здоровья.` : ""}${gearMessage} Путь вниз открыт.`, "✧", "ПУТЬ ОТКРЫТ");
+    setEvent("СТРАЖ ПОВЕРЖЕН", `Ты получил ${enemy.xp} опыта и ${enemy.gold} монет.${healed ? ` Класс восстановил ${healed} здоровья.` : ""}${bonus ? ` Передышка вернула ${bonus} здоровья.` : ""}${gearMessage} Путь вниз открыт.`, "✧", "ПУТЬ ОТКРЫТ");
     addJournal("Путь открыт", `Страж повержен. Ты готов спуститься на ${state.floor + 1}-й этаж.`, "↓");
     setCaption("Лестница открыта");
     playTone(560, 0.2);
   } else {
     const foundPotion = Math.random() < 0.2 && state.potions < 4;
     if (foundPotion) state.potions += 1;
-    setEvent("ПОБЕДА", `Враг повержен: +${enemy.xp} опыта, +${enemy.gold} монет${foundPotion ? ", +1 зелье" : ""}.${gearMessage}`, "✧");
+    setEvent("ПОБЕДА", `Враг повержен: +${enemy.xp} опыта, +${enemy.gold} монет${foundPotion ? ", +1 зелье" : ""}${healed ? `, восстановлено ${healed} здоровья` : ""}.${gearMessage}`, "✧");
     addJournal("Враг повержен", `+${enemy.xp} опыта и +${enemy.gold} монет.`, "⚔");
     setCaption("В зале тихо");
     playTone(420, 0.14);
@@ -588,15 +814,35 @@ function gainXp(amount) {
     state.hp = Math.min(state.maxHp, state.hp + 12);
     state.attack += 1;
     addJournal("Новый уровень", `Уровень ${state.level}: здоровье и сила выросли.`, "✦");
+    if (state.level === SUBCLASS_LEVELS[0]) {
+      state.pendingSubclassLevels.push(state.level);
+    } else if (SUBCLASS_LEVELS.includes(state.level) && state.subclassId) {
+      state.subclassRank += 1;
+      const subclass = SUBCLASS_BY_ID.get(state.subclassId);
+      addJournal("Подкласс усилен", `${subclass.name} достиг ${state.subclassRank}-го ранга.`, "✦");
+    }
   }
 }
 
 function getAttackPower() {
-  return state.attack + (state.equipment.weapon?.bonus || 0);
+  const characterClass = getCharacterClass();
+  const lowHealthBonus = state.classId === "berserker" && state.hp <= state.maxHp / 2 ? 2 : 0;
+  return state.attack + (state.equipment.weapon?.bonus || 0) +
+    getClassStat("attack") * 2 + getClassStat("attack-loot") * 2 + lowHealthBonus;
 }
 
 function getArmorDefense() {
-  return state.equipment.armor?.bonus || 0;
+  return (state.equipment.armor?.bonus || 0) + getCharacterClass().defense +
+    getClassStat("defense") + getClassStat("defense-2") * 2 +
+    getClassStat("defense-health");
+}
+
+function getDodgeChance() {
+  return Math.min(0.8, (state.classId === "rogue" ? 0.15 : 0) + getClassStat("dodge") * 0.1);
+}
+
+function getHeavyAttackMultiplier() {
+  return getCharacterClass().heavyMultiplier + getClassStat("heavy") * 0.5;
 }
 
 function createGear(type) {
@@ -639,7 +885,7 @@ function equipGear(gearId) {
 function drinkPotion(inCombat = false) {
   if (!state.started || state.potions <= 0 || state.hp >= state.maxHp || state.gameOver) return;
   state.potions -= 1;
-  const healing = Math.min(14, state.maxHp - state.hp);
+  const healing = Math.min(14 + getClassStat("potion") * 6, state.maxHp - state.hp);
   state.hp += healing;
   setEvent("ЗЕЛЬЕ ВЫПИТО", `Ты восстановил ${healing} здоровья.`, "⚗");
   addJournal("Зелье здоровья", `Восстановлено ${healing} здоровья.`, "⚗");
@@ -787,15 +1033,54 @@ function renderEquipment() {
   }
 }
 
+function renderClassProgression() {
+  if (!state.classId) {
+    ui.equippedClass.textContent = "Класс не выбран";
+    ui.classPassive.textContent = "Выбери класс перед первым спуском.";
+    ui.equippedSubclass.replaceChildren();
+    return;
+  }
+  const characterClass = getCharacterClass();
+  ui.equippedClass.textContent = `${characterClass.icon} ${characterClass.name} · ${characterClass.role}`;
+  ui.classPassive.textContent = characterClass.passive;
+  ui.equippedSubclass.replaceChildren();
+  for (let index = 0; index < characterClass.subclasses.length; index += 1) {
+    const subclass = characterClass.subclasses[index];
+    const row = document.createElement("div");
+    row.className = "subclass-progress-row";
+    const name = document.createElement("strong");
+    name.textContent = subclass.name;
+    const status = document.createElement("span");
+    if (state.subclassId === subclass.id) {
+      row.classList.add("unlocked");
+      status.textContent = `РАНГ ${state.subclassRank}`;
+    } else if (!state.subclassId && state.pendingSubclassLevels.includes(SUBCLASS_LEVELS[0])) {
+      row.classList.add("available");
+      status.textContent = "ВЫБЕРИ ПОДКЛАСС";
+    } else if (state.subclassId) {
+      status.textContent = "ДРУГАЯ СПЕЦИАЛИЗАЦИЯ";
+    } else {
+      status.textContent = `ВЫБОР · УР. ${SUBCLASS_LEVELS[0]}`;
+    }
+    row.append(name, status);
+    ui.equippedSubclass.append(row);
+  }
+}
+
 function render() {
   const theme = getFloorTheme();
+  const characterClass = state.classId ? getCharacterClass() : null;
   ui.level.textContent = `УР. ${state.level}`;
+  $("player-name").textContent = characterClass ? characterClass.name : "Искатель";
+  $("player-subtitle").textContent = characterClass ? characterClass.role : "Последний из наземных";
+  $("portrait-figure").textContent = characterClass ? characterClass.icon : "♙";
   ui.health.textContent = `${state.hp} / ${state.maxHp}`;
   ui.healthBar.style.width = `${(state.hp / state.maxHp) * 100}%`;
   const xpTarget = XP_PER_LEVEL * state.level;
   ui.xp.textContent = `${state.xp} / ${xpTarget}`;
   ui.xpBar.style.width = `${Math.min(100, (state.xp / xpTarget) * 100)}%`;
-  ui.attack.textContent = `${getAttackPower()}–${getAttackPower() + 3}`;
+  const attackPower = state.classId ? getAttackPower() : state.attack;
+  ui.attack.textContent = `${attackPower}–${attackPower + 3}`;
   ui.gold.textContent = String(state.gold);
   ui.potions.textContent = String(state.potions);
   ui.focusValue.textContent = `${state.focus} / ${MAX_FOCUS}`;
@@ -821,7 +1106,7 @@ function render() {
   ui.enemy.className = `scene-enemy${state.enemy ? ` enemy-${state.enemy.skin || "guardian"}` : ""}`;
   ui.enemy.textContent = state.enemy ? state.enemy.icon || "☠" : "";
   ui.merchant.textContent = state.merchantAvailable ? "♟" : "";
-  ui.character.textContent = "♙";
+  ui.character.textContent = characterClass ? characterClass.icon : "♙";
   ui.explore.disabled = !state.started || Boolean(state.enemy) || state.gameOver || state.merchantAvailable || state.waitingToDescend;
   ui.potion.disabled = !state.started || state.potions === 0 || state.hp >= state.maxHp || state.gameOver;
   $("combat-potion-button").disabled = state.potions === 0 || state.hp >= state.maxHp || state.gameOver;
@@ -846,7 +1131,7 @@ function render() {
   ui.startCard.classList.toggle("has-save", Boolean(savedRun));
   ui.startKicker.textContent = savedRun ? "ПУТЕШЕСТВИЕ СОХРАНЕНО" : "ЛЕГЕНДА НАЧИНАЕТСЯ";
   ui.resumeButton.hidden = !savedRun;
-  ui.startButton.textContent = savedRun ? "Начать новый спуск" : "Начать спуск ↓";
+  ui.startButton.textContent = savedRun ? "Выбрать класс для нового спуска" : "Выбрать класс ↓";
   ui.startButton.classList.toggle("new-run-button", Boolean(savedRun));
   ui.startTitle.textContent = savedRun ? "С возвращением!" : "Не каждый колодец ведёт к воде.";
   ui.startDescription.textContent = savedRun
@@ -871,7 +1156,9 @@ function render() {
   renderTrack();
   renderJournal();
   renderEquipment();
+  renderClassProgression();
   saveActiveRun();
+  if (state.started && state.pendingSubclassLevels.length) renderSubclassChoices();
 }
 
 function playTone(frequency, duration) {
@@ -893,18 +1180,30 @@ function playTone(frequency, duration) {
   }
 }
 
-ui.startButton.addEventListener("click", startGame);
+ui.startButton.addEventListener("click", openClassDialog);
 ui.resumeButton.addEventListener("click", resumeGame);
+ui.classOptions.addEventListener("click", (event) => {
+  const option = event.target.closest("button[data-class-id]");
+  if (!option || !CLASS_BY_ID.has(option.dataset.classId)) return;
+  selectedClassId = option.dataset.classId;
+  renderClassSelection();
+});
+ui.chooseClassButton.addEventListener("click", () => startGameWithClass(selectedClassId));
+ui.subclassDialog.addEventListener("cancel", (event) => event.preventDefault());
+ui.subclassChoices.addEventListener("click", (event) => {
+  const option = event.target.closest("button[data-subclass-id]");
+  if (option) chooseSubclass(option.dataset.subclassId);
+});
 ui.explore.addEventListener("click", explore);
 ui.potion.addEventListener("click", () => drinkPotion(false));
 $("attack-button").addEventListener("click", () => attackEnemy());
-$("heavy-button").addEventListener("click", () => attackEnemy(2.2, HEAVY_ATTACK_COST));
+$("heavy-button").addEventListener("click", () => attackEnemy(getHeavyAttackMultiplier(), HEAVY_ATTACK_COST));
 $("combat-potion-button").addEventListener("click", () => drinkPotion(true));
 $("guard-button").addEventListener("click", () => {
   if (state.enemy && !state.gameOver) enemyTurn(true);
 });
 ui.descend.addEventListener("click", descend);
-ui.restart.addEventListener("click", startGame);
+ui.restart.addEventListener("click", openClassDialog);
 ui.buyPotion.addEventListener("click", () => merchantPurchase("potion"));
 ui.buyWeapon.addEventListener("click", () => merchantPurchase("weapon"));
 ui.buyArmor.addEventListener("click", () => merchantPurchase("armor"));

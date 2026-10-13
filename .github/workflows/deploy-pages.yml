@@ -31,7 +31,7 @@ jobs:
       - name: Prepare static game files
         run: |
           mkdir -p dist
-          cp index.html styles.css game.js cloud-save.js cloud-config.js dist/
+          cp index.html styles.css game.js game-art.svg cloud-save.js cloud-config.js dist/
       - name: Configure optional Supabase client
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -64,6 +64,7 @@ jobs:
           DEPLOY_SHA: ${{ github.sha }}
         run: |
           sed -i "s|href=\"styles.css\"|href=\"styles.css?v=${DEPLOY_SHA}\"|; s|src=\"cloud-config.js\"|src=\"cloud-config.js?v=${DEPLOY_SHA}\"|; s|src=\"cloud-save.js\"|src=\"cloud-save.js?v=${DEPLOY_SHA}\"|; s|src=\"game.js\"|src=\"game.js?v=${DEPLOY_SHA}\"|" dist/index.html
+          sed -i "s|const GAME_ART_URL = \"game-art.svg\";|const GAME_ART_URL = \"game-art.svg?v=${DEPLOY_SHA}\";|" dist/game.js
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:

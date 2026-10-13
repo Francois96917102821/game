@@ -61,7 +61,9 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--gold-light); ou
 .portrait:before { transform: rotate(28deg); left: -43px; }
 .portrait:after { transform: rotate(-28deg); right: -43px; }
 .portrait-glow { position: absolute; bottom: 5px; width: 112px; height: 22px; border-radius: 50%; background: #b1945a; opacity: .23; filter: blur(14px); }
-.portrait-figure { position: relative; z-index: 1; color: #c9b27d; font-size: 77px; line-height: 1; text-shadow: 0 8px 16px #0b0c09; }
+.portrait-figure { position: relative; z-index: 1; display: grid; place-items: center; width: 112px; height: 112px; }
+.art-icon { display: block; overflow: visible; }
+.portrait-art { width: 100%; height: 100%; filter: drop-shadow(0 8px 12px rgba(0,0,0,.7)); }
 .portrait-rune { position: absolute; color: #ba9957; opacity: .64; }
 .rune-one { top: 17px; left: 25px; font-size: 15px; }
 .rune-two { right: 22px; top: 40px; font-size: 18px; }
@@ -84,7 +86,8 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--gold-light); ou
 .equipment-heading, .inventory-heading, .equipment-slots > div > span { color: #aeb2a5; font: 8px "DM Mono", monospace; letter-spacing: .1em; }
 .equipment-slots { display: grid; gap: 8px; margin-top: 9px; }
 .equipment-slots > div { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
-.equipment-slots strong { color: var(--gold-light); font-size: 9px; text-align: right; }
+.equipment-slots strong { display: flex; align-items: center; justify-content: flex-end; gap: 5px; color: var(--gold-light); font-size: 9px; text-align: right; }
+.gear-icon { width: 24px; height: 24px; flex: 0 0 24px; }
 .inventory-heading { display: flex; justify-content: space-between; margin-top: 11px; padding-top: 9px; border-top: 1px solid #30342d; }
 .inventory-heading span { color: var(--muted); }
 .class-profile { display: grid; gap: 4px; margin-top: 9px; }
@@ -99,6 +102,7 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--gold-light); ou
 .inventory-list { display: grid; gap: 7px; margin-top: 7px; }
 .inventory-empty { margin: 0; color: #888e81; font-size: 9px; line-height: 1.5; }
 .inventory-item { display: flex; align-items: center; justify-content: space-between; gap: 7px; }
+.inventory-art { width: 32px; height: 32px; flex: 0 0 32px; padding: 2px; border: 1px solid #363c30; border-radius: 5px; background: #171b16; }
 .inventory-item > div { min-width: 0; }
 .inventory-item strong, .inventory-item span { display: block; }
 .inventory-item strong { color: #d6d6c9; font-size: 9px; line-height: 1.35; }
@@ -156,27 +160,20 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--gold-light); ou
 .stone-five { width: 92px; left: 8%; bottom: 49px; transform: rotate(-3deg); }
 .stone-six { width: 73px; right: 16%; bottom: 25px; transform: rotate(4deg); }
 .scene-rune { position: absolute; top: 30px; left: 50%; transform: translateX(-50%); color: #a98c54; opacity: .32; font-size: 22px; text-shadow: 0 0 20px #c5a04c; }
-.scene-character, .scene-enemy { position: absolute; z-index: 2; bottom: 36px; left: 50%; transform: translateX(-50%); color: #d5bd80; font-size: 58px; text-shadow: 0 0 19px rgba(219, 167, 75, .54); transition: transform .25s, color .25s, text-shadow .4s; }
-.scene-character { transition: left .25s, transform .25s, color .25s, text-shadow .4s; }
+.scene-character, .scene-enemy { position: absolute; z-index: 2; bottom: 24px; left: 50%; width: 130px; height: 145px; transform: translateX(-50%); filter: drop-shadow(0 0 16px rgba(219, 167, 75, .42)); transition: left .25s, transform .25s, filter .4s; }
+.scene-character { transition: left .25s, transform .25s, filter .4s; }
+.scene-art { width: 100%; height: 100%; }
 .scene-merchant { position: absolute; z-index: 2; bottom: 36px; left: 65%; display: none; transform: translateX(-50%); color: #d7c290; font-size: 52px; text-shadow: 0 0 21px rgba(203, 174, 102, .62); }
 .well-scene.has-merchant .scene-character { left: 38%; }
 .well-scene.has-merchant .scene-merchant { display: block; }
-.well-scene.floor-drowned .scene-character { color: #a8d8d2; text-shadow: 0 0 19px rgba(87, 205, 197, .54); }
-.well-scene.floor-roots .scene-character { color: #c0d58c; text-shadow: 0 0 19px rgba(153, 206, 88, .48); }
-.well-scene.floor-forge .scene-character { color: #edac7b; text-shadow: 0 0 19px rgba(241, 116, 70, .53); }
-.scene-enemy { display: none; color: #ce715d; font-family: "Segoe UI Symbol", "Segoe UI", sans-serif; font-size: 53px; }
-.scene-enemy.enemy-moss, .scene-enemy.enemy-root, .scene-enemy.enemy-spore, .scene-enemy.enemy-hound { color: #b5c76e; text-shadow: 0 0 21px rgba(167, 196, 86, .62); }
-.scene-enemy.enemy-stone, .scene-enemy.enemy-iron, .scene-enemy.enemy-golem { color: #b4b7ab; text-shadow: 0 0 20px rgba(205, 185, 135, .54); }
-.scene-enemy.enemy-shade, .scene-enemy.enemy-wraith { color: #b4a0df; text-shadow: 0 0 23px rgba(166, 117, 235, .66); }
-.scene-enemy.enemy-drowned, .scene-enemy.enemy-eel { color: #7acdd3; text-shadow: 0 0 22px rgba(77, 194, 211, .63); }
-.scene-enemy.enemy-ember { color: #f39d68; text-shadow: 0 0 24px rgba(251, 110, 53, .75); }
-.scene-enemy.enemy-elite-stone, .scene-enemy.enemy-elite-forge { color: #e4a975; text-shadow: 0 0 25px rgba(241, 129, 75, .72); }
-.scene-enemy.enemy-elite-tide { color: #82d6d5; text-shadow: 0 0 25px rgba(77, 194, 211, .75); }
-.scene-enemy.enemy-elite-root { color: #c9dc7d; text-shadow: 0 0 25px rgba(167, 196, 86, .78); }
-.scene-enemy.enemy-guardian { font-size: 67px; }
+.well-scene.floor-drowned .scene-character { filter: drop-shadow(0 0 16px rgba(87, 205, 197, .48)); }
+.well-scene.floor-roots .scene-character { filter: drop-shadow(0 0 16px rgba(153, 206, 88, .44)); }
+.well-scene.floor-forge .scene-character { filter: drop-shadow(0 0 16px rgba(241, 116, 70, .48)); }
+.scene-enemy { display: none; width: 118px; height: 132px; filter: drop-shadow(0 0 18px rgba(205, 113, 93, .55)); }
+.scene-enemy.enemy-guardian { width: 145px; height: 155px; }
 .well-scene.in-combat .scene-character { left: 39%; }
 .well-scene.in-combat .scene-enemy { display: block; left: 65%; }
-.well-scene.hit .scene-enemy { transform: translateX(-50%) translateX(8px); color: #f0a38a; }
+.well-scene.hit .scene-enemy { transform: translateX(-50%) translateX(8px); filter: brightness(1.35) drop-shadow(0 0 20px rgba(240, 163, 138, .72)); }
 .well-scene.hit .scene-character { transform: translateX(-50%) translateX(-8px); }
 .scene-caption { position: absolute; left: 13px; bottom: 12px; display: flex; align-items: center; gap: 7px; color: #aaa996; font: 9px "DM Mono", monospace; letter-spacing: .06em; }
 .start-card { position: absolute; z-index: 3; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 16px; text-align: center; background: linear-gradient(90deg, rgba(9,11,9,.82), rgba(9,11,9,.62) 50%, rgba(9,11,9,.82)); }
@@ -298,7 +295,7 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--gold-light); ou
 .class-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
 .class-option { min-height: 91px; display: grid; justify-items: center; align-content: center; gap: 4px; border: 1px solid #373c32; border-radius: 8px; padding: 8px; background: #1a1e18; color: #e8e9df; cursor: pointer; }
 .class-option:hover, .class-option[aria-pressed="true"] { border-color: #b08e54; background: #29281f; }
-.class-option-icon { color: var(--gold-light); font-size: 22px; }
+.class-option-icon { width: 42px; height: 42px; filter: drop-shadow(0 3px 5px rgba(0,0,0,.7)); }
 .class-option strong { font-size: 11px; }
 .class-option small { color: var(--muted); font-size: 8px; }
 .class-details { min-height: 85px; display: grid; align-content: center; gap: 5px; margin-top: 12px; padding: 11px; border: 1px solid #34382e; border-radius: 7px; background: #1a1e18; }
@@ -344,7 +341,11 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--gold-light); ou
   .character-panel { order: 2; min-height: auto; display: grid; grid-template-columns: 72px 1fr; column-gap: 13px; padding: 13px; }
   .character-panel .panel-heading { grid-column: 1 / -1; }
   .portrait { grid-column: 1; grid-row: 2 / 5; width: 72px; height: 81px; margin: 12px 0 0; }
-  .portrait-figure { font-size: 49px; }
+  .portrait-figure { width: 58px; height: 68px; }
+  .scene-character { width: 100px; height: 120px; bottom: 26px; }
+  .scene-enemy { width: 92px; height: 108px; bottom: 26px; }
+  .scene-enemy.enemy-guardian { width: 112px; height: 124px; }
+  .class-option-icon { width: 38px; height: 38px; }
   .portrait-rune { display: none; }
   .player-name { grid-column: 2; text-align: left; align-self: end; margin: 11px 0 0; font-size: 14px; }
   .player-subtitle { grid-column: 2; text-align: left; margin: 2px 0 8px; font-size: 9px; }

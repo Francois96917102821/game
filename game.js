@@ -4,6 +4,7 @@ const MAX_ROOMS = 6;
 const XP_PER_LEVEL = 20;
 const SAVE_KEY = "well-of-whispers-best-floor";
 const RUN_SAVE_KEY = "well-of-whispers-active-run";
+const META_SAVE_KEY = "well-of-whispers-camp-progress";
 const SAVE_VERSION = 1;
 const CLOUD_SNAPSHOT_VERSION = 1;
 const POTION_LIMIT = 4;
@@ -11,6 +12,17 @@ const MAX_FOCUS = 3;
 const HEAVY_ATTACK_COST = 2;
 const MAX_GEAR = 6;
 const SOUND_PREFERENCE_KEY = "well-of-whispers-sound-enabled";
+const META_UPGRADES = {
+  vitality: { name: "Крепкое сердце", description: "+3 здоровья в новом забеге", costs: [2, 4, 6] },
+  power: { name: "Точная рука", description: "+1 к силе удара в новом забеге", costs: [2, 4, 6] },
+  supplies: { name: "Запас зелий", description: "+1 зелье в начале нового забега", costs: [2, 4, 6] },
+};
+const SECRET_LORE = [
+  { id: "well", title: "Голос у колодца", text: "Колодец не зовёт путников. Он повторяет последнее обещание того, кто исчез внизу." },
+  { id: "drowned", title: "Затонувший колокол", text: "Город ушёл под воду, когда его жители позвонили в колокол, чтобы разбудить море." },
+  { id: "roots", title: "Память корней", text: "Подземное дерево помнит имена тех, кто укрылся под его корнями, и тех, кто их предал." },
+  { id: "forge", title: "Последняя ковка", text: "Пепельный король выковал ключ от выхода, но спрятал его в собственном имени." },
+];
 const CLASS_UNLOCK_LEVELS = { advanced: 3, mastery: 9 };
 const LEGACY_SUBCLASS_LEVELS = [3, 6, 9];
 const MERCHANT_PRICES = { potion: 12, weapon: 18, armor: 24, healing: 8 };
@@ -105,6 +117,7 @@ const RUN_QUESTS = [
   { id: "explore", title: "Исследователь", text: "Открой залы подземелья", target: 5, reward: 12, icon: "⌕" },
   { id: "defeat", title: "Охотник за тенями", text: "Победи обитателей глубин", target: 3, reward: 16, icon: "⚔" },
   { id: "gear", title: "Собиратель реликвий", text: "Найди экипировку", target: 2, reward: 20, icon: "✧" },
+  { id: "secret", title: "Слушатель шёпота", text: "Открой тайные знаки", target: 1, reward: 18, icon: "ᛟ" },
 ];
 const FLOOR_THEMES = [
   {
@@ -179,7 +192,17 @@ const ENEMY_TYPES = [
   { theme: "forge", name: "Жар-паук", icon: "♨", skin: "ember", hp: 19, damage: 11, xp: 18, gold: 12 },
   { theme: "forge", name: "Огненный голем", icon: "♟", skin: "golem", hp: 27, damage: 9, xp: 20, gold: 13 },
 ];
-const ENEMY_SKINS = new Set([...ENEMY_TYPES.map((enemy) => enemy.skin), "guardian"]);
+const ELITE_TYPES = [
+  { theme: "well", name: "Каменный палач", icon: "♜", skin: "elite-stone", hp: 26, damage: 8, xp: 19, gold: 14 },
+  { theme: "drowned", name: "Адмирал бездны", icon: "♆", skin: "elite-tide", hp: 29, damage: 10, xp: 22, gold: 17 },
+  { theme: "roots", name: "Старейшина спор", icon: "❋", skin: "elite-root", hp: 32, damage: 10, xp: 25, gold: 19 },
+  { theme: "forge", name: "Кузнечный исполин", icon: "♨", skin: "elite-forge", hp: 37, damage: 12, xp: 29, gold: 22 },
+];
+const ENEMY_SKINS = new Set([
+  ...ENEMY_TYPES.map((enemy) => enemy.skin),
+  ...ELITE_TYPES.map((enemy) => enemy.skin),
+  "guardian",
+]);
 
 const $ = (id) => document.getElementById(id);
 const ui = {
@@ -252,11 +275,15 @@ const ui = {
   objectiveProgress: $("objective-progress"),
   quests: $("quest-list"),
   journalStatus: $("journal-status"),
+  metaEssence: $("meta-essence"),
+  metaUpgrades: $("meta-upgrades"),
+  metaSecrets: $("meta-secrets"),
 };
 
 let state = createState();
 let bestFloor = readBestFloor();
 let savedRun = readSavedRun();
+let metaProgress = readMetaProgress();
 let selectedClassId = "knight";
 let audioContext = null;
 let soundEnabled = readSoundPreference();
@@ -288,6 +315,9 @@ function createState() {
     masteryClassId: null,
     pendingClassLevels: [],
     quests: [],
+    runBossesDefeated: 0,
+    runRewardClaimed: false,
+    secretFragments: [],
     extraLifeUsed: false,
     enemy: null,
     guarding: false,
@@ -313,6 +343,65 @@ function createState() {
 
 function isIntegerBetween(value, min, max) {
   return Number.isInteger(value) && value >= min && value <= max;
+}
+
+function createMetaProgress() {
+  return {
+    essence: 0,
+    upgrades: { vitality: 0, power: 0, supplies: 0 },
+    bossesDefeated: 0,
+    secretsFound: [],
+  };
+}
+
+function isValidMetaProgress(progress) {
+  return Boolean(
+    progress && typeof progress === "object" &&
+    isIntegerBetween(progress.essence, 0, 1000000000) &&
+    progress.upgrades && typeof progress.upgrades === "object" &&
+    Object.keys(META_UPGRADES).every((id) => isIntegerBetween(progress.upgrades[id], 0, META_UPGRADES[id].costs.length)) &&
+    Object.keys(progress.upgrades).every((id) => Object.prototype.hasOwnProperty.call(META_UPGRADES, id)) &&
+    isIntegerBetween(progress.bossesDefeated, 0, 1000000000) &&
+    Array.isArray(progress.secretsFound) &&
+    progress.secretsFound.length <= SECRET_LORE.length &&
+    progress.secretsFound.every((id) => SECRET_LORE.some((secret) => secret.id === id)) &&
+    new Set(progress.secretsFound).size === progress.secretsFound.length
+  );
+}
+
+function readMetaProgress() {
+  try {
+    const stored = JSON.parse(window.localStorage.getItem(META_SAVE_KEY) || "null");
+    if (stored === null) return createMetaProgress();
+    if (isValidMetaProgress(stored)) return stored;
+    console.warn("Сохранение лагеря несовместимо; использованы безопасные значения по умолчанию.");
+  } catch (error) {
+    console.warn("Не удалось прочитать развитие лагеря.", error);
+  }
+  return createMetaProgress();
+}
+
+function mergeMetaProgress(left, right) {
+  const first = isValidMetaProgress(left) ? left : createMetaProgress();
+  const second = isValidMetaProgress(right) ? right : createMetaProgress();
+  return {
+    essence: Math.max(first.essence, second.essence),
+    upgrades: Object.fromEntries(Object.keys(META_UPGRADES).map((id) => [
+      id,
+      Math.max(first.upgrades[id], second.upgrades[id]),
+    ])),
+    bossesDefeated: Math.max(first.bossesDefeated, second.bossesDefeated),
+    secretsFound: [...new Set([...first.secretsFound, ...second.secretsFound])],
+  };
+}
+
+function persistMetaProgress() {
+  try {
+    window.localStorage.setItem(META_SAVE_KEY, JSON.stringify(metaProgress));
+  } catch (error) {
+    console.warn("Не удалось сохранить развитие лагеря.", error);
+  }
+  if (window.WellCloudSave) window.WellCloudSave.scheduleSave(getCloudSaveSnapshot());
 }
 
 function isValidRun(run) {
@@ -366,13 +455,22 @@ function isValidRun(run) {
     (saved.abilityGuarding !== undefined && typeof saved.abilityGuarding !== "boolean") ||
     (saved.abilityDodge !== undefined && typeof saved.abilityDodge !== "boolean") ||
     (saved.quests !== undefined && (
-      !Array.isArray(saved.quests) || saved.quests.length !== RUN_QUESTS.length ||
-      !RUN_QUESTS.every((quest, index) =>
-        saved.quests[index]?.id === quest.id &&
-        isIntegerBetween(saved.quests[index].progress, 0, quest.target) &&
-        typeof saved.quests[index].completed === "boolean" &&
-        saved.quests[index].completed === (saved.quests[index].progress >= quest.target)
-      )
+      !Array.isArray(saved.quests) || saved.quests.length > RUN_QUESTS.length ||
+      new Set(saved.quests.map((quest) => quest?.id)).size !== saved.quests.length ||
+      !saved.quests.every((progress) => {
+        const quest = RUN_QUESTS.find((item) => item.id === progress?.id);
+        return quest &&
+          isIntegerBetween(progress.progress, 0, quest.target) &&
+          typeof progress.completed === "boolean" &&
+          progress.completed === (progress.progress >= quest.target);
+      })
+    )) ||
+    (saved.runBossesDefeated !== undefined && !isIntegerBetween(saved.runBossesDefeated, 0, saved.floor)) ||
+    (saved.runRewardClaimed !== undefined && typeof saved.runRewardClaimed !== "boolean") ||
+    (saved.secretFragments !== undefined && (
+      !Array.isArray(saved.secretFragments) || saved.secretFragments.length > SECRET_LORE.length ||
+      !saved.secretFragments.every((id) => SECRET_LORE.some((secret) => secret.id === id)) ||
+      new Set(saved.secretFragments).size !== saved.secretFragments.length
     )) ||
     typeof saved.guarding !== "boolean" ||
     (saved.focus !== undefined && !isIntegerBetween(saved.focus, 0, MAX_FOCUS)) ||
@@ -434,6 +532,8 @@ function isValidRun(run) {
       !isIntegerBetween(saved.enemy.gold, 0, 1000000) ||
       typeof saved.enemy.boss !== "boolean" ||
       saved.enemy.boss !== (saved.room === MAX_ROOMS) ||
+      (saved.enemy.elite !== undefined && typeof saved.enemy.elite !== "boolean") ||
+      (saved.enemy.elite === true && (saved.enemy.boss || saved.room !== 3)) ||
       saved.room === 0 || saved.waitingToDescend || saved.merchantAvailable === true
     ) return false;
   } else if (saved.waitingToDescend && saved.room !== MAX_ROOMS) {
@@ -512,15 +612,16 @@ function readSavedRun() {
 }
 
 function saveActiveRun() {
-  if (!state.started) return;
-  try {
-    if (state.gameOver) {
-      window.localStorage.removeItem(RUN_SAVE_KEY);
-    } else {
-      window.localStorage.setItem(RUN_SAVE_KEY, JSON.stringify({ version: SAVE_VERSION, state }));
+  if (state.started) {
+    try {
+      if (state.gameOver) {
+        window.localStorage.removeItem(RUN_SAVE_KEY);
+      } else {
+        window.localStorage.setItem(RUN_SAVE_KEY, JSON.stringify({ version: SAVE_VERSION, state }));
+      }
+    } catch (error) {
+      console.warn("Не удалось автоматически сохранить спуск.", error);
     }
-  } catch (error) {
-    console.warn("Не удалось автоматически сохранить спуск.", error);
   }
   if (window.WellCloudSave) window.WellCloudSave.scheduleSave(getCloudSaveSnapshot());
 }
@@ -537,13 +638,15 @@ function getCloudSaveSnapshot() {
       console.warn("Не удалось подготовить локальное сохранение для облака.", error);
     }
   }
-  return { version: CLOUD_SNAPSHOT_VERSION, bestFloor, run };
+  return { version: CLOUD_SNAPSHOT_VERSION, bestFloor, run, meta: JSON.parse(JSON.stringify(metaProgress)) };
 }
 
 function restoreCloudSave(snapshot) {
   bestFloor = Math.max(bestFloor, snapshot.bestFloor);
+  metaProgress = mergeMetaProgress(metaProgress, snapshot.meta);
   try {
     window.localStorage.setItem(SAVE_KEY, String(bestFloor));
+    window.localStorage.setItem(META_SAVE_KEY, JSON.stringify(metaProgress));
     if (snapshot.run) {
       window.localStorage.setItem(RUN_SAVE_KEY, JSON.stringify(snapshot.run));
       savedRun = snapshot.run.state;
@@ -566,7 +669,7 @@ function readLocalCloudSave() {
     if (!isValidRun(parsed)) throw new Error("Локальное сохранение не прошло проверку и оставлено без изменений.");
     run = parsed;
   }
-  return { bestFloor, run };
+  return { bestFloor, run, meta: JSON.parse(JSON.stringify(metaProgress)) };
 }
 
 function saveBestFloor() {
@@ -590,6 +693,58 @@ function addJournal(title, text, symbol = "✧") {
 
 function createRunQuests() {
   return RUN_QUESTS.map((quest) => ({ id: quest.id, progress: 0, completed: false }));
+}
+
+function getUpgradeLevel(id) {
+  return metaProgress.upgrades[id] || 0;
+}
+
+function getUpgradeCost(id) {
+  return META_UPGRADES[id].costs[getUpgradeLevel(id)];
+}
+
+function buyMetaUpgrade(id) {
+  const upgrade = META_UPGRADES[id];
+  if (!upgrade || (state.started && !state.gameOver)) return;
+  const level = getUpgradeLevel(id);
+  const cost = upgrade.costs[level];
+  if (cost === undefined || metaProgress.essence < cost) return;
+  metaProgress.essence -= cost;
+  metaProgress.upgrades[id] = level + 1;
+  persistMetaProgress();
+  setEvent("ЛАГЕРЬ ИСКАТЕЛЕЙ", `${upgrade.name} улучшено: ${upgrade.description}. Эффект начнёт действовать в следующем забеге.`, "✦", "ПОДГОТОВКА");
+  playSound("purchase");
+  render();
+}
+
+function renderMetaProgress() {
+  ui.metaEssence.textContent = `${metaProgress.essence} ✦`;
+  ui.metaUpgrades.replaceChildren();
+  const campAvailable = !state.started || state.gameOver;
+  for (const [id, upgrade] of Object.entries(META_UPGRADES)) {
+    const level = getUpgradeLevel(id);
+    const row = document.createElement("div");
+    row.className = "meta-upgrade";
+    const details = document.createElement("div");
+    const title = document.createElement("strong");
+    title.textContent = `${upgrade.name} · ${level}/${upgrade.costs.length}`;
+    const description = document.createElement("span");
+    description.textContent = upgrade.description;
+    details.append(title, description);
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "meta-buy-button";
+    button.dataset.upgrade = id;
+    button.textContent = level >= upgrade.costs.length ? "МАКС." : `Улучшить · ${getUpgradeCost(id)} ✦`;
+    button.disabled = !campAvailable || level >= upgrade.costs.length || metaProgress.essence < getUpgradeCost(id);
+    button.title = campAvailable ? upgrade.description : "Улучшения доступны только между забегами.";
+    row.append(details, button);
+    ui.metaUpgrades.append(row);
+  }
+  const found = SECRET_LORE.filter((secret) => metaProgress.secretsFound.includes(secret.id));
+  ui.metaSecrets.textContent = found.length
+    ? `${found.length}/${SECRET_LORE.length} записей · ${found.map((secret) => secret.title).join(" · ")} · Стражей побеждено: ${metaProgress.bossesDefeated}`
+    : `0/${SECRET_LORE.length} записей · исследуй тайные залы · Стражей побеждено: ${metaProgress.bossesDefeated}`;
 }
 
 function advanceQuest(questId) {
@@ -636,13 +791,16 @@ function startGameWithClass(classId) {
   state.started = true;
   state.classId = characterClass.id;
   state.quests = createRunQuests();
-  state.maxHp = characterClass.maxHp;
-  state.hp = characterClass.maxHp;
-  state.attack = randomInt(5, 8) + characterClass.attack - 5;
+  state.runBossesDefeated = 0;
+  state.runRewardClaimed = false;
+  state.secretFragments = [];
+  state.maxHp = characterClass.maxHp + getUpgradeLevel("vitality") * 3;
+  state.hp = state.maxHp;
+  state.attack = randomInt(5, 8) + characterClass.attack - 5 + getUpgradeLevel("power");
   $("player-name").textContent = characterClass.name;
   $("player-subtitle").textContent = characterClass.role;
   $("portrait-figure").textContent = characterClass.icon;
-  state.potions = Math.min(POTION_LIMIT + getClassStat("potionCapacity"), state.potions);
+  state.potions = Math.min(getPotionLimit(), 2 + getUpgradeLevel("supplies"));
   addJournal("Спуск начался", "Ты переступил порог колодца. Обратного пути пока нет.", "↓");
   addJournal(`Класс: ${characterClass.name}`, characterClass.passive, characterClass.icon);
   setEvent("ПЕРВЫЙ ЗАЛ", getFloorTheme().entrance, "↓", `ЭТАЖ ${state.floor}`);
@@ -674,7 +832,7 @@ function getClassStat(effect) {
 }
 
 function getPotionLimit() {
-  return POTION_LIMIT + getClassStat("potionCapacity");
+  return Math.max(POTION_LIMIT + getClassStat("potionCapacity"), 2 + getUpgradeLevel("supplies"));
 }
 
 function renderClassSelection() {
@@ -772,6 +930,9 @@ function resumeGame() {
   if (state.equipment === undefined) state.equipment = { weapon: null, armor: null };
   if (state.inventory === undefined) state.inventory = [];
   if (state.gearSequence === undefined) state.gearSequence = 0;
+  if (state.runBossesDefeated === undefined) state.runBossesDefeated = 0;
+  if (state.runRewardClaimed === undefined) state.runRewardClaimed = false;
+  if (state.secretFragments === undefined) state.secretFragments = [];
   if (migratedClass) state.classId = "knight";
   if (legacyClass) {
     const hadLegacySubclass = Boolean(state.subclassId);
@@ -790,7 +951,10 @@ function resumeGame() {
   if (state.advancedClassId === undefined) state.advancedClassId = null;
   if (state.masteryClassId === undefined) state.masteryClassId = null;
   if (state.pendingClassLevels === undefined) state.pendingClassLevels = [];
-  if (state.quests === undefined) state.quests = createRunQuests();
+  const savedQuests = new Map((state.quests || []).map((quest) => [quest.id, quest]));
+  state.quests = RUN_QUESTS.map((quest) =>
+    savedQuests.get(quest.id) || { id: quest.id, progress: 0, completed: false }
+  );
   if (state.extraLifeUsed === undefined) state.extraLifeUsed = false;
   if (migratedClass && state.level >= CLASS_UNLOCK_LEVELS.advanced) state.pendingClassLevels = [CLASS_UNLOCK_LEVELS.advanced];
   selectedClassId = state.classId;
@@ -809,11 +973,15 @@ function explore() {
     spawnEnemy(true);
     return;
   }
+  if (state.room === 3 && Math.random() < 0.25) {
+    spawnEnemy(false, true);
+    return;
+  }
 
   const roll = Math.random();
-  if (roll < 0.4) {
+  if (roll < 0.37) {
     spawnEnemy(false);
-  } else if (roll < 0.6) {
+  } else if (roll < 0.55) {
     const reward = randomInt(5, 12) + state.floor;
     state.gold += reward;
     const foundPotion = Math.random() < 0.28 && state.potions < getPotionLimit();
@@ -823,14 +991,14 @@ function explore() {
     addJournal("Спрятанная добыча", loot, "✦");
     setCaption("Здесь кто-то был");
     playSound("loot");
-  } else if (roll < 0.74) {
+  } else if (roll < 0.67) {
     const healing = Math.min(randomInt(6, 11), state.maxHp - state.hp);
     state.hp += healing;
     setEvent("ПЕРЕДЫШКА", healing > 0 ? `${getFloorTheme().spring} Ты восстановил ${healing} здоровья.` : `${getFloorTheme().spring} Ты уже полон сил.`, "◌");
     addJournal("Глоток передышки", healing > 0 ? `Источник восстановил ${healing} здоровья.` : "Ты нашёл источник, но не нуждался в лечении.", "◌");
     setCaption("Тихая передышка");
     playSound("heal");
-  } else if (roll < 0.87) {
+  } else if (roll < 0.78) {
     const damage = Math.min(randomInt(3, 6), state.hp - 1);
     state.hp -= damage;
     const escape = damage ? `${getFloorTheme().trap} Потеряно ${damage} здоровья.` : `Ты чудом увернулся. ${getFloorTheme().trap}`;
@@ -838,7 +1006,7 @@ function explore() {
     addJournal("Опасный проход", escape, "⌁");
     setCaption(damage ? "Пыль оседает" : "Ты увернулся от ловушки");
     playSound("trap");
-  } else if (roll < 0.95) {
+  } else if (roll < 0.86) {
     const blessing = Math.random() < 0.5;
     if (blessing) {
       state.attack += 1;
@@ -853,6 +1021,8 @@ function explore() {
     }
     setCaption("Свет древней руны");
     playSound("rune");
+  } else if (roll < 0.94) {
+    revealSecret();
   } else {
     state.merchantAvailable = true;
     setEvent("СКЕЛЕТ ТОРГОВЦА", "Немного монет за припасы или оружие? Выбирай товар или спокойно иди дальше.", "♙", "ТРАНСАКЦИЯ");
@@ -863,7 +1033,33 @@ function explore() {
   render();
 }
 
-function spawnEnemy(isBoss) {
+function revealSecret() {
+  const secret = SECRET_LORE.find((item) => item.id === getFloorTheme().id);
+  if (!secret) return;
+  const newlyFoundThisRun = !state.secretFragments.includes(secret.id);
+  if (newlyFoundThisRun) {
+    state.secretFragments.push(secret.id);
+    advanceQuest("secret");
+  }
+  const firstDiscovery = !metaProgress.secretsFound.includes(secret.id);
+  let discoveryText = secret.text;
+  if (firstDiscovery) {
+    metaProgress.secretsFound.push(secret.id);
+    metaProgress.essence += 1;
+    discoveryText += " Ты сохранил знак в летописи лагеря и получил 1 осколок.";
+    persistMetaProgress();
+  } else {
+    const reward = 8 + state.floor;
+    state.gold += reward;
+    discoveryText += ` Этот знак уже знаком; в тайнике осталось ${reward} монет.`;
+  }
+  setEvent(firstDiscovery ? "ТАЙНЫЙ ЗАЛ" : "ЗНАК ИЗ ЛЕТОПИСИ", `${secret.title}. ${discoveryText}`, "ᛟ", firstDiscovery ? "+1 ОСКОЛОК" : "СЕКРЕТ");
+  addJournal(secret.title, discoveryText, "ᛟ");
+  setCaption("Шёпот становится яснее");
+  playSound("rune");
+}
+
+function spawnEnemy(isBoss, isElite = false) {
   const theme = getFloorTheme();
   const roomEnemies = getRoomEnemies();
   const cycle = Math.floor((state.floor - 1) / FLOOR_THEMES.length);
@@ -876,7 +1072,9 @@ function spawnEnemy(isBoss) {
     xp: theme.bossXp + cycle * 8,
     gold: theme.bossGold + state.floor,
     boss: true,
-  } : roomEnemies[randomInt(0, roomEnemies.length - 1)];
+  } : isElite
+    ? { ...ELITE_TYPES.find((enemy) => enemy.theme === theme.id), elite: true }
+    : roomEnemies[randomInt(0, roomEnemies.length - 1)];
   const scale = 1 + (state.floor - 1) * 0.12;
   state.enemy = {
     name: base.name,
@@ -885,15 +1083,18 @@ function spawnEnemy(isBoss) {
     hp: Math.round(base.hp * scale),
     maxHp: Math.round(base.hp * scale),
     damage: Math.ceil(base.damage * scale),
-    xp: base.xp,
-    gold: base.gold,
+    xp: Math.round(base.xp * (isElite ? 1.2 : 1)),
+    gold: Math.round(base.gold * (isElite ? 1.2 : 1)),
     boss: Boolean(base.boss),
+    elite: isElite,
   };
   state.extraLifeUsed = false;
-  setEvent(isBoss ? `СТРАЖ · ${theme.name.toUpperCase()}` : "ОБИТАТЕЛЬ ГЛУБИНЫ", `${state.enemy.name} преграждает путь. Здоровье: ${state.enemy.hp}.`, isBoss ? theme.guardianIcon : base.icon);
-  addJournal(isBoss ? "Страж пробуждён" : "Встреча в темноте", `${state.enemy.name} вступает в бой.`, isBoss ? "☠" : "⚔");
-  setCaption(isBoss ? "Страж колодца" : "Враг приближается");
-  playSound(isBoss ? "boss" : "encounter");
+  const encounterTitle = isBoss ? `СТРАЖ · ${theme.name.toUpperCase()}` : isElite ? "ЭЛИТНЫЙ ХРАНИТЕЛЬ" : "ОБИТАТЕЛЬ ГЛУБИНЫ";
+  const encounterText = `${state.enemy.name} преграждает путь. Здоровье: ${state.enemy.hp}${isElite ? ". Победа принесёт усиленную награду." : "."}`;
+  setEvent(encounterTitle, encounterText, isBoss || isElite ? state.enemy.icon : base.icon);
+  addJournal(isBoss ? "Страж пробуждён" : isElite ? "Элитный противник" : "Встреча в темноте", `${state.enemy.name} вступает в бой.`, isBoss ? "☠" : "⚔");
+  setCaption(isBoss ? "Страж колодца" : isElite ? "Опасный противник" : "Враг приближается");
+  playSound(isBoss || isElite ? "boss" : "encounter");
   render();
 }
 
@@ -977,9 +1178,10 @@ function enemyTurn(guarding = false, advanceCooldown = true) {
   }
   state.hp = Math.max(0, state.hp - damage);
   if (state.hp === 0) {
+    awardRunEssence();
     state.gameOver = true;
     state.enemy = null;
-    setEvent("ПОСЛЕДНИЙ ВДОХ", `Ты пал на ${state.floor}-м этаже. Лучший спуск: ${bestFloor || state.floor}.`, "☾");
+    setEvent("ПОСЛЕДНИЙ ВДОХ", `Ты пал на ${state.floor}-м этаже. В лагерь возвращено ${runEssenceReward()} осколков. Лучший спуск: ${bestFloor || state.floor}.`, "☾");
     addJournal("Спуск прерван", "Темнота сомкнулась вокруг. Но легенда колодца останется.", "☾");
     setCaption("Тишина");
   } else {
@@ -999,6 +1201,17 @@ function enemyTurn(guarding = false, advanceCooldown = true) {
   if (advanceCooldown) state.abilityCooldown = Math.max(0, state.abilityCooldown - 1);
   playSound(state.gameOver ? "gameOver" : guarding ? "guard" : dodged ? "dodge" : "enemyAttack");
   render();
+}
+
+function runEssenceReward() {
+  return 1 + Math.floor((state.floor - 1) / 3) + state.runBossesDefeated;
+}
+
+function awardRunEssence() {
+  if (state.runRewardClaimed) return;
+  state.runRewardClaimed = true;
+  metaProgress.essence = Math.min(1000000000, metaProgress.essence + runEssenceReward());
+  persistMetaProgress();
 }
 
 function useClassAbility() {
@@ -1041,6 +1254,9 @@ function defeatEnemy() {
   const healed = Math.min(victoryHealing, state.maxHp - state.hp);
   state.hp += healed;
   if (enemy.boss) {
+    state.runBossesDefeated += 1;
+    metaProgress.bossesDefeated = Math.min(1000000000, metaProgress.bossesDefeated + 1);
+    persistMetaProgress();
     state.waitingToDescend = true;
     const bonus = Math.min(8, state.maxHp - state.hp);
     state.hp += bonus;
@@ -1051,8 +1267,9 @@ function defeatEnemy() {
   } else {
     const foundPotion = Math.random() < 0.2 && state.potions < getPotionLimit();
     if (foundPotion) state.potions += 1;
-    setEvent("ПОБЕДА", `Враг повержен: +${enemy.xp} опыта, +${enemy.gold} монет${foundPotion ? ", +1 зелье" : ""}${healed ? `, восстановлено ${healed} здоровья` : ""}.${gearMessage}`, "✧");
-    addJournal("Враг повержен", `+${enemy.xp} опыта и +${enemy.gold} монет.`, "⚔");
+    const eliteReward = enemy.elite ? " Элитная награда!" : "";
+    setEvent(enemy.elite ? "ЭЛИТНЫЙ ВРАГ ПОВЕРЖЕН" : "ПОБЕДА", `${enemy.name} повержен: +${enemy.xp} опыта, +${enemy.gold} монет${foundPotion ? ", +1 зелье" : ""}${healed ? `, восстановлено ${healed} здоровья` : ""}.${eliteReward}${gearMessage}`, "✧");
+    addJournal(enemy.elite ? "Элитный враг повержен" : "Враг повержен", `+${enemy.xp} опыта и +${enemy.gold} монет.`, "⚔");
     setCaption("В зале тихо");
     playSound("victory");
   }
@@ -1462,6 +1679,7 @@ function render() {
   renderJournal();
   renderEquipment();
   renderClassProgression();
+  renderMetaProgress();
   renderRunQuests();
   saveActiveRun();
   if (state.started && state.pendingClassLevels.length) renderSubclassChoices();
@@ -1566,6 +1784,10 @@ ui.inventory.addEventListener("click", (event) => {
   const button = event.target.closest("button[data-gear-id]");
   if (button) equipGear(button.dataset.gearId);
 });
+$("meta-upgrades").addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-upgrade]");
+  if (button) buyMetaUpgrade(button.dataset.upgrade);
+});
 $("sound-toggle").addEventListener("click", (event) => {
   soundEnabled = !soundEnabled;
   renderSoundToggle();
@@ -1582,6 +1804,9 @@ render();
 window.WellCloudSave.initialize({
   readLocal: readLocalCloudSave,
   validateRun: isValidRun,
+  defaultMeta: createMetaProgress,
+  validateMeta: isValidMetaProgress,
+  mergeMeta: mergeMetaProgress,
   refresh: render,
   restore: restoreCloudSave,
 });

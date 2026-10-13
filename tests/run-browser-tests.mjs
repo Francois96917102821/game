@@ -4,8 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
-const tests = ["dungeon", "dungeon-integration", "gold-economy", "pvp-client",
+const availableTests = ["dungeon", "dungeon-integration", "gold-economy", "pvp-client",
   "tavern", "expeditions", "homestead", "soul-crafting"];
+const tests = process.argv.length > 2 ? process.argv.slice(2) : availableTests;
+if (tests.some((test) => !availableTests.includes(test))) throw new Error("Unknown browser test.");
 let failed = false;
 
 for (const test of tests) {
@@ -78,7 +80,7 @@ for (const test of tests) {
       browser.kill();
       await exited;
     }
-    await rm(profile, { recursive: true, force: true });
+    await rm(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
   }
 }
 if (failed) process.exitCode = 1;

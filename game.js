@@ -10,6 +10,7 @@ const POTION_LIMIT = 4;
 const MAX_FOCUS = 3;
 const HEAVY_ATTACK_COST = 2;
 const MAX_GEAR = 6;
+const SOUND_PREFERENCE_KEY = "well-of-whispers-sound-enabled";
 const CLASS_UNLOCK_LEVELS = { advanced: 3, mastery: 9 };
 const LEGACY_SUBCLASS_LEVELS = [3, 6, 9];
 const MERCHANT_PRICES = { potion: 12, weapon: 18, armor: 24, healing: 8 };
@@ -258,7 +259,16 @@ let bestFloor = readBestFloor();
 let savedRun = readSavedRun();
 let selectedClassId = "knight";
 let audioContext = null;
-let soundEnabled = false;
+let soundEnabled = readSoundPreference();
+
+function readSoundPreference() {
+  try {
+    return window.localStorage.getItem(SOUND_PREFERENCE_KEY) === "true";
+  } catch (error) {
+    console.warn("Не удалось прочитать настройку звука.", error);
+    return false;
+  }
+}
 
 function createState() {
   return {
@@ -639,7 +649,7 @@ function startGameWithClass(classId) {
   setCaption("Путь начинается");
   ui.startCard.hidden = true;
   ui.journalStatus.textContent = "Ты внутри колодца";
-  playTone(220, 0.09);
+  playSound("start");
   render();
 }
 
@@ -786,7 +796,7 @@ function resumeGame() {
   selectedClassId = state.classId;
   savedRun = null;
   render();
-  playTone(220, 0.09);
+  playSound("start");
 }
 
 function explore() {
@@ -812,14 +822,14 @@ function explore() {
     setEvent("ТАЙНИК НАЙДЕН", loot, "✦");
     addJournal("Спрятанная добыча", loot, "✦");
     setCaption("Здесь кто-то был");
-    playTone(490, 0.12);
+    playSound("loot");
   } else if (roll < 0.74) {
     const healing = Math.min(randomInt(6, 11), state.maxHp - state.hp);
     state.hp += healing;
     setEvent("ПЕРЕДЫШКА", healing > 0 ? `${getFloorTheme().spring} Ты восстановил ${healing} здоровья.` : `${getFloorTheme().spring} Ты уже полон сил.`, "◌");
     addJournal("Глоток передышки", healing > 0 ? `Источник восстановил ${healing} здоровья.` : "Ты нашёл источник, но не нуждался в лечении.", "◌");
     setCaption("Тихая передышка");
-    playTone(360, 0.15);
+    playSound("heal");
   } else if (roll < 0.87) {
     const damage = Math.min(randomInt(3, 6), state.hp - 1);
     state.hp -= damage;
@@ -827,7 +837,7 @@ function explore() {
     setEvent("ЛОВУШКА", escape, "⌁");
     addJournal("Опасный проход", escape, "⌁");
     setCaption(damage ? "Пыль оседает" : "Ты увернулся от ловушки");
-    playTone(145, 0.12);
+    playSound("trap");
   } else if (roll < 0.95) {
     const blessing = Math.random() < 0.5;
     if (blessing) {
@@ -842,13 +852,13 @@ function explore() {
       addJournal("Благословение руны", `Максимальное здоровье выросло на 4, восстановлено ${healing}.`, "✧");
     }
     setCaption("Свет древней руны");
-    playTone(530, 0.17);
+    playSound("rune");
   } else {
     state.merchantAvailable = true;
     setEvent("СКЕЛЕТ ТОРГОВЦА", "Немного монет за припасы или оружие? Выбирай товар или спокойно иди дальше.", "♙", "ТРАНСАКЦИЯ");
     addJournal("Странная лавка", "У костяного торговца есть зелья, лечение и оружие. Поторопиться можно, но торговаться не обязательно.", "♙");
     setCaption("Кто-то ждёт за прилавком");
-    playTone(310, 0.14);
+    playSound("merchant");
   }
   render();
 }
@@ -883,7 +893,7 @@ function spawnEnemy(isBoss) {
   setEvent(isBoss ? `СТРАЖ · ${theme.name.toUpperCase()}` : "ОБИТАТЕЛЬ ГЛУБИНЫ", `${state.enemy.name} преграждает путь. Здоровье: ${state.enemy.hp}.`, isBoss ? theme.guardianIcon : base.icon);
   addJournal(isBoss ? "Страж пробуждён" : "Встреча в темноте", `${state.enemy.name} вступает в бой.`, isBoss ? "☠" : "⚔");
   setCaption(isBoss ? "Страж колодца" : "Враг приближается");
-  playTone(isBoss ? 110 : 165, 0.18);
+  playSound(isBoss ? "boss" : "encounter");
   render();
 }
 
@@ -922,7 +932,7 @@ function attackEnemy(multiplier = 1, focusCost = 0, usedAbility = false) {
   );
   ui.scene.classList.add("hit");
   window.setTimeout(() => ui.scene.classList.remove("hit"), 180);
-  playTone(multiplier > 1 ? 300 : 250, 0.07);
+  playSound(focusCost > 0 ? "heavyAttack" : "attack");
   if (state.enemy.hp <= 0) {
     defeatEnemy();
     return;
@@ -987,7 +997,7 @@ function enemyTurn(guarding = false, advanceCooldown = true) {
     setCaption(dodged ? "Удар прошёл мимо" : "Бой продолжается");
   }
   if (advanceCooldown) state.abilityCooldown = Math.max(0, state.abilityCooldown - 1);
-  playTone(guarding ? 185 : dodged ? 270 : 125, 0.1);
+  playSound(state.gameOver ? "gameOver" : guarding ? "guard" : dodged ? "dodge" : "enemyAttack");
   render();
 }
 
@@ -1037,23 +1047,25 @@ function defeatEnemy() {
     setEvent("СТРАЖ ПОВЕРЖЕН", `Ты получил ${enemy.xp} опыта и ${enemy.gold} монет.${healed ? ` Класс восстановил ${healed} здоровья.` : ""}${bonus ? ` Передышка вернула ${bonus} здоровья.` : ""}${gearMessage} Путь вниз открыт.`, "✧", "ПУТЬ ОТКРЫТ");
     addJournal("Путь открыт", `Страж повержен. Ты готов спуститься на ${state.floor + 1}-й этаж.`, "↓");
     setCaption("Лестница открыта");
-    playTone(560, 0.2);
+    playSound("bossVictory");
   } else {
     const foundPotion = Math.random() < 0.2 && state.potions < getPotionLimit();
     if (foundPotion) state.potions += 1;
     setEvent("ПОБЕДА", `Враг повержен: +${enemy.xp} опыта, +${enemy.gold} монет${foundPotion ? ", +1 зелье" : ""}${healed ? `, восстановлено ${healed} здоровья` : ""}.${gearMessage}`, "✧");
     addJournal("Враг повержен", `+${enemy.xp} опыта и +${enemy.gold} монет.`, "⚔");
     setCaption("В зале тихо");
-    playTone(420, 0.14);
+    playSound("victory");
   }
   render();
 }
 
 function gainXp(amount) {
   state.xp += amount;
+  let leveledUp = false;
   while (state.xp >= XP_PER_LEVEL * state.level) {
     state.xp -= XP_PER_LEVEL * state.level;
     state.level += 1;
+    leveledUp = true;
     state.maxHp += 6;
     state.hp = Math.min(state.maxHp, state.hp + 12);
     state.attack += 1;
@@ -1063,6 +1075,7 @@ function gainXp(amount) {
       addJournal("Новый путь открыт", `На уровне ${state.level} можно выбрать следующий класс.`, "✦");
     }
   }
+  if (leveledUp) playSound("levelUp");
 }
 
 function getAttackPower() {
@@ -1127,7 +1140,7 @@ function drinkPotion(inCombat = false) {
   state.hp += healing;
   setEvent("ЗЕЛЬЕ ВЫПИТО", `Ты восстановил ${healing} здоровья.`, "⚗");
   addJournal("Зелье здоровья", `Восстановлено ${healing} здоровья.`, "⚗");
-  playTone(390, 0.13);
+  playSound("heal");
   if (inCombat && state.enemy) enemyTurn(false);
   else render();
 }
@@ -1143,7 +1156,7 @@ function descend() {
   setEvent("НОВЫЙ ЭТАЖ", "Ты спустился глубже. Новый источник света дрожит впереди.", "↓", `ЭТАЖ ${state.floor}`);
   addJournal("Глубже во мрак", `Начался ${state.floor}-й этаж. Ты нашёл зелье и немного восстановил силы.`, "↓");
   setCaption("Глубина зовёт");
-  playTone(220, 0.13);
+  playSound("descend");
   render();
 }
 
@@ -1176,7 +1189,7 @@ function merchantPurchase(item) {
     setEvent("ПОВЯЗКА НАЛОЖЕНА", `Старая повязка восстановила ${healing} здоровья.`, "✚", "КУПЛЕНО");
     addJournal("Лечение у торговца", `За ${MERCHANT_PRICES.healing} монет ты восстановил ${healing} здоровья.`, "✚");
   }
-  playTone(420, 0.12);
+  playSound("purchase");
   render();
 }
 
@@ -1454,23 +1467,69 @@ function render() {
   if (state.started && state.pendingClassLevels.length) renderSubclassChoices();
 }
 
-function playTone(frequency, duration) {
+const SOUND_EFFECTS = {
+  start: [[220, 0.09], [330, 0.12, 0.08]],
+  attack: [[250, 0.07]],
+  heavyAttack: [[180, 0.12], [300, 0.1, 0.08]],
+  enemyAttack: [[125, 0.1]],
+  guard: [[185, 0.1]],
+  dodge: [[270, 0.08]],
+  encounter: [[165, 0.11], [125, 0.14, 0.08]],
+  boss: [[110, 0.16], [82, 0.2, 0.1]],
+  victory: [[420, 0.1], [560, 0.13, 0.08]],
+  bossVictory: [[420, 0.12], [560, 0.14, 0.1], [700, 0.18, 0.2]],
+  loot: [[490, 0.09], [660, 0.12, 0.08]],
+  heal: [[360, 0.11], [490, 0.16, 0.09]],
+  trap: [[145, 0.12]],
+  rune: [[530, 0.11], [700, 0.16, 0.1]],
+  merchant: [[310, 0.1], [390, 0.12, 0.08]],
+  purchase: [[420, 0.08], [560, 0.12, 0.07]],
+  descend: [[220, 0.1], [165, 0.14, 0.09]],
+  levelUp: [[440, 0.1], [554, 0.12, 0.09], [659, 0.2, 0.18]],
+  gameOver: [[165, 0.16], [110, 0.22, 0.12]],
+  toggle: [[330, 0.1]],
+};
+
+function playSound(effectName) {
   if (!soundEnabled) return;
   try {
-    audioContext ||= new window.AudioContext();
-    const oscillator = audioContext.createOscillator();
-    const gain = audioContext.createGain();
-    oscillator.frequency.value = frequency;
-    oscillator.type = "sine";
-    gain.gain.setValueAtTime(0.045, audioContext.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.001, audioContext.currentTime + duration);
-    oscillator.connect(gain);
-    gain.connect(audioContext.destination);
-    oscillator.start();
-    oscillator.stop(audioContext.currentTime + duration);
+    const AudioContextConstructor = window.AudioContext;
+    if (!AudioContextConstructor) throw new Error("Web Audio API не поддерживается этим браузером.");
+    audioContext ||= new AudioContextConstructor();
+    const play = () => {
+      const startTime = audioContext.currentTime;
+      for (const [frequency, duration, delay = 0] of SOUND_EFFECTS[effectName] || []) {
+        const oscillator = audioContext.createOscillator();
+        const gain = audioContext.createGain();
+        const noteStart = startTime + delay;
+        oscillator.frequency.value = frequency;
+        oscillator.type = "sine";
+        gain.gain.setValueAtTime(0.035, noteStart);
+        gain.gain.exponentialRampToValueAtTime(0.001, noteStart + duration);
+        oscillator.connect(gain);
+        gain.connect(audioContext.destination);
+        oscillator.start(noteStart);
+        oscillator.stop(noteStart + duration);
+      }
+    };
+    if (audioContext.state === "suspended") {
+      audioContext.resume().then(play).catch((error) => {
+        console.warn("Не удалось запустить звуковой эффект.", error);
+      });
+      return;
+    }
+    play();
   } catch (error) {
     console.warn("Звуковой эффект недоступен.", error);
   }
+}
+
+function renderSoundToggle() {
+  const button = $("sound-toggle");
+  button.setAttribute("aria-pressed", String(soundEnabled));
+  button.setAttribute("aria-label", soundEnabled ? "Выключить звук" : "Включить звук");
+  button.title = soundEnabled ? "Звук включён" : "Звук выключен";
+  $("sound-toggle-label").textContent = soundEnabled ? "Звук: вкл." : "Звук: выкл.";
 }
 
 ui.startButton.addEventListener("click", openClassDialog);
@@ -1509,12 +1568,16 @@ ui.inventory.addEventListener("click", (event) => {
 });
 $("sound-toggle").addEventListener("click", (event) => {
   soundEnabled = !soundEnabled;
-  event.currentTarget.setAttribute("aria-pressed", String(soundEnabled));
-  event.currentTarget.setAttribute("aria-label", soundEnabled ? "Звук включён" : "Звук выключен");
-  event.currentTarget.title = soundEnabled ? "Звук включён" : "Звук выключен";
-  if (soundEnabled) playTone(330, 0.12);
+  renderSoundToggle();
+  try {
+    window.localStorage.setItem(SOUND_PREFERENCE_KEY, String(soundEnabled));
+  } catch (error) {
+    console.warn("Не удалось сохранить настройку звука.", error);
+  }
+  if (soundEnabled) playSound("toggle");
 });
 
+renderSoundToggle();
 render();
 window.WellCloudSave.initialize({
   readLocal: readLocalCloudSave,

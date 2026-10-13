@@ -104,8 +104,12 @@
             <button class="action-button secondary-action" id="potion-button" type="button" disabled><span aria-hidden="true">⚗</span> Выпить зелье</button>
           </div>
           <div class="combat-actions" id="combat-actions" hidden>
+            <div class="combat-focus">
+              <div class="stat-label"><span>ЗАПАС СИЛЫ</span><span id="focus-value">0 / 3</span></div>
+              <div class="meter focus-meter" role="progressbar" aria-label="Запас силы" aria-valuemin="0" aria-valuemax="3" aria-valuenow="0"><span id="focus-bar"></span></div>
+            </div>
             <button class="action-button attack-action" id="attack-button" type="button"><span aria-hidden="true">⚔</span> Ударить</button>
-            <button class="action-button heavy-action" id="heavy-button" type="button"><span aria-hidden="true">✦</span> Сильный удар</button>
+            <button class="action-button heavy-action" id="heavy-button" type="button" disabled><span aria-hidden="true">✦</span> Сокрушительный · 2 ✦</button>
             <button class="action-button secondary-action" id="combat-potion-button" type="button"><span aria-hidden="true">⚗</span> Зелье <span id="combat-potion-count">2</span></button>
             <button class="action-button guard-action" id="guard-button" type="button"><span aria-hidden="true">⬡</span> Защищаться</button>
           </div>

@@ -6,6 +6,8 @@ const SAVE_KEY = "well-of-whispers-best-floor";
 const RUN_SAVE_KEY = "well-of-whispers-active-run";
 const SAVE_VERSION = 1;
 const POTION_LIMIT = 4;
+const MAX_FOCUS = 3;
+const HEAVY_ATTACK_COST = 2;
 const MERCHANT_PRICES = { potion: 12, weapon: 18, healing: 8 };
 const FLOOR_THEMES = [
   {
@@ -117,6 +119,9 @@ const ui = {
   potion: $("potion-button"),
   combatActions: $("combat-actions"),
   combatPotionCount: $("combat-potion-count"),
+  focusValue: $("focus-value"),
+  focusBar: $("focus-bar"),
+  heavyButton: $("heavy-button"),
   merchantActions: $("merchant-actions"),
   buyPotion: $("buy-potion-button"),
   buyWeapon: $("buy-weapon-button"),
@@ -152,6 +157,7 @@ function createState() {
     level: 1,
     enemy: null,
     guarding: false,
+    focus: 0,
     merchantAvailable: false,
     waitingToDescend: false,
     caption: "Внизу кто-то ждёт",
@@ -184,6 +190,7 @@ function isValidRun(run) {
     !isIntegerBetween(saved.level, 1, 10000) ||
     !isIntegerBetween(saved.xp, 0, XP_PER_LEVEL * saved.level - 1) ||
     typeof saved.guarding !== "boolean" ||
+    (saved.focus !== undefined && !isIntegerBetween(saved.focus, 0, MAX_FOCUS)) ||
     typeof saved.waitingToDescend !== "boolean" ||
     (saved.merchantAvailable !== undefined && typeof saved.merchantAvailable !== "boolean") ||
     !Array.isArray(saved.journal) || saved.journal.length > 7 ||
@@ -341,6 +348,7 @@ function startGame() {
 function resumeGame() {
   if (!savedRun) return;
   state = savedRun;
+  state.focus ??= 0;
   savedRun = null;
   render();
   playTone(220, 0.09);
@@ -442,11 +450,22 @@ function spawnEnemy(isBoss) {
   render();
 }
 
-function attackEnemy(multiplier = 1, guarding = false) {
-  if (!state.enemy || state.gameOver) return;
+function attackEnemy(multiplier = 1, focusCost = 0) {
+  if (!state.enemy || state.gameOver || state.focus < focusCost) return;
+  if (focusCost > 0) state.focus -= focusCost;
+  else state.focus = Math.min(MAX_FOCUS, state.focus + 1);
   const damage = Math.max(1, Math.floor((state.attack + randomInt(0, 3)) * multiplier));
   state.enemy.hp = Math.max(0, state.enemy.hp - damage);
-  setEvent("УДАР НАНЕСЁН", `Ты наносишь ${damage} урона. У ${state.enemy.name} осталось ${state.enemy.hp} здоровья.`, "⚔");
+  const focusMessage = focusCost > 0
+    ? ` Сокрушительный удар расходует ${focusCost} запаса силы.`
+    : state.focus > 0
+      ? ` Запас силы: ${state.focus} из ${MAX_FOCUS}.`
+      : "";
+  setEvent(
+    focusCost > 0 ? "СОКРУШИТЕЛЬНЫЙ УДАР" : "УДАР НАНЕСЁН",
+    `Ты наносишь ${damage} урона.${focusMessage} У ${state.enemy.name} осталось ${state.enemy.hp} здоровья.`,
+    "⚔",
+  );
   ui.scene.classList.add("hit");
   window.setTimeout(() => ui.scene.classList.remove("hit"), 180);
   playTone(multiplier > 1 ? 300 : 250, 0.07);
@@ -454,10 +473,11 @@ function attackEnemy(multiplier = 1, guarding = false) {
     defeatEnemy();
     return;
   }
-  enemyTurn(guarding);
+  enemyTurn(false);
 }
 
 function enemyTurn(guarding = false) {
+  if (guarding) state.focus = Math.min(MAX_FOCUS, state.focus + 1);
   const rawDamage = randomInt(Math.max(1, state.enemy.damage - 2), state.enemy.damage);
   const damage = Math.max(1, guarding || state.guarding ? Math.ceil(rawDamage * 0.4) : rawDamage);
   state.guarding = false;
@@ -469,7 +489,8 @@ function enemyTurn(guarding = false) {
     addJournal("Спуск прерван", "Темнота сомкнулась вокруг. Но легенда колодца останется.", "☾");
     setCaption("Тишина");
   } else {
-    setEvent("ВРАГ АТАКУЕТ", `${state.enemy.name} наносит ${damage} урона${guarding ? ", но твоя защита смягчает удар" : ""}.`, "⬡");
+    const focusMessage = guarding ? ` Запас силы: ${state.focus} из ${MAX_FOCUS}.` : "";
+    setEvent("ВРАГ АТАКУЕТ", `${state.enemy.name} наносит ${damage} урона${guarding ? ", но твоя защита смягчает удар" : ""}.${focusMessage}`, "⬡");
     setCaption("Бой продолжается");
   }
   playTone(guarding ? 185 : 125, 0.1);
@@ -633,6 +654,13 @@ function render() {
   ui.attack.textContent = `${state.attack}–${state.attack + 3}`;
   ui.gold.textContent = String(state.gold);
   ui.potions.textContent = String(state.potions);
+  ui.focusValue.textContent = `${state.focus} / ${MAX_FOCUS}`;
+  ui.focusBar.style.width = `${(state.focus / MAX_FOCUS) * 100}%`;
+  ui.focusBar.setAttribute("aria-valuenow", String(state.focus));
+  ui.heavyButton.disabled = state.focus < HEAVY_ATTACK_COST;
+  ui.heavyButton.setAttribute("aria-label", state.focus < HEAVY_ATTACK_COST
+    ? `Сокрушительный удар: нужно ${HEAVY_ATTACK_COST} запаса силы, сейчас ${state.focus}`
+    : `Сокрушительный удар: потратить ${HEAVY_ATTACK_COST} запаса силы`);
   ui.best.textContent = bestFloor ? `ЭТАЖ ${bestFloor}` : "—";
   ui.floor.textContent = state.started ? `ЭТАЖ ${state.floor}` : "—";
   ui.floorTitle.textContent = state.started ? `Зал ${state.room || 1} · ${state.enemy ? state.enemy.name : theme.name}` : "Зов из глубины";
@@ -723,7 +751,7 @@ ui.resumeButton.addEventListener("click", resumeGame);
 ui.explore.addEventListener("click", explore);
 ui.potion.addEventListener("click", () => drinkPotion(false));
 $("attack-button").addEventListener("click", () => attackEnemy());
-$("heavy-button").addEventListener("click", () => attackEnemy(1.8));
+$("heavy-button").addEventListener("click", () => attackEnemy(2.2, HEAVY_ATTACK_COST));
 $("combat-potion-button").addEventListener("click", () => drinkPotion(true));
 $("guard-button").addEventListener("click", () => {
   if (state.enemy && !state.gameOver) enemyTurn(true);

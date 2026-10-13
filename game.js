@@ -2866,12 +2866,7 @@ function applyGroupBattleUpdate(battle, userId) {
 
 function createGear(type) {
   const theme = getFloorTheme();
-  const names = {
-    well: { weapon: "Клинок каменного эха", armor: "Плащ колодезного стража" },
-    drowned: { weapon: "Якорный тесак", armor: "Панцирь глубин" },
-    roots: { weapon: "Серп живых корней", armor: "Кора древнего собора" },
-    forge: { weapon: "Молот пепельной кузни", armor: "Кованый доспех" },
-  };
+  const names = window.WellGoldEconomyModel.ORDINARY_GEAR_NAMES;
   const bonus = Math.min(type === "weapon" ? 6 : 4, 1 + Math.floor((state.floor - 1) / 3));
   state.gearSequence += 1;
   return {
@@ -4908,10 +4903,6 @@ function renderTavern() {
     ui.tavernStatus.append(retry);
   }
   ui.tavernGold.textContent = `${tavern.gold} ✦`;
-  const mealButton = $("tavern-buy-meal");
-  mealButton.textContent = `Купить · ${window.WellTavernModel.MEAL_PRICE} зол.`;
-  mealButton.disabled = tavernDialogBusy || !tavernStorageReady || Boolean(tavernStorageError) ||
-    Boolean(pendingTavernState) || tavern.gold < window.WellTavernModel.MEAL_PRICE || tavern.satiety === 100;
   ui.tavernSatiety.textContent = `${tavern.satiety} / 100`;
   ui.tavernSatietyBar.style.width = `${tavern.satiety}%`;
   ui.tavernInjuries.textContent = `${tavern.injuries} / ${window.WellTavernModel.MAX_INJURIES}`;
@@ -5060,8 +5051,6 @@ async function handleTavernAction(action, data = {}) {
     let candidate = window.WellTavernModel.withDefaults(metaProgress.tavern);
     if (action === "eat") {
       candidate = window.WellTavernModel.useRecipe(candidate, data.recipeId, now);
-    } else if (action === "buy-meal") {
-      candidate = window.WellTavernModel.buyMeal(candidate, now);
     } else if (action === "start-job") {
       const kind = data.kind;
       const options = { level: getTavernLevel() };

@@ -5,7 +5,6 @@
 <h1 id="result">RUNNING</h1>
 <pre id="log"></pre>
 <script src="../gold-economy-model.js"></script>
-<script src="../tavern-model.js"></script>
 <script>
 "use strict";
 (async () => {
@@ -24,16 +23,21 @@
     catch (error) { failures.push(`${name}: ${error.stack}`); }
   }
   const economy = window.WellGoldEconomyModel;
-  const tavern = window.WellTavernModel;
   check("ordinary gear prices are bounded; special items are not saleable", () => {
     for (const type of ["weapon", "armor"]) {
       const max = type === "weapon" ? 6 : 4;
-      for (let bonus = 1; bonus <= max; bonus += 1) {
-        assert(economy.gearSalePrice({ type, bonus }) === bonus * 3, "price is not three per bonus");
+      for (const names of Object.values(economy.ORDINARY_GEAR_NAMES)) {
+        const name = names[type];
+        for (let bonus = 1; bonus <= max; bonus += 1) {
+          assert(economy.gearSalePrice({ type, name, bonus }) === bonus * 3, "price is not three per bonus");
+        }
+        for (const bonus of [-1, 0, .5, max + 1, 8, 10, Infinity, NaN]) {
+          assert(economy.gearSalePrice({ type, name, bonus }) === null, "invalid/special bonus has a price");
+        }
       }
-      for (const bonus of [-1, 0, .5, max + 1, 8, 10, Infinity, NaN]) {
-        assert(economy.gearSalePrice({ type, bonus }) === null, "invalid/special bonus has a price");
-      }
+      const name = type === "weapon" ? "Клинок адмов" : "Доспех адмов";
+      assert(economy.gearSalePrice({ type, name, bonus: 3 }) === null, "low-bonus ADM gear has a price");
+      assert(economy.gearSalePrice({ type, name: "Unknown special item", bonus: 1 }) === null, "unknown item sold");
     }
     assert(economy.gearSalePrice({ type: "soul", bonus: 1 }) === null, "soul sale allowed");
     assert(economy.gearSalePrice(null) === null, "missing gear sale allowed");
@@ -45,22 +49,6 @@
     for (const value of [0, -1, 1.5, 1000001, Infinity, NaN]) {
       rejects(() => economy.rubbleEndurance(value), "bad health accepted");
     }
-  });
-  check("meal spends six gold, caps satiety and preserves legacy saves", () => {
-    const old = tavern.createState(1000);
-    old.gold = 12;
-    old.satiety = 95;
-    const migrated = tavern.withDefaults(JSON.parse(JSON.stringify(old)), 1000);
-    assert(migrated.gold === 12 && migrated.satiety === 95, "old save reset");
-    const bought = tavern.buyMeal(migrated, 1001);
-    assert(bought.gold === 6 && bought.satiety === 100 && bought.injuries === old.injuries, "meal result");
-    assert(JSON.stringify(bought.recipes) === JSON.stringify(old.recipes), "meal consumed recipes");
-    assert(old.gold === 12 && old.satiety === 95, "input mutated");
-    rejects(() => tavern.buyMeal(bought, 1002), "full satiety charged");
-    rejects(() => tavern.buyMeal({ ...old, gold: 5 }, 1001), "insufficient gold charged");
-    const hungry = tavern.buyMeal({ ...old, satiety: 100 }, 1000 + tavern.HOUR);
-    assert(hungry.satiety === 100 && hungry.gold === 6, "satiety clock not applied before purchase");
-    assert(tavern.isValidState(bought), "meal save invalid");
   });
   localStorage.clear();
   const frame = document.createElement("iframe");
@@ -174,6 +162,20 @@
     assert(saved().run.state.maxHp === 1000000 && saved().run.state.hp === 1, "extreme bounds");
     assert(app.isValidRun(saved().run), "extreme rubble save invalid");
   });
+  check("low-bonus named ADM equipment cannot be sold through UI or direct action", () => {
+    for (const type of ["weapon", "armor"]) {
+      reset();
+      const gear = giveGear(type);
+      const name = type === "weapon" ? "Клинок адмов" : "Доспех адмов";
+      app.eval("state.inventory[0].name=" + JSON.stringify(name) + "; state.inventory[0].bonus=3;");
+      app.render();
+      assert(app.isValidRun(saved().run), "existing low-bonus ADM save rejected");
+      assert(!doc.querySelector("[data-sell-gear-id]"), "low-bonus ADM sale button visible");
+      app.sellRunGear(gear.id);
+      assert(saved().run.state.gold === 0 && saved().run.state.inventory[0].name === name,
+        "direct action sold ADM gear");
+    }
+  });
   check("gold pot retains cache range, mimic gate and room/quest behavior", () => {
     for (const [sample, expected] of [[0, 6], [.999999, 13]]) {
       reset();
@@ -206,35 +208,14 @@
   app.sellRunGear(soldBeforeReload.id);
   app.eval("savedRun=readSavedRun(); state=createState();");
   app.render();
-  const town = tavern.createState(Date.now());
-  town.gold = 12;
-  town.revision = saved().meta.tavern.revision + 1;
-  app.eval("metaProgress.tavern=" + JSON.stringify(town) + ";");
-  await app.persistTavernToIndexedDb(town);
-  app.persistMetaProgress();
-  doc.querySelector('[data-district="port"]').click();
-  doc.querySelector('[data-city-action="tavern"]').click();
-  async function waitFor(predicate) {
-    for (let attempt = 0; attempt < 200; attempt += 1) {
-      if (predicate()) return;
-      await new Promise((resolve) => setTimeout(resolve, 40));
-    }
-    throw new Error("Tavern UI timed out");
-  }
-  await waitFor(() => !doc.getElementById("tavern-buy-meal").disabled);
-  doc.getElementById("tavern-buy-meal").click();
-  doc.getElementById("tavern-buy-meal").click();
-  await waitFor(() => saved().meta.tavern.gold === 6);
-  check("food button commits through existing durable Tavern transaction", () => {
-    assert(saved().meta.tavern.satiety === 70, "meal UI did not feed");
-    assert(JSON.parse(localStorage.getItem("well-of-whispers-camp-progress")).tavern.gold === 6, "meal not saved");
-  });
+  const tavernBeforeReload = saved().meta.tavern;
   const reload = new Promise((resolve) => frame.addEventListener("load", resolve, { once: true }));
   frame.src = "../index.html?gold-economy=reload";
   await reload;
-  check("reload preserves meal and run sale state without migration bonuses", () => {
+  check("reload preserves run sale without migration bonuses or Tavern changes", () => {
     const restored = frame.contentWindow.getCloudSaveSnapshot();
-    assert(restored.meta.tavern.gold === 6 && restored.meta.tavern.satiety === 70, "meal lost on reload");
+    assert(restored.meta.tavern.gold === tavernBeforeReload.gold &&
+      restored.meta.tavern.satiety === tavernBeforeReload.satiety, "gold changes affected Tavern");
     assert(restored.run.state.gold === 3 && restored.run.state.inventory.length === 0, "sale duplicated/lost on reload");
     assert(frame.contentWindow.isValidMetaProgress(restored.meta), "old-compatible meta rejected");
   });

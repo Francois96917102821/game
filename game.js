@@ -532,7 +532,7 @@ function isValidRun(run) {
     (saved.focus !== undefined && !isIntegerBetween(saved.focus, 0, MAX_FOCUS)) ||
     (saved.inventory !== undefined && (
       !Array.isArray(saved.inventory) || saved.inventory.length > MAX_GEAR ||
-      !saved.inventory.every(isValidGear)
+      !saved.inventory.every((item) => isValidGear(item))
     )) ||
     (saved.equipment !== undefined && (
       !saved.equipment || typeof saved.equipment !== "object" ||

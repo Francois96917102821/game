@@ -5,7 +5,10 @@
   const ESSENCE_PROGRESS_PREFIX = "well-of-whispers-group-essence-progress:";
   const SHARE_REMAINDER_PREFIX = "well-of-whispers-group-share-remainder:";
   const PENDING_SHARES_PREFIX = "well-of-whispers-pending-group-shares:";
+  const PENDING_INBOX_PREFIX = "well-of-whispers-pending-group-inbox:";
+  const HANDLED_HINTS_PREFIX = "well-of-whispers-handled-group-hints:";
   const HEARTBEAT_INTERVAL = 25_000;
+  const PRESENCE_TTL = 75_000;
   const $ = (id) => document.getElementById(id);
   const ui = {
     open: $("group-open-button"),
@@ -35,12 +38,14 @@
   let playerState = { level: 1, inDungeon: false };
   let busy = false;
   let lastHeartbeatAt = 0;
+  let groupStateReceivedAt = 0;
   let heartbeatInFlight = false;
   let heartbeatRequested = false;
   let lastHeartbeatLevel = null;
   let lastHeartbeatDungeon = null;
-  let sharesInFlight = false;
-  let sharesFlushRequested = false;
+  const sharesInFlight = new Set();
+  const sharesFlushRequested = new Set();
+  const inboxInFlight = new Map();
   let lastPartnerActivity = null;
   let toastTimer = 0;
 
@@ -80,8 +85,12 @@
     return Math.max(...levels) / Math.min(...levels);
   }
 
+  function hasFreshGroupState() {
+    return Boolean(group && groupStateReceivedAt && Date.now() - groupStateReceivedAt < PRESENCE_TTL);
+  }
+
   function isGroupActive() {
-    if (!user || !group || group.members?.length !== 2 || groupRatio() >= 2) return false;
+    if (!user || !group || !hasFreshGroupState() || group.members?.length !== 2 || groupRatio() >= 3) return false;
     const own = group.members.find((member) => member.user_id === user.id);
     return Boolean(own?.in_dungeon && playerState.inDungeon && group.members.every((member) => member.in_dungeon));
   }
@@ -120,6 +129,7 @@
       ui.activity.textContent = "Создай группу или введи код приглашения. В группе может быть только два игрока.";
     } else {
       for (const member of group.members || []) {
+        const inDungeon = hasFreshGroupState() && member.in_dungeon;
         const row = document.createElement("div");
         row.className = "group-member";
         const identity = document.createElement("div");
@@ -129,8 +139,8 @@
         level.textContent = `Уровень ${member.level}`;
         identity.append(name, level);
         const presence = document.createElement("span");
-        presence.className = `group-presence${member.in_dungeon ? " present" : ""}`;
-        presence.textContent = member.in_dungeon ? "В подземелье" : "Не в игре";
+        presence.className = `group-presence${inDungeon ? " present" : ""}`;
+        presence.textContent = inDungeon ? "В подземелье" : "Не в игре";
         row.append(identity, presence);
         ui.members.append(row);
       }
@@ -139,9 +149,11 @@
       ui.activity.textContent = active
         ? "Вы оба в подземелье: групповые эффекты действуют."
         : partner
-          ? groupRatio() >= 2
-            ? "Разница уровней велика: групповые эффекты временно отключены."
-            : "Бонусы появятся, когда вы оба будете в подземелье."
+          ? !hasFreshGroupState()
+            ? "Нет свежего статуса группы: эффекты временно отключены."
+            : groupRatio() >= 3
+              ? "Разница уровней велика: групповые эффекты временно отключены."
+              : "Бонусы появятся, когда вы оба будете в подземелье."
           : invite
             ? "Пригласи второго игрока по одноразовому коду."
             : "Создай приглашение для второго игрока.";
@@ -160,32 +172,138 @@
     return window.WellCloudSave.groupRpc(name, args);
   }
 
+  function isCurrentContext(userId, groupId) {
+    return user?.id === userId && group?.id === groupId;
+  }
+
+  function contextKey(userId, groupId) {
+    return JSON.stringify([userId, groupId]);
+  }
+
+  function pendingInboxKey(userId) {
+    return `${PENDING_INBOX_PREFIX}${userId}`;
+  }
+
+  function loadPendingInbox(userId) {
+    try {
+      const saved = JSON.parse(window.localStorage.getItem(pendingInboxKey(userId)) || "[]");
+      if (!Array.isArray(saved)) throw new Error("Очередь уведомлений должна быть массивом.");
+      return saved.filter((update) =>
+        update && typeof update.id === "string" && /^\d{1,19}$/.test(update.id) &&
+        typeof update.group_id === "string" &&
+        ["gold", "essence", "hint_secret", "hint_rare"].includes(update.kind) &&
+        Number.isInteger(update.amount) && update.amount >= 0 &&
+        Number.isInteger(update.floor) && update.floor >= 0
+      );
+    } catch (error) {
+      console.error("Не удалось восстановить очередь групповых обновлений.", error);
+      return null;
+    }
+  }
+
+  function savePendingInbox(userId, updates) {
+    try {
+      window.localStorage.setItem(pendingInboxKey(userId), JSON.stringify(updates));
+      return true;
+    } catch (error) {
+      console.error("Не удалось сохранить очередь групповых обновлений.", error);
+      setStatus("Не удалось надёжно сохранить групповые обновления; серверная очередь оставлена без подтверждения.", true);
+      return false;
+    }
+  }
+
+  function markHintHandled(userId, updateId) {
+    const key = `${HANDLED_HINTS_PREFIX}${userId}`;
+    try {
+      const saved = JSON.parse(window.localStorage.getItem(key) || "[]");
+      if (!Array.isArray(saved)) throw new Error("Список обработанных подсказок повреждён.");
+      if (saved.includes(updateId)) return false;
+      window.localStorage.setItem(key, JSON.stringify([...saved, updateId]));
+      return true;
+    } catch (error) {
+      console.error("Не удалось сохранить обработанную групповую подсказку.", error);
+      setStatus("Не удалось сохранить групповую подсказку; она останется в очереди.", true);
+      return null;
+    }
+  }
+
+  function applyInboxUpdate(userId, update) {
+    if (user?.id !== userId) return false;
+    if (update.kind === "gold" && Number.isInteger(update.amount) && update.amount > 0) {
+      return options.onSharedGold(update.amount, update.id) === true;
+    }
+    if (update.kind === "essence" && Number.isInteger(update.amount) && update.amount > 0) {
+      return options.onSharedEssence(update.amount, update.id) === true;
+    }
+    if (update.kind === "hint_secret" || update.kind === "hint_rare") {
+      const firstDelivery = markHintHandled(userId, update.id);
+      if (firstDelivery === null) return false;
+      if (firstDelivery) {
+        showNotice(update.kind === "hint_secret"
+          ? `Сопартиец нашёл тайный зал на этаже ${update.floor}. Проверь этот этаж.`
+          : `Сопартиец заметил редкое событие на этаже ${update.floor}.`);
+      }
+      return true;
+    }
+    return false;
+  }
+
   async function consumeInbox() {
-    if (!playerState.inDungeon || !group) return;
-    const updates = await rpc("consume_player_group_inbox");
-    if (!Array.isArray(updates)) throw new Error("Сервер вернул неверный формат уведомлений группы.");
-    let earnedGold = 0;
-    let earnedEssence = 0;
-    const notices = [];
-    for (const update of updates) {
-      if (update.kind === "gold" && Number.isInteger(update.amount) && update.amount > 0) {
-        earnedGold += update.amount;
-      } else if (update.kind === "essence" && Number.isInteger(update.amount) && update.amount > 0) {
-        earnedEssence += update.amount;
-      } else if (update.kind === "hint_secret" || update.kind === "hint_rare") {
-        notices.push(
-          update.kind === "hint_secret"
-            ? `Сопартиец нашёл тайный зал на этаже ${update.floor}. Проверь этот этаж.`
-            : `Сопартиец заметил редкое событие на этаже ${update.floor}.`
-        );
+    if (!playerState.inDungeon || !group || !user) return;
+    const userId = user.id;
+    const groupId = group.id;
+    const key = contextKey(userId, groupId);
+    if (inboxInFlight.has(key)) {
+      inboxInFlight.set(key, true);
+      return;
+    }
+    inboxInFlight.set(key, false);
+    try {
+      let pending = loadPendingInbox(userId);
+      if (!pending) throw new Error("Локальная очередь групповых обновлений недоступна.");
+
+      let readError = null;
+      try {
+        const updates = await rpc("consume_player_group_inbox");
+        if (!isCurrentContext(userId, groupId)) return;
+        if (!Array.isArray(updates) || updates.some((update) =>
+          !update || typeof update.id !== "string" || update.group_id !== groupId
+        )) {
+          throw new Error("Сервер вернул неверный формат уведомлений группы.");
+        }
+        const byId = new Map(pending.map((update) => [update.id, update]));
+        for (const update of updates) byId.set(update.id, update);
+        pending = [...byId.values()];
+        if (!savePendingInbox(userId, pending)) return;
+      } catch (error) {
+        readError = error;
+      }
+
+      const acknowledgedIds = [];
+      const remaining = pending.slice(100);
+      for (const update of pending.slice(0, 100)) {
+        if (!isCurrentContext(userId, groupId)) return;
+        if (applyInboxUpdate(userId, update)) acknowledgedIds.push(update.id);
+        else remaining.push(update);
+      }
+      if (acknowledgedIds.length) {
+        const result = await rpc("ack_player_group_inbox", { p_ids: acknowledgedIds });
+        if (!isCurrentContext(userId, groupId)) return;
+        if (!Number.isInteger(result?.acknowledged) || result.acknowledged < 0) {
+          throw new Error("Сервер вернул неверное подтверждение групповых обновлений.");
+        }
+        if (!savePendingInbox(userId, remaining)) return;
+      } else if (remaining.length !== pending.length) {
+        if (!savePendingInbox(userId, remaining)) return;
+      }
+      if (readError && user?.id === userId) throw readError;
+    } finally {
+      const requested = inboxInFlight.get(key);
+      inboxInFlight.delete(key);
+      if (requested && isCurrentContext(userId, groupId)) {
+        window.setTimeout(consumeInbox, 0);
       }
     }
-    if (earnedGold) options.onSharedGold(earnedGold);
-    if (earnedEssence) options.onSharedEssence(earnedEssence);
-    if (earnedGold || earnedEssence) {
-      showNotice(`Сопартиец поделился добычей: ${earnedGold ? `${earnedGold} монет` : ""}${earnedGold && earnedEssence ? " и " : ""}${earnedEssence ? `${earnedEssence} осколков` : ""}.`);
-    }
-    for (const message of notices) showNotice(message);
   }
 
   async function heartbeat() {
@@ -210,6 +328,7 @@
       const previousGroup = group;
       const previousPartnerActive = lastPartnerActivity;
       group = result?.group || null;
+      groupStateReceivedAt = group ? Date.now() : 0;
       invite = result?.invite || null;
       if (!group) invite = null;
       const partner = group?.members?.find((member) => member.user_id !== user.id);
@@ -236,6 +355,7 @@
     } catch (error) {
       if (user?.id === userId) {
         setStatus(`Не удалось обновить группу: ${friendlyError(error)}`, true);
+        render();
         console.error("Не удалось обновить статус группы игроков.", error);
       }
     } finally {
@@ -270,6 +390,7 @@
         p_level: playerState.level,
       });
       group = result?.group || null;
+      groupStateReceivedAt = group ? Date.now() : 0;
       invite = result?.invite_code ? { invite_code: result.invite_code, expires_at: result.expires_at } : null;
       render();
     }, "Группа создана. Передай сопартийцу одноразовый код приглашения.");
@@ -291,6 +412,7 @@
         p_level: playerState.level,
       });
       group = result || null;
+      groupStateReceivedAt = group ? Date.now() : 0;
       invite = null;
       ui.acceptCode.value = "";
       render();
@@ -304,6 +426,7 @@
       await rpc("dissolve_player_group");
       const pendingCount = refundPendingShares(group.id);
       group = null;
+      groupStateReceivedAt = 0;
       invite = null;
       lastPartnerActivity = null;
       if (pendingCount) setStatus("Группа распущена; невыплаченную сопартийцу долю вернул себе.");
@@ -396,27 +519,32 @@
 
   async function flushPendingShares() {
     if (!isGroupActive()) return;
-    if (sharesInFlight) {
-      sharesFlushRequested = true;
+    const userId = user.id;
+    const groupId = group.id;
+    const key = contextKey(userId, groupId);
+    if (sharesInFlight.has(key)) {
+      sharesFlushRequested.add(key);
       return;
     }
-    sharesInFlight = true;
+    sharesInFlight.add(key);
     try {
       const pending = loadPendingShares();
       for (const share of pending) {
-        if (share.groupId !== group.id) continue;
+        if (!isCurrentContext(userId, groupId)) return;
+        if (share.groupId !== groupId) continue;
         try {
           const result = await rpc("share_player_group_reward", {
             p_kind: share.kind,
             p_amount: share.amount,
             p_request_id: share.requestId,
           });
+          if (!isCurrentContext(userId, groupId)) return;
           if (result?.shared) {
             savePendingShares(loadPendingShares().filter((candidate) => candidate.requestId !== share.requestId));
             continue;
           }
-          const rejected = loadPendingShares().filter((candidate) => candidate.groupId === group.id);
-          savePendingShares(loadPendingShares().filter((candidate) => candidate.groupId !== group.id));
+          const rejected = loadPendingShares().filter((candidate) => candidate.groupId === groupId);
+          savePendingShares(loadPendingShares().filter((candidate) => candidate.groupId !== groupId));
           for (const pendingShare of rejected) {
             options.onUnsharedReward(pendingShare.kind, pendingShare.fallback || 0);
           }
@@ -426,15 +554,16 @@
           render();
           break;
         } catch (error) {
-          setStatus(`Не удалось передать долю добычи сопартийцу: ${friendlyError(error)}`, true);
-          console.error("Не удалось передать групповую добычу.", error);
+          if (isCurrentContext(userId, groupId)) {
+            setStatus(`Не удалось передать долю добычи сопартийцу: ${friendlyError(error)}`, true);
+            console.error("Не удалось передать групповую добычу.", error);
+          }
           break;
         }
       }
     } finally {
-      sharesInFlight = false;
-      if (sharesFlushRequested) {
-        sharesFlushRequested = false;
+      sharesInFlight.delete(key);
+      if (sharesFlushRequested.delete(key) && isCurrentContext(userId, groupId)) {
         window.setTimeout(flushPendingShares, 0);
       }
     }
@@ -513,6 +642,7 @@
       group = null;
       invite = null;
       lastHeartbeatAt = 0;
+      groupStateReceivedAt = 0;
       lastHeartbeatLevel = null;
       lastHeartbeatDungeon = null;
       lastPartnerActivity = null;

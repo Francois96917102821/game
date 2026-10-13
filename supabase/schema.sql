@@ -398,6 +398,8 @@ begin
 end;
 $$;
 
+-- The browser computes bonuses and level shares; this RPC validates eligibility
+-- and delivers the client-supplied amount, not a server-authoritative reward.
 create or replace function public.share_player_group_reward(p_kind text, p_amount integer, p_request_id uuid)
 returns jsonb
 language plpgsql
@@ -433,7 +435,7 @@ begin
   into v_member_count, v_min_level, v_max_level
   from public.player_group_members
   where group_id = v_group_id and in_dungeon and heartbeat_at > now() - interval '75 seconds';
-  if v_member_count <> 2 or v_max_level::numeric / v_min_level >= 2 then
+  if v_member_count <> 2 or v_max_level::numeric / v_min_level >= 3 then
     return jsonb_build_object('shared', false);
   end if;
   select user_id into v_recipient_id
@@ -476,7 +478,7 @@ begin
   into v_member_count, v_min_level, v_max_level
   from public.player_group_members
   where group_id = v_group_id and in_dungeon and heartbeat_at > now() - interval '75 seconds';
-  if v_member_count <> 2 or v_max_level::numeric / v_min_level >= 2 then
+  if v_member_count <> 2 or v_max_level::numeric / v_min_level >= 3 then
     return jsonb_build_object('sent', false);
   end if;
   select user_id into v_recipient_id
@@ -505,15 +507,53 @@ begin
     return '[]'::jsonb;
   end if;
 
-  with claimed as (
-    delete from public.player_group_inbox where recipient_id = v_user_id
-    returning kind, amount, floor, created_at
-  )
   select coalesce(jsonb_agg(jsonb_build_object(
-    'kind', kind, 'amount', amount, 'floor', floor, 'created_at', created_at
-  )), '[]'::jsonb)
-  into v_updates from claimed;
+    'id', inbox.id::text, 'group_id', inbox.group_id::text, 'kind', inbox.kind,
+    'amount', inbox.amount, 'floor', inbox.floor, 'created_at', inbox.created_at
+    ) order by inbox.id), '[]'::jsonb)
+  into v_updates
+  from (
+    select id, group_id, kind, amount, floor, created_at
+    from public.player_group_inbox
+    where recipient_id = v_user_id
+    order by id
+    limit 100
+  ) as inbox;
   return v_updates;
+end;
+$$;
+
+create or replace function public.ack_player_group_inbox(p_ids text[])
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+set row_security = off
+as $$
+declare
+  v_user_id uuid := (select auth.uid());
+  v_deleted integer;
+begin
+  if v_user_id is null or not exists (
+    select 1 from public.player_group_members
+    where user_id = v_user_id and in_dungeon and heartbeat_at > now() - interval '75 seconds'
+  ) then
+    return jsonb_build_object('acknowledged', 0);
+  end if;
+  if p_ids is null or cardinality(p_ids) = 0 then
+    return jsonb_build_object('acknowledged', 0);
+  end if;
+  if cardinality(p_ids) > 100 or exists (
+    select 1 from unnest(p_ids) as requested(id)
+    where id is null or id !~ '^[0-9]{1,19}$'
+  ) then
+    raise exception 'Идентификаторы уведомлений недопустимы.';
+  end if;
+
+  delete from public.player_group_inbox
+  where recipient_id = v_user_id and id::text = any(p_ids);
+  get diagnostics v_deleted = row_count;
+  return jsonb_build_object('acknowledged', v_deleted);
 end;
 $$;
 
@@ -525,6 +565,7 @@ revoke all on function public.heartbeat_player_group(text, integer, boolean) fro
 revoke all on function public.share_player_group_reward(text, integer, uuid) from public, anon, authenticated;
 revoke all on function public.send_player_group_hint(text, integer) from public, anon, authenticated;
 revoke all on function public.consume_player_group_inbox() from public, anon, authenticated;
+revoke all on function public.ack_player_group_inbox(text[]) from public, anon, authenticated;
 grant execute on function public.create_player_group(text, integer) to authenticated;
 grant execute on function public.create_player_group_invite() to authenticated;
 grant execute on function public.accept_player_group_invite(text, text, integer) to authenticated;
@@ -533,3 +574,4 @@ grant execute on function public.heartbeat_player_group(text, integer, boolean) 
 grant execute on function public.share_player_group_reward(text, integer, uuid) to authenticated;
 grant execute on function public.send_player_group_hint(text, integer) to authenticated;
 grant execute on function public.consume_player_group_inbox() to authenticated;
+grant execute on function public.ack_player_group_inbox(text[]) to authenticated;

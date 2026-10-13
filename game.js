@@ -509,6 +509,7 @@ function createState() {
     attack: 5,
     potions: 2,
     gold: 0,
+    groupInboxReceipts: [],
     xp: 0,
     level: 1,
     classId: null,
@@ -553,7 +554,16 @@ function createMetaProgress() {
     upgrades: { vitality: 0, power: 0, supplies: 0 },
     bossesDefeated: 0,
     secretsFound: [],
+    groupInboxReceipts: [],
   };
+}
+
+function isValidInboxReceipts(receipts) {
+  return receipts === undefined || (
+    Array.isArray(receipts) && receipts.length <= 100000 &&
+    receipts.every((id) => typeof id === "string" && /^\d{1,19}$/.test(id)) &&
+    new Set(receipts).size === receipts.length
+  );
 }
 
 function isValidMetaProgress(progress) {
@@ -567,7 +577,8 @@ function isValidMetaProgress(progress) {
     Array.isArray(progress.secretsFound) &&
     progress.secretsFound.length <= SECRET_LORE.length &&
     progress.secretsFound.every((id) => SECRET_LORE.some((secret) => secret.id === id)) &&
-    new Set(progress.secretsFound).size === progress.secretsFound.length
+    new Set(progress.secretsFound).size === progress.secretsFound.length &&
+    isValidInboxReceipts(progress.groupInboxReceipts)
   );
 }
 
@@ -594,16 +605,23 @@ function mergeMetaProgress(left, right) {
     ])),
     bossesDefeated: Math.max(first.bossesDefeated, second.bossesDefeated),
     secretsFound: [...new Set([...first.secretsFound, ...second.secretsFound])],
+    groupInboxReceipts: [...new Set([
+      ...(first.groupInboxReceipts || []),
+      ...(second.groupInboxReceipts || []),
+    ])],
   };
 }
 
 function persistMetaProgress() {
+  let persisted = false;
   try {
     window.localStorage.setItem(META_SAVE_KEY, JSON.stringify(metaProgress));
+    persisted = true;
   } catch (error) {
     console.warn("Не удалось сохранить развитие лагеря.", error);
   }
-  if (window.WellCloudSave) window.WellCloudSave.scheduleSave(getCloudSaveSnapshot());
+  if (persisted && window.WellCloudSave) window.WellCloudSave.scheduleSave(getCloudSaveSnapshot());
+  return persisted;
 }
 
 function isValidRun(run) {
@@ -619,6 +637,7 @@ function isValidRun(run) {
     !isIntegerBetween(saved.attack, 1, 1000000) ||
     !isIntegerBetween(saved.potions, 0, 5) ||
     !isIntegerBetween(saved.gold, 0, 1000000000) ||
+    !isValidInboxReceipts(saved.groupInboxReceipts) ||
     !isIntegerBetween(saved.level, 1, 10000) ||
     !isIntegerBetween(saved.xp, 0, XP_PER_LEVEL * saved.level - 1) ||
     (saved.classId !== undefined && saved.classId !== null &&
@@ -1160,6 +1179,7 @@ function resumeGame() {
     savedQuests.get(quest.id) || { id: quest.id, progress: 0, completed: false }
   );
   if (state.extraLifeUsed === undefined) state.extraLifeUsed = false;
+  if (state.groupInboxReceipts === undefined) state.groupInboxReceipts = [];
   if (migratedClass && state.level >= CLASS_UNLOCK_LEVELS.advanced) state.pendingClassLevels = [CLASS_UNLOCK_LEVELS.advanced];
   selectedClassId = state.classId;
   savedRun = null;
@@ -1267,6 +1287,43 @@ function addGold(amount) {
     : amount;
   state.gold = Math.min(1000000000, state.gold + reward);
   return reward;
+}
+
+function applySharedGoldReward(amount, receiptId) {
+  if (!state.started || state.gameOver) return false;
+  if (state.groupInboxReceipts?.includes(receiptId)) return true;
+  if ((state.groupInboxReceipts || []).length >= 100000) return false;
+  const nextState = {
+    ...state,
+    gold: Math.min(1000000000, state.gold + amount),
+    groupInboxReceipts: [...(state.groupInboxReceipts || []), receiptId],
+  };
+  try {
+    window.localStorage.setItem(RUN_SAVE_KEY, JSON.stringify({ version: SAVE_VERSION, state: nextState }));
+  } catch (error) {
+    console.warn("Не удалось надёжно сохранить групповую награду монетами.", error);
+    return false;
+  }
+  state = nextState;
+  render();
+  return true;
+}
+
+function applySharedEssenceReward(amount, receiptId) {
+  if (metaProgress.groupInboxReceipts?.includes(receiptId)) return true;
+  if ((metaProgress.groupInboxReceipts || []).length >= 100000) return false;
+  const previous = metaProgress;
+  metaProgress = {
+    ...metaProgress,
+    essence: Math.min(1000000000, metaProgress.essence + amount),
+    groupInboxReceipts: [...(metaProgress.groupInboxReceipts || []), receiptId],
+  };
+  if (!persistMetaProgress()) {
+    metaProgress = previous;
+    return false;
+  }
+  render();
+  return true;
 }
 
 function addEssence(amount) {
@@ -2374,16 +2431,8 @@ window.WellCloudSave.initialize({
 window.WellPlayerGroups.initialize({
   getLevel: () => state.level,
   isInDungeon: () => state.started && !state.gameOver,
-  onSharedGold: (amount) => {
-    if (!state.started || state.gameOver) return;
-    state.gold = Math.min(1000000000, state.gold + amount);
-    render();
-  },
-  onSharedEssence: (amount) => {
-    metaProgress.essence = Math.min(1000000000, metaProgress.essence + amount);
-    persistMetaProgress();
-    render();
-  },
+  onSharedGold: applySharedGoldReward,
+  onSharedEssence: applySharedEssenceReward,
   onUnsharedReward: (kind, amount) => {
     if (kind === "gold" && state.started && !state.gameOver) {
       state.gold = Math.min(1000000000, state.gold + amount);

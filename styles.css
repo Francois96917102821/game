@@ -50,6 +50,8 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--gold-light); ou
 .cloud-status-button:hover { border-color: #78865f; background: #242b20; }
 .cloud-status-icon { color: var(--gold-light); font-size: 15px; }
 .cloud-status-button > span:last-child { overflow: hidden; font: 7px "DM Mono", monospace; letter-spacing: .05em; text-overflow: ellipsis; white-space: nowrap; }
+.group-open-button { border: 1px solid #625237; border-radius: 18px; padding: 8px 12px; background: #211f18; color: var(--gold-light); cursor: pointer; font-size: 10px; }
+.group-open-button:hover { border-color: #b08e54; background: #30291d; }
 
 .game-layout { display: grid; grid-template-columns: minmax(205px, 250px) minmax(440px, 1fr) minmax(205px, 250px); gap: 20px; padding: 27px 0 24px; align-items: stretch; }
 .side-panel, .adventure-panel { border: 1px solid var(--border); border-radius: 12px; background: linear-gradient(145deg, rgba(255,255,255,.018), transparent 55%), var(--panel); }
@@ -291,6 +293,32 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--gold-light); ou
 .cloud-account > p { color: #aeb2a5; font-size: 11px; }
 .cloud-account > p strong { color: var(--gold-light); }
 .cloud-history { display: grid; gap: 8px; margin-top: 15px; padding-top: 13px; border-top: 1px solid #34382e; }
+.group-dialog { width: min(500px, calc(100% - 28px)); }
+.group-status-message { min-height: 35px; margin: 12px 0; padding: 9px 10px; border: 1px solid #34382e; border-radius: 6px; background: #1a1e18; color: #bfc6ac; font-size: 10px; line-height: 1.45; }
+.group-status-message.group-error { border-color: #764b40; color: #e4a192; }
+.group-panel { display: grid; gap: 10px; }
+.group-panel[hidden] { display: none; }
+.group-panel label { color: #c6c8bc; font-size: 10px; }
+.group-panel input { width: 100%; min-height: 39px; border: 1px solid #414638; border-radius: 5px; padding: 8px 10px; background: #12150f; color: var(--text); font: inherit; font-size: 12px; }
+.group-panel input:focus-visible { outline: 2px solid var(--gold-light); outline-offset: 2px; }
+.group-panel input:disabled, .group-panel button:disabled { opacity: .45; cursor: not-allowed; }
+.group-invite-form { display: grid; gap: 7px; margin-top: 7px; padding-top: 11px; border-top: 1px solid #34382e; }
+.group-invite-form > small { color: #9b9d8f; font-size: 9px; }
+.group-code-row { display: grid; grid-template-columns: 1fr auto; gap: 7px; }
+.group-code-row input { color: var(--gold-light); font: 700 15px "DM Mono", monospace; letter-spacing: .18em; text-align: center; }
+.group-members { display: grid; gap: 7px; }
+.group-member { display: flex; justify-content: space-between; align-items: center; gap: 9px; padding: 10px; border: 1px solid #34382e; border-radius: 6px; background: #1a1e18; }
+.group-member > div { display: grid; gap: 4px; }
+.group-member strong { color: #dedfd2; font-size: 11px; }
+.group-member > div span, .group-presence { color: #969b8b; font-size: 9px; }
+.group-presence { white-space: nowrap; }
+.group-presence.present { color: #a8bd8a; }
+.group-activity { margin: 0; color: #bfc6ac; font-size: 10px; line-height: 1.45; }
+.group-disband-button { border-color: #63443c; color: #d79585; }
+.group-notification-setting { display: flex; align-items: center; gap: 8px; margin-top: 15px; padding-top: 12px; border-top: 1px solid #34382e; color: #b7bbac; font-size: 10px; cursor: pointer; }
+.group-notification-setting input { accent-color: #b79b65; }
+.group-notice { position: fixed; z-index: 20; right: 20px; bottom: 20px; width: min(350px, calc(100% - 32px)); padding: 13px 15px; border: 1px solid #625237; border-radius: 8px; background: #211f18; color: #e8dfc6; font-size: 11px; line-height: 1.45; box-shadow: 0 12px 35px rgba(0,0,0,.55); }
+.group-notice[hidden] { display: none; }
 .cloud-conflict-dialog { width: min(500px, calc(100% - 28px)); }
 .cloud-conflict-note { padding: 10px; border: 1px solid #635337; border-radius: 6px; background: #262317; color: #e6d19f; font-size: 10px; line-height: 1.45; }
 .dialog-close-form { position: absolute; top: 12px; right: 12px; }
@@ -331,11 +359,12 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--gold-light); ou
 }
 @media (max-width: 700px) {
   .game-shell { padding: 0 12px; }
-  .topbar { height: 65px; }
+  .topbar { height: 65px; gap: 5px; }
   .top-note { font-size: 8px; letter-spacing: .06em; }
   .top-note { display: none; }
   .cloud-status-button { gap: 4px; max-width: 152px; padding: 7px 8px; }
   .cloud-status-button > span:last-child { max-width: 91px; font-size: 6px; }
+  .group-open-button { padding: 7px 9px; font-size: 9px; white-space: nowrap; }
   .sound-toggle { gap: 4px; min-height: 36px; padding: 6px 8px; font-size: 10px; white-space: nowrap; }
   .brand-mark { width: 32px; height: 32px; font-size: 21px; }
   .brand strong { font-size: 13px; }
@@ -388,6 +417,10 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--gold-light); ou
 }
 @media (max-width: 380px) {
   .top-note { max-width: 115px; line-height: 1.4; }
+  .cloud-status-button { max-width: 98px; }
+  .cloud-status-button > span:last-child { max-width: 55px; }
+  .sound-toggle { width: 36px; padding-inline: 0; }
+  #sound-toggle-label { display: none; }
   .well-scene { height: 245px; }
   .combat-actions { gap: 7px; }
   .merchant-actions { gap: 7px; }

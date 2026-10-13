@@ -20,6 +20,7 @@
           <span class="cloud-status-icon" aria-hidden="true">☁</span>
           <span id="cloud-header-status" aria-live="polite">ЛОКАЛЬНОЕ СОХРАНЕНИЕ</span>
         </button>
+        <button class="group-open-button" id="group-open-button" type="button" aria-haspopup="dialog" aria-controls="group-dialog">Группа</button>
         <button class="sound-toggle" id="sound-toggle" type="button" aria-label="Включить звук" aria-pressed="false" title="Звук выключен">
           <span aria-hidden="true">♫</span><span id="sound-toggle-label">Звук: выкл.</span>
         </button>
@@ -233,8 +234,47 @@
         <button class="primary-button" id="cloud-use-remote-button" type="button">Загрузить облачный вариант</button>
       </div>
     </dialog>
+    <dialog class="game-dialog group-dialog" id="group-dialog" aria-labelledby="group-dialog-title">
+      <form method="dialog" class="dialog-close-form">
+        <button class="dialog-close" aria-label="Закрыть группы игроков">×</button>
+      </form>
+      <span class="eyebrow">ПУТЬ ВДВОЁМ</span>
+      <h2 id="group-dialog-title">Группа игроков</h2>
+      <p class="dialog-intro">Собери группу из двух искателей. Уровни при вступлении должны отличаться менее чем вдвое; группа распустится, если разница достигнет трёх раз.</p>
+      <p class="group-status-message" id="group-status" role="status" aria-live="polite">Группы доступны после входа в облачный аккаунт.</p>
+      <section class="group-panel" id="group-empty-panel">
+        <label for="group-nickname">Твой ник</label>
+        <input id="group-nickname" maxlength="24" autocomplete="nickname" placeholder="Искатель">
+        <button class="primary-button" id="group-create-button" type="button">Создать группу</button>
+        <div class="group-invite-form">
+          <label for="group-accept-code">Код приглашения</label>
+          <input id="group-accept-code" maxlength="8" autocomplete="off" autocapitalize="characters" placeholder="8 символов">
+          <button class="action-button secondary-action" id="group-accept-button" type="button">Принять приглашение</button>
+        </div>
+      </section>
+      <section class="group-panel" id="group-roster-panel" hidden>
+        <div class="group-members" id="group-members"></div>
+        <p class="group-activity" id="group-activity"></p>
+        <div class="group-invite-form">
+          <button class="action-button secondary-action" id="group-invite-button" type="button">Создать одноразовый код</button>
+          <label for="group-invite-code">Код приглашения</label>
+          <div class="group-code-row">
+            <input id="group-invite-code" readonly aria-label="Код приглашения">
+            <button class="action-button" id="group-copy-invite-button" type="button">Копировать</button>
+          </div>
+          <small id="group-invite-expiry"></small>
+        </div>
+        <button class="action-button group-disband-button" id="group-disband-button" type="button">Распустить группу</button>
+      </section>
+      <label class="group-notification-setting" for="group-notifications">
+        <input id="group-notifications" type="checkbox" checked>
+        <span>Групповые уведомления</span>
+      </label>
+    </dialog>
+    <div class="group-notice" id="group-notice" role="status" aria-live="polite" hidden></div>
     <script src="cloud-config.js"></script>
     <script src="cloud-save.js"></script>
+    <script src="player-groups.js"></script>
     <script src="game.js"></script>
   </body>
 </html>

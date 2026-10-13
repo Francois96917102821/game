@@ -339,6 +339,57 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--gold-light); ou
 .game-dialog::backdrop { background: rgba(5,7,5,.78); backdrop-filter: blur(5px); }
 .game-dialog h2 { margin: 7px 0 6px; font-size: 22px; }
 .dialog-intro { margin: 0 0 16px; color: #aeb2a5; font-size: 11px; line-height: 1.55; }
+.tavern-dialog { width: min(760px, calc(100% - 24px)); max-height: min(850px, calc(100% - 24px)); }
+.tavern-status { min-height: 18px; margin: 8px 0; color: #aeb2a5; font-size: 10px; line-height: 1.5; }
+.tavern-status.error { color: #e4a192; }
+.tavern-wallet { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 12px 0; }
+.tavern-wallet > div { display: grid; gap: 5px; min-width: 0; padding: 10px; border: 1px solid #393d31; border-radius: 6px; background: #1a1e18; }
+.tavern-wallet > div > span { color: #93998b; font: 8px "DM Mono", monospace; letter-spacing: .08em; }
+.tavern-wallet strong { color: var(--gold-light); font-size: 12px; }
+.tavern-meter { height: 4px; overflow: hidden; border-radius: 4px; background: #30342d; }
+.tavern-meter span { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #8e9c6b, #d1cf8a); }
+.tavern-tabs { display: flex; flex-wrap: wrap; gap: 7px; padding: 11px 0; border-top: 1px solid #34382e; border-bottom: 1px solid #34382e; }
+.tavern-tabs button { min-height: 35px; border: 1px solid #414638; border-radius: 18px; padding: 7px 12px; background: #1a1e18; color: #aeb2a5; font-size: 10px; cursor: pointer; }
+.tavern-tabs button[aria-pressed="true"] { border-color: #8c7145; background: #2a281e; color: var(--gold-light); }
+.tavern-pane { display: grid; gap: 12px; padding: 13px 0; }
+.tavern-pane[hidden] { display: none; }
+.tavern-pane h3 { margin: 5px 0 0; color: #dddccd; font-size: 13px; }
+.tavern-note { margin: 0; color: #9b9d8f; font-size: 10px; line-height: 1.5; }
+.tavern-recipe-list, .tavern-stash-list { display: grid; gap: 7px; }
+.tavern-recipe, .tavern-stash-item, .tavern-active-job, .tavern-info-card { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 7px 12px; padding: 10px; border: 1px solid #34392f; border-radius: 6px; background: #1a1e18; }
+.tavern-recipe > div, .tavern-stash-item > div { min-width: 0; }
+.tavern-recipe strong, .tavern-recipe span, .tavern-stash-item strong, .tavern-stash-item span { display: block; }
+.tavern-recipe strong, .tavern-stash-item strong { color: #d6d6c9; font-size: 10px; }
+.tavern-recipe span, .tavern-stash-item span { margin-top: 3px; color: #93998b; font-size: 9px; line-height: 1.4; }
+.tavern-recipe button, .tavern-stash-item button, .tavern-active-job button, .tavern-job-card button, .tavern-info-card button { min-height: 33px; padding: 7px 9px; font-size: 9px; }
+.tavern-job-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
+.tavern-job-card { display: grid; align-content: start; gap: 7px; min-width: 0; padding: 11px; border: 1px solid #34392f; border-radius: 7px; background: #1a1e18; }
+.tavern-job-card h3 { margin: 0; color: var(--gold-light); font-size: 12px; }
+.tavern-job-card p, .tavern-info-card p { margin: 0; color: #9b9d8f; font-size: 9px; line-height: 1.5; }
+.tavern-job-card label, .tavern-bet-label { color: #c6c8bc; font-size: 9px; }
+.tavern-job-card select, #tavern-bet { min-height: 34px; border: 1px solid #414638; border-radius: 5px; padding: 6px 8px; background: #12150f; color: var(--text); font: inherit; font-size: 10px; }
+.tavern-active-job { grid-template-columns: minmax(0, 1fr) auto; border-color: #695735; background: linear-gradient(145deg, rgba(179, 146, 76, .08), transparent), #1a1e18; }
+.tavern-active-job strong, .tavern-active-job span { display: block; }
+.tavern-active-job strong { color: var(--gold-light); font-size: 11px; }
+.tavern-active-job span { margin-top: 4px; color: #aeb2a5; font-size: 9px; line-height: 1.45; }
+.tavern-game-rules { display: grid; gap: 6px; padding: 10px; border: 1px solid #34382e; border-radius: 6px; background: #1a1e18; }
+.tavern-game-rules p { margin: 0; color: #aeb2a5; font-size: 9px; line-height: 1.5; }
+.tavern-game-rules strong { color: var(--gold-light); }
+.tavern-game-panel { display: grid; gap: 8px; min-height: 22px; padding: 9px; border: 1px solid #34382e; border-radius: 6px; background: #12150f; }
+.tavern-game-panel:empty { display: none; }
+.tavern-game-result { margin: 0; color: #d6d6c9; font-size: 10px; line-height: 1.5; }
+.tavern-game-cards { color: #e4e2d6; font: 15px "DM Mono", monospace; line-height: 1.6; word-break: break-word; }
+.tavern-game-cards .red-card { color: #e08e7d; }
+.tavern-dice-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.tavern-die { min-width: 50px; min-height: 46px; border: 1px solid #4b4f40; border-radius: 6px; background: #20241c; color: var(--gold-light); font-size: 19px; cursor: pointer; }
+.tavern-die[aria-pressed="true"] { border-color: #a58b58; background: #393323; box-shadow: inset 0 0 0 1px #a58b58; }
+.tavern-game-start { display: flex; flex-wrap: wrap; gap: 8px; }
+.tavern-game-start button { flex: 1 1 160px; padding: 9px 12px; font-size: 10px; }
+.tavern-info-card { grid-template-columns: minmax(0, 1fr); align-items: start; }
+.tavern-info-card h3 { margin: 0; color: #d6d6c9; font-size: 11px; }
+.tavern-info-card button { justify-self: start; }
+.tavern-return-button { width: 100%; min-height: 39px; border: 1px solid #464b3b; border-radius: 5px; background: #20241c; color: #c9cbbd; font-size: 10px; cursor: pointer; }
+.tavern-return-button:hover { border-color: #87734b; color: var(--gold-light); }
 .cloud-dialog { width: min(470px, calc(100% - 28px)); }
 .cloud-status-message { min-height: 35px; margin: 12px 0; padding: 9px 10px; border: 1px solid #34382e; border-radius: 6px; background: #1a1e18; color: #bfc6ac; font-size: 10px; line-height: 1.45; }
 .cloud-status-message.cloud-error { border-color: #764b40; color: #e4a192; }
@@ -444,6 +495,13 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--gold-light); ou
   .district-services-main .service-card:first-child { grid-column: auto; }
   .service-card { padding: 12px; }
   .district-back-button { padding: 7px 8px; font-size: 9px; }
+  .tavern-dialog { padding: 21px 13px; }
+  .tavern-wallet { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .tavern-wallet > div:nth-child(2) { grid-column: 1 / -1; grid-row: 2; }
+  .tavern-job-grid { grid-template-columns: 1fr; }
+  .tavern-tabs button { flex: 1 1 40%; }
+  .tavern-recipe, .tavern-stash-item, .tavern-active-job { grid-template-columns: minmax(0, 1fr); }
+  .tavern-recipe button, .tavern-stash-item button, .tavern-active-job button { justify-self: start; }
   .character-panel { order: 2; min-height: auto; display: grid; grid-template-columns: 72px 1fr; column-gap: 13px; padding: 13px; }
   .character-panel .panel-heading { grid-column: 1 / -1; }
   .portrait { grid-column: 1; grid-row: 2 / 5; width: 72px; height: 81px; margin: 12px 0 0; }

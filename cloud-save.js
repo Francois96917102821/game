@@ -343,12 +343,11 @@
     setStatus(isSignUp ? "Создаю аккаунт…" : "Выполняю вход…");
     try {
       const body = { email, password };
-      if (isSignUp) {
-        body.options = {
-          emailRedirectTo: new URL(window.location.pathname, window.location.origin).href,
-        };
-      }
-      const result = await request(isSignUp ? "signup" : "token?grant_type=password", {
+      const signupRedirect = new URL(window.location.pathname, window.location.origin).href;
+      const authPath = isSignUp
+        ? `signup?redirect_to=${encodeURIComponent(signupRedirect)}`
+        : "token?grant_type=password";
+      const result = await request(authPath, {
         service: "auth",
         method: "POST",
         body,

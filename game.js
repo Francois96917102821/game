@@ -21,6 +21,20 @@ const META_UPGRADES = {
   power: { name: "Точная рука", description: "+1 к силе удара в новом забеге", costs: [2, 4, 6] },
   supplies: { name: "Запас зелий", description: "+1 зелье в начале нового забега", costs: [2, 4, 6] },
 };
+const HOME_RESOURCE_NAMES = {
+  logs: "брёвен",
+  stone: "камня",
+  ore: "руды",
+  flax: "льна",
+  boards: "досок",
+  blocks: "блоков",
+  ingots: "слитков",
+  cloth: "ткани",
+  seeds: "семян",
+  herbs: "растений",
+  fish: "рыбы",
+  bait: "приманки",
+};
 const SECRET_LORE = [
   { id: "well", title: "Голос у колодца", text: "Колодец не зовёт путников. Он повторяет последнее обещание того, кто исчез внизу." },
   { id: "drowned", title: "Затонувший колокол", text: "Город ушёл под воду, когда его жители позвонили в колокол, чтобы разбудить море." },
@@ -37,7 +51,6 @@ const CITY_DISTRICTS = {
     description: "Здесь путники готовятся к спуску и выбирают свой дальнейший путь.",
     services: [
       { icon: "◉", name: "Колодец", description: "Спуск в подземелья. Продолжи сохранённый забег или начни новый.", status: "ready", statusLabel: "ДОСТУПНО", action: "well" },
-      { icon: "⌂", name: "Профиль · магазин домов", description: "Покупай дома, участки и доступные постройки. Покупка дома открывает Верхний квартал.", status: "ready", statusLabel: "ДОМА И УЧАСТКИ", action: "houses", actionLabel: "Открыть профиль домов" },
       { icon: "⌑", name: "Ворота", description: "Путь за город и путешествия по окрестностям.", status: "soon", statusLabel: "СКОРО" },
       {
         icon: "⚔",
@@ -77,7 +90,7 @@ const CITY_DISTRICTS = {
     description: "Элитная часть города с ареной, домами и местами для самых известных героев.",
     services: [
       { icon: "⚔", name: "Арена", description: "PvP и элитные монстры для героев высокого уровня.", status: "soon", statusLabel: "СКОРО" },
-      { icon: "⌂", name: "Свой дом", description: "Управляй домами, участками, строительством и отдыхом.", status: "ready", statusLabel: "ДОСТУПНО", action: "houses", actionLabel: "Управлять домами" },
+      { icon: "⌂", name: "Домашняя лавка", description: "Покупка домов, участки, мастерские, пруд, сад и доступные комнаты.", status: "ready", statusLabel: "ДОСТУПНО", action: "homestead", actionLabel: "Магазин · Дома" },
       { icon: "▤", name: "Ратуша", description: "Гильдии, купоны и городские события.", status: "soon", statusLabel: "СКОРО" },
       { icon: "✧", name: "Аллея славы", description: "Статуи великих игроков и их истории.", status: "soon", statusLabel: "СКОРО" },
     ],
@@ -472,9 +485,6 @@ const ui = {
   districtLockNote: $("district-lock-note"),
   districtBackButton: $("district-back-button"),
   cityServices: $("city-services"),
-  housingDialog: $("housing-dialog"),
-  housingStatus: $("housing-status"),
-  housingContent: $("housing-content"),
   dungeonContent: $("dungeon-content"),
   level: $("level-badge"),
   health: $("health-value"),
@@ -555,6 +565,11 @@ const ui = {
   harborStatus: $("harbor-status"),
   harborContent: $("harbor-content"),
   harborHistory: $("harbor-history"),
+  homesteadDialog: $("homestead-dialog"),
+  homesteadStatus: $("homestead-status"),
+  homesteadWallet: $("homestead-wallet"),
+  homesteadContent: $("homestead-content"),
+  homesteadOpenButton: $("homestead-open-button"),
   tavernDialog: $("tavern-dialog"),
   tavernStatus: $("tavern-status"),
   tavernGold: $("tavern-gold"),
@@ -581,7 +596,11 @@ let tavernMessage = "";
 let pendingTavernState = null;
 let selectedTavernTab = "food";
 let harborMessage = "";
-let housingMessage = "";
+let homesteadMessage = "";
+let homesteadBusy = false;
+let homesteadAnchor = "";
+let mailboxInbox = [];
+let mailboxLoading = false;
 let tavernSelectedGameId = null;
 let selectedDiceToHold = [];
 let tavernDatabasePromise = null;
@@ -663,7 +682,7 @@ function createMetaProgress(now = Date.now()) {
     groupInboxReceipts: [],
     tavern,
     harbor: window.WellExpeditionsModel.createState(),
-    housing: window.WellHousingModel.createState(),
+    homestead: window.WellHomesteadModel.createState(now),
   };
 }
 
@@ -690,7 +709,7 @@ function isValidMetaProgress(progress) {
     isValidInboxReceipts(progress.groupInboxReceipts) &&
     (progress.tavern === undefined || window.WellTavernModel.isValidState(progress.tavern)) &&
     (progress.harbor === undefined || window.WellExpeditionsModel.isValidState(progress.harbor)) &&
-    (progress.housing === undefined || window.WellHousingModel.isValidState(progress.housing))
+    (progress.homestead === undefined || window.WellHomesteadModel.isValidState(progress.homestead))
   );
 }
 
@@ -700,7 +719,7 @@ function normalizeMetaProgress(progress) {
     ? createMetaProgress(0).tavern
     : window.WellTavernModel.withDefaults(progress.tavern);
   normalized.harbor = window.WellExpeditionsModel.withDefaults(progress?.harbor);
-  normalized.housing = window.WellHousingModel.withDefaults(progress?.housing);
+  normalized.homestead = window.WellHomesteadModel.withDefaults(progress?.homestead);
   return normalized;
 }
 
@@ -724,30 +743,71 @@ function readMetaProgress() {
 function mergeMetaProgress(left, right) {
   const first = normalizeMetaProgress(isValidMetaProgress(left) ? left : createMetaProgress(0));
   const second = normalizeMetaProgress(isValidMetaProgress(right) ? right : createMetaProgress(0));
+  const useSecondTavern = second.tavern.updatedAt > first.tavern.updatedAt ||
+    (second.tavern.updatedAt === first.tavern.updatedAt && second.tavern.revision >= first.tavern.revision)
+  const tavernSource = useSecondTavern ? second : first;
+  const tavern = JSON.parse(JSON.stringify(tavernSource.tavern));
   const harbor = window.WellExpeditionsModel.merge(first.harbor, second.harbor);
+  const homestead = window.WellHomesteadModel.merge(first.homestead, second.homestead);
+  const mailGearByMailId = new Map();
+  for (const source of [first, second]) {
+    for (const receipt of source.homestead.mailReceipts) {
+      const gear = source.tavern.stash.find((item) => item.id === receipt.gearId);
+      if (gear && !mailGearByMailId.has(receipt.mailId)) {
+        mailGearByMailId.set(receipt.mailId, { receipt, gear });
+      }
+    }
+  }
+  const mergedMailReceipts = [];
+  const usedGearIds = new Set(tavern.stash.map((item) => item.id));
+  for (const receipt of homestead.mailReceipts) {
+    const delivered = mailGearByMailId.get(receipt.mailId);
+    if (!delivered) continue;
+    const existing = tavern.stash.find((item) => item.id === receipt.gearId);
+    if (!existing && tavern.stash.length >= 10000) continue;
+    let gearId = receipt.gearId;
+    if (existing && (existing.type !== delivered.gear.type ||
+      existing.name !== delivered.gear.name || existing.bonus !== delivered.gear.bonus)) {
+      do {
+        tavern.nextGearSequence += 1;
+        gearId = `gear-${tavern.nextGearSequence}`;
+      } while (usedGearIds.has(gearId));
+    }
+    if (!usedGearIds.has(gearId)) {
+      tavern.stash.push({ ...delivered.gear, id: gearId });
+      usedGearIds.add(gearId);
+    }
+    mergedMailReceipts.push({ mailId: receipt.mailId, gearId });
+  }
+  homestead.mailReceipts = mergedMailReceipts;
+  tavern.nextGearSequence = Math.max(tavern.nextGearSequence,
+    ...tavern.stash.map((item) => Number(item.id.slice(5))));
   const firstTicketReceipts = new Set(first.harbor.ticketPurchases.map((receipt) => receipt.id));
   const secondTicketReceipts = new Set(second.harbor.ticketPurchases.map((receipt) => receipt.id));
   const missingDebits = (sourceReceipts, otherHarbor) => otherHarbor.ticketPurchases
     .filter((receipt) => !sourceReceipts.has(receipt.id))
     .reduce((total, receipt) => total + receipt.essenceCost, 0);
-  const housing = window.WellHousingModel.merge(first.housing, second.housing);
-  const housingCosts = window.WellHousingModel.mergeCosts(first.housing, second.housing);
-  const tavernGold = Math.max(
-    0,
-    first.tavern.gold - housingCosts.goldFromRight,
-    second.tavern.gold - housingCosts.goldFromLeft,
-  );
-  const tavernSource = second.tavern.updatedAt > first.tavern.updatedAt ||
-    (second.tavern.updatedAt === first.tavern.updatedAt && second.tavern.revision >= first.tavern.revision)
-    ? second.tavern
-    : first.tavern;
-  const mergedTavern = JSON.parse(JSON.stringify(tavernSource));
-  mergedTavern.gold = tavernGold;
+  const firstHomesteadReceipts = new Set(first.homestead.receipts.map((receipt) => receipt.id));
+  const secondHomesteadReceipts = new Set(second.homestead.receipts.map((receipt) => receipt.id));
+  const missingHomesteadDebits = (sourceReceipts, otherHomestead, currency) => otherHomestead.receipts
+    .filter((receipt) => !sourceReceipts.has(receipt.id))
+    .reduce((total, receipt) => total + receipt[`${currency}Cost`], 0);
+  const tavernSourceReceipts = useSecondTavern ? secondHomesteadReceipts : firstHomesteadReceipts;
+  const otherHomestead = useSecondTavern ? first.homestead : second.homestead;
+  tavern.gold = Math.max(0, tavern.gold - missingHomesteadDebits(
+    tavernSourceReceipts,
+    otherHomestead,
+    "gold",
+  ));
+  const essenceAfterHomePurchases = (source, other, sourceReceipts) =>
+    source.essence - missingHomesteadDebits(sourceReceipts, other.homestead, "essence");
   return {
     essence: Math.max(
       0,
-      first.essence - missingDebits(firstTicketReceipts, second.harbor) - housingCosts.essenceFromRight,
-      second.essence - missingDebits(secondTicketReceipts, first.harbor) - housingCosts.essenceFromLeft,
+      essenceAfterHomePurchases(first, second, firstHomesteadReceipts) -
+        missingDebits(firstTicketReceipts, second.harbor),
+      essenceAfterHomePurchases(second, first, secondHomesteadReceipts) -
+        missingDebits(secondTicketReceipts, first.harbor),
     ),
     upgrades: Object.fromEntries(Object.keys(META_UPGRADES).map((id) => [
       id,
@@ -759,15 +819,32 @@ function mergeMetaProgress(left, right) {
       ...(first.groupInboxReceipts || []),
       ...(second.groupInboxReceipts || []),
     ])],
-    tavern: mergedTavern,
+    tavern: JSON.parse(JSON.stringify(tavern)),
     harbor,
-    housing,
+    homestead,
   };
 }
 
 function persistMetaProgress() {
   let persisted = false;
   try {
+    const stored = JSON.parse(window.localStorage.getItem(META_SAVE_KEY) || "null");
+    if (stored !== null && isValidMetaProgress(stored)) {
+      const local = normalizeMetaProgress(stored);
+      const currentReceipts = new Set(metaProgress.homestead.receipts.map((receipt) => receipt.id));
+      const missingDebits = (currency) => local.homestead.receipts
+        .filter((receipt) => !currentReceipts.has(receipt.id))
+        .reduce((total, receipt) => total + receipt[`${currency}Cost`], 0);
+      metaProgress = {
+        ...metaProgress,
+        essence: Math.max(0, metaProgress.essence - missingDebits("essence")),
+        tavern: {
+          ...metaProgress.tavern,
+          gold: Math.max(0, metaProgress.tavern.gold - missingDebits("gold")),
+        },
+        homestead: window.WellHomesteadModel.merge(metaProgress.homestead, local.homestead),
+      };
+    }
     window.localStorage.setItem(META_SAVE_KEY, JSON.stringify(metaProgress));
     persisted = true;
   } catch (error) {
@@ -1356,7 +1433,6 @@ function getRoomEnemies() {
 }
 
 function startGameWithClass(classId) {
-  if (housingBlocksTravel()) return;
   const characterClass = CLASS_BY_ID.get(classId);
   if (!characterClass || characterClass.tier !== 1) return;
   selectedClassId = classId;
@@ -1454,7 +1530,6 @@ function renderClassSelection() {
 }
 
 function openClassDialog() {
-  if (housingBlocksTravel()) return;
   renderClassSelection();
   ui.classDialog.showModal();
 }
@@ -1508,7 +1583,6 @@ function chooseSubclass(classId) {
 }
 
 function resumeGame() {
-  if (housingBlocksTravel()) return;
   if (!savedRun) return;
   state = savedRun;
   const legacyClass = LEGACY_CLASS_MIGRATIONS.get(state.classId);
@@ -1558,7 +1632,6 @@ function resumeGame() {
 function explore() {
   if (!state.started || state.enemy || state.gameOver || state.merchantAvailable || state.waitingToDescend) return;
   state.room += 1;
-  discoverHousingMaterials();
   state.guarding = false;
   updateBestFloor();
   if (state.room < MAX_ROOMS) advanceQuest("explore");
@@ -1971,22 +2044,6 @@ function resolveDungeonEvent(action) {
   }
 }
 
-function discoverHousingMaterials() {
-  if (Math.random() >= 0.15) return;
-  const model = window.WellHousingModel;
-  const resources = ["logs", "stone", "ore", "flax", "water"];
-  const item = resources[randomInt(0, resources.length - 1)];
-  const amount = item === "water" ? randomInt(50, 100) : randomInt(1, 2);
-  const result = model.recordLoot(metaProgress.housing, { [item]: amount }, housingId("delve"), Date.now());
-  if (result.reason || !result.added[item]) return;
-  const quantity = result.added[item];
-  if (commitHousing(result.state)) {
-    addJournal("Материалы для дома", `Исследуя зал, ты нашёл ${quantity} ${HOUSING_ITEM_NAMES[item]}. Поиск строительных находок ограничен таймером на 2 часа.`, "⚒");
-  } else {
-    addJournal("Находка не сохранена", "Не удалось записать материалы для дома. Награда не зачислена; проверь доступность локального сохранения.", "⚠");
-  }
-}
-
 function revealSecret() {
   const secret = SECRET_LORE.find((item) => item.id === getFloorTheme().id);
   if (!secret) return;
@@ -2263,17 +2320,23 @@ function recordTavernInjury() {
 }
 
 function getAttackPower() {
-  return state.attack + (state.equipment.weapon?.bonus || 0) +
-    getClassStat("attack");
+  const base = state.attack + (state.equipment.weapon?.bonus || 0) + getClassStat("attack");
+  return hasActiveMealBuff("attack") ? Math.floor(base * 1.5) : base;
 }
 
 function getArmorDefense() {
-  return (state.equipment.armor?.bonus || 0) + getCharacterClass().defense +
-    getClassStat("defense");
+  const base = (state.equipment.armor?.bonus || 0) + getCharacterClass().defense + getClassStat("defense");
+  return hasActiveMealBuff("defense") ? Math.floor(base * 1.5) : base;
 }
 
 function getDodgeChance() {
-  return Math.min(0.8, getClassStat("dodge"));
+  const chance = getClassStat("dodge");
+  return Math.min(0.8, hasActiveMealBuff("dodge") ? chance * 1.5 : chance);
+}
+
+function hasActiveMealBuff(stat, now = Date.now()) {
+  const buff = metaProgress.homestead.mealBuff;
+  return Boolean(buff && buff.stat === stat && buff.expiresAt > now);
 }
 
 function getHeavyAttackMultiplier() {
@@ -2423,6 +2486,30 @@ function equipGear(gearId) {
   render();
 }
 
+function useCamouflage() {
+  if (!state.enemy || state.gameOver || state.enemy.boss || state.enemy.elite) return;
+  const previous = metaProgress;
+  const result = window.WellHomesteadModel.consumeCamouflage(metaProgress.homestead, Date.now());
+  if (!result.ok) {
+    setEvent("МАСКИРОВКИ НЕТ", result.reason, "◈");
+    render();
+    return;
+  }
+  metaProgress = { ...metaProgress, homestead: result.state };
+  if (!persistMetaProgress()) {
+    metaProgress = previous;
+    setEvent("МАСКИРОВКА НЕ СОХРАНЕНА", "Предмет остался в инвентаре; бой продолжается.", "◈");
+    render();
+    return;
+  }
+  const escapedEnemy = state.enemy.name;
+  state.enemy = null;
+  setEvent("МАСКИРОВКА СРАБОТАЛА", `${escapedEnemy} не заметил тебя: маскировка позволила обойти обычного врага. Опыт и добыча не получены.`, "◈");
+  addJournal("Тихий обход", `${escapedEnemy} не заметил тебя; маскировка израсходована.`, "◈");
+  setCaption("Проход свободен");
+  render();
+}
+
 function drinkPotion(inCombat = false) {
   if (!state.started || state.potions <= 0 || state.hp >= state.maxHp || state.gameOver) return;
   state.potions -= 1;
@@ -2541,6 +2628,12 @@ function renderJournal() {
 }
 
 function renderEquipment() {
+  const craftButton = $("profile-crafting-button");
+  const bestHome = window.WellHomesteadModel.getBestHome(metaProgress.homestead);
+  craftButton.disabled = state.started && !state.gameOver;
+  craftButton.textContent = bestHome
+    ? `Ремесленный стол · ${metaProgress.homestead.atHome ? "доступен дома" : "войти в дом"}`
+    : "Ремесленный стол · сначала купи дом";
   const weapon = state.equipment.weapon;
   const armor = state.equipment.armor;
   for (const [element, gear, type] of [
@@ -2717,8 +2810,8 @@ function renderCity() {
   if (!townVisible) return;
 
   const characterProgress = state.started ? state : savedRun;
-  const upperUnlocked = Boolean(characterProgress?.advancedClassId || characterProgress?.masteryClassId ||
-    metaProgress.housing.houses.length);
+  const ownsHome = metaProgress.homestead.homes.length > 0;
+  const upperUnlocked = Boolean(characterProgress?.advancedClassId || characterProgress?.masteryClassId || ownsHome);
   const district = CITY_DISTRICTS[selectedDistrict];
   ui.citySummary.textContent = savedRun
     ? `Сохранённый спуск: этаж ${savedRun.floor}, уровень ${savedRun.level}. Его можно продолжить из Колодца.`
@@ -2730,7 +2823,13 @@ function renderCity() {
   ui.districtDescription.textContent = district.description;
   ui.districtBackButton.hidden = selectedDistrict === "main";
   ui.districtLockNote.hidden = selectedDistrict !== "upper" || upperUnlocked;
-  ui.districtLockNote.textContent = "Верхний квартал откроется после выбора продвинутого класса или покупки любого дома.";
+  ui.districtLockNote.textContent = ownsHome
+    ? ""
+    : "Верхний квартал откроется после выбора первого продвинутого класса на 3-м уровне или покупки любого дома.";
+  ui.homesteadOpenButton.disabled = Boolean(state.started && !state.gameOver);
+  ui.homesteadOpenButton.title = ui.homesteadOpenButton.disabled
+    ? "Домашняя лавка доступна между спусками."
+    : "Открыть магазин домов и личные владения.";
   for (const tab of ui.districtTabs.querySelectorAll("[data-district]")) {
     const active = tab.dataset.district === selectedDistrict;
     tab.setAttribute("aria-pressed", String(active));
@@ -2742,439 +2841,6 @@ function renderCity() {
   ui.cityServices.className = `city-services district-services-${selectedDistrict}`;
   ui.cityServices.replaceChildren(...district.services.map((service) =>
     createCityServiceCard(service, selectedDistrict === "upper" && !upperUnlocked)));
-}
-
-const HOUSING_ITEM_NAMES = {
-  logs: "брёвна",
-  stone: "камень",
-  ore: "железная руда",
-  flax: "лён",
-  boards: "доски",
-  blocks: "каменные блоки",
-  ingots: "слитки",
-  cloth: "ткань",
-  water: "вода",
-  plants: "растения",
-  seeds: "семена",
-  grain: "зерно",
-  bait: "наживка",
-};
-
-function housingElement(tag, className, text) {
-  const element = document.createElement(tag);
-  if (className) element.className = className;
-  if (text !== undefined) element.textContent = text;
-  return element;
-}
-
-function housingButton(label, action, data = {}, disabled = false, className = "service-button") {
-  const button = housingElement("button", className, label);
-  button.type = "button";
-  button.dataset.housingAction = action;
-  for (const [key, value] of Object.entries(data)) button.dataset[key] = String(value);
-  button.disabled = disabled;
-  return button;
-}
-
-function housingRecipeText(recipe) {
-  return Object.entries(recipe).map(([item, amount]) => `${amount} ${HOUSING_ITEM_NAMES[item]}`).join(" + ");
-}
-
-function housingRemaining(ms) {
-  const minutes = Math.max(0, Math.ceil(ms / 60000));
-  return `${Math.floor(minutes / 60)} ч ${minutes % 60} мин`;
-}
-
-function housingId(prefix) {
-  return `${prefix}-${harborReceiptId()}`;
-}
-
-function housingSection(title, description = "") {
-  const section = housingElement("section", "housing-section");
-  const heading = housingElement("h3", "", title);
-  section.append(heading);
-  if (description) section.append(housingElement("p", "housing-note", description));
-  return section;
-}
-
-function renderHousing() {
-  if (!ui.housingDialog || !metaProgress?.housing) return;
-  const model = window.WellHousingModel;
-  const housing = metaProgress.housing;
-  const now = Date.now();
-  const activeHome = model.activeHouse(housing);
-  const freeToManage = !state.started || state.gameOver;
-  const canManage = freeToManage && !housing.sleep;
-  const topHouse = activeHome ? model.HOUSE_TYPES[activeHome.tier] : null;
-  ui.housingStatus.textContent = housingMessage;
-  ui.housingStatus.classList.toggle("error", housingMessage.startsWith("Не удалось") || housingMessage.startsWith("Недостаточно") || housingMessage.startsWith("Действие"));
-  const sections = [];
-
-  const overview = housingSection("Твой профиль домов",
-    activeHome
-      ? `Самый высокий дом: ${topHouse.name} · ${model.activePlotLimit(housing)} участков. Принадлежит домов: ${housing.houses.length}. Используется лучший дом автоматически.`
-      : "Домов пока нет. Покупка любого дома откроет Верхний квартал; количество домов не ограничено.");
-  overview.append(housingElement("p", "housing-wallet",
-    `Постоянный кошелёк таверны: ${metaProgress.tavern.gold} золота · ${metaProgress.essence} осколков. Золото подземелья хранится отдельно и для покупки хижины не используется.`));
-  const houseCounts = Object.fromEntries(Object.keys(model.HOUSE_TYPES).map((tier) => [
-    tier, housing.houses.filter((house) => house.tier === tier).length,
-  ]));
-  overview.append(housingElement("p", "housing-note", housing.houses.length
-    ? `Инвентарь: ${Object.entries(model.HOUSE_TYPES)
-      .filter(([tier]) => houseCounts[tier] > 0)
-      .map(([tier, home]) => `${home.name} × ${houseCounts[tier]}`).join(" · ")}.`
-    : "Инвентарь домов пуст."));
-  sections.push(overview);
-
-  const catalog = housingSection("Магазин домов",
-    "Цены фиксированы; перед списанием золота или осколков появится отдельное подтверждение. Реальных платежей нет.");
-  for (const [tier, home] of Object.entries(model.HOUSE_TYPES)) {
-    const card = housingElement("article", "housing-card");
-    card.append(housingElement("strong", "", `${home.name} · ${home.plots} участка${home.plots === 1 ? "" : "ов"}`));
-    const roomList = tier === "cabin"
-      ? "спальня, ремесленный стол, почтовый ящик, кухня"
-      : tier === "sturdy"
-        ? "спальня, ремесленный стол, почтовый ящик, кухня, библиотека"
-        : "спальня, ремесленный стол, почтовый ящик, кухня, библиотека, лечебница, святилище, тренировочный зал";
-    card.append(housingElement("p", "housing-note",
-      `${tier === "cabin" ? "Спальня: 2 ч 40 мин" : tier === "sturdy" ? "Спальня: 2 ч 20 мин" : "Спальня: 2 ч"} · ${roomList}.`));
-    if (tier === "cabin") {
-      card.append(housingButton("Купить · 20 000 золота", "purchase-house",
-        { tier, payment: "gold" }, !canManage || metaProgress.tavern.gold < 20000));
-    } else if (tier === "sturdy") {
-      card.append(housingButton("Купить · 400 осколков", "purchase-house",
-        { tier, payment: "essence" }, !canManage || metaProgress.essence < 400));
-    } else {
-      card.append(housingButton("Купить · 1 000 осколков", "purchase-house",
-        { tier, payment: "essence" }, !canManage || metaProgress.essence < 1000));
-      if (housing.houses.some((house) => house.tier === "sturdy")) {
-        card.append(housingButton("Купить при владении добротным домом · 600 осколков", "purchase-house",
-          { tier, payment: "sturdy-upgrade" }, !canManage || metaProgress.essence < 600));
-      }
-    }
-    catalog.append(card);
-  }
-  sections.push(catalog);
-
-  const materials = housingSection("Материалы",
-    `Строительные материалы: ${model.MATERIALS.map((item) => `${HOUSING_ITEM_NAMES[item]} ${housing.stock[item]}`).join(" · ")}. Вместимость ${Object.values(housing.stock).reduce((sum, count) => sum + count, 0)}/${model.materialCapacity(housing)}. Вода ${housing.water}/1 000 · растения ${housing.plants} · семена ${housing.seeds} · зерно ${housing.grain} · наживка ${housing.bait}.`);
-  sections.push(materials);
-
-  const plots = housingSection("Участки",
-    activeHome
-      ? `Участок стоит ровно 100 осколков. Купленные участки и постройки сохраняются при смене дома; активны первые ${model.activePlotLimit(housing)}.`
-      : "Сначала купи дом. Участки и постройки не исчезают при покупке дома другого качества.");
-  if (activeHome) {
-    const canBuyPlot = housing.plots.length < model.activePlotLimit(housing);
-    plots.append(housingButton(
-      `Купить участок · 100 осколков (${housing.plots.length}/${model.activePlotLimit(housing)})`,
-      "buy-plot", {}, !canManage || !canBuyPlot || metaProgress.essence < 100));
-  }
-  housing.plots.forEach((plot, index) => {
-    const card = housingElement("article", "housing-card");
-    const building = plot.building;
-    card.append(housingElement("strong", "", `Участок ${index + 1} · ${building
-      ? `${model.BUILDING_TYPES[building.type].name}, ур. ${building.level}`
-      : "пустой"}`));
-    if (index >= model.activePlotLimit(housing)) {
-      card.append(housingElement("p", "housing-note", "Сохранён, но временно неактивен: текущий дом имеет меньший лимит участков."));
-    } else if (!building) {
-      const select = housingElement("select", "housing-building-select");
-      select.setAttribute("aria-label", `Постройка на участке ${index + 1}`);
-      select.dataset.housingBuilding = plot.id;
-      select.append(new Option("Выбери постройку…", ""));
-      for (const [id, definition] of Object.entries(model.BUILDING_TYPES)) {
-        select.append(new Option(`${definition.name} · ${housingRecipeText(definition.recipe)}`, id));
-      }
-      card.append(select);
-      card.append(housingButton("Построить выбранное", "build", { plotId: plot.id }, !canManage));
-    } else {
-      const definition = model.BUILDING_TYPES[building.type];
-      card.append(housingElement("p", "housing-note", `Рецепт постройки/уровня: ${housingRecipeText(definition.recipe)}.`));
-      if (definition.output) {
-        const used = housing.transactions.filter((transaction) => transaction.type === "craft" &&
-          transaction.plotId === plot.id &&
-          new Date(transaction.at).toISOString().slice(0, 10) === new Date(now).toISOString().slice(0, 10)).length;
-        const dailyLimit = 2 + building.level;
-        card.append(housingElement("p", "housing-note", `Сегодня переработано: ${used}/${dailyLimit}. Три ${HOUSING_ITEM_NAMES[definition.input]} → 1 ${HOUSING_ITEM_NAMES[definition.output]}.`));
-        card.append(housingButton(`Переработать · 3 ${HOUSING_ITEM_NAMES[definition.input]} → 1 ${HOUSING_ITEM_NAMES[definition.output]}`,
-          "craft", { plotId: plot.id }, !canManage || used >= dailyLimit || housing.stock[definition.input] < 3));
-      }
-      if (building.type === "garden") {
-        const last = housing.transactions.filter((transaction) => transaction.type === "garden-harvest" &&
-          transaction.plotId === plot.id).reduce((latest, transaction) => Math.max(latest, transaction.at), -1);
-        const ready = last < 0 || now - last >= 20 * model.HOUR;
-        card.append(housingButton(ready ? `Собрать растения и семена · ${2 + building.level} растений` :
-          `Сбор через ${housingRemaining(last + 20 * model.HOUR - now)}`,
-        "garden", { plotId: plot.id }, !canManage || !ready));
-        if (!housing.crop && housing.seeds > 0 && housing.water > 0) {
-          card.append(housingButton("Посадить семя · 1 вода", "plant", { plotId: plot.id }, !canManage));
-        }
-      }
-      if (building.type === "pond") {
-        const last = housing.transactions.filter((transaction) => transaction.type === "fishing" &&
-          transaction.plotId === plot.id).reduce((latest, transaction) => Math.max(latest, transaction.at), -1);
-        const ready = last < 0 || now - last >= 8 * model.HOUR;
-        card.append(housingButton(ready ? `Рыбачить · ${2 + building.level} наживки` :
-          `Рыбалка через ${housingRemaining(last + 8 * model.HOUR - now)}`,
-        "fish", { plotId: plot.id }, !canManage || !ready || housing.water < 300));
-        card.append(housingElement("p", "housing-note", `Для рыбалки нужно 300 воды; запас не расходуется. В пруду ${housing.water}/1 000.`));
-      }
-      if (housing.crop?.plotId === plot.id) {
-        const watered = housing.crop.secondWaterAt !== null;
-        const elapsed = now - housing.crop.plantedAt;
-        card.append(housingElement("p", "housing-note", watered
-          ? "Посев полит второй раз и собран: 1 зерно."
-          : elapsed < 10 * model.HOUR
-            ? `Второй полив доступен через ${housingRemaining(10 * model.HOUR - elapsed)} (окно закрывается через ${housingRemaining(12 * model.HOUR - elapsed)}).`
-            : elapsed <= 12 * model.HOUR ? "Пора полить посев второй раз — 1 вода, окно 10–12 часов." : "Время второго полива прошло; посев потерян, посадите новое семя."));
-        if (!watered && elapsed >= 10 * model.HOUR && elapsed <= 12 * model.HOUR) {
-          card.append(housingButton("Полить и собрать · 1 вода → 1 зерно", "water", {}, !canManage || housing.water < 1));
-        }
-        if (!watered && elapsed > 12 * model.HOUR) {
-          card.append(housingButton("Убрать испорченный посев без урожая", "discard-crop", {}, !canManage));
-        }
-      }
-      if (building.type === "shed") {
-        card.append(housingElement("p", "housing-note", `Склад добавляет ${20 + 10 * building.level} мест к базовой вместимости 20.`));
-      }
-      const atMax = definition.maxLevel !== null && building.level >= definition.maxLevel;
-      card.append(housingButton(atMax ? "Максимальный уровень" :
-        `Улучшить до ур. ${building.level + 1} · ${housingRecipeText(definition.recipe)}`,
-      "upgrade", { plotId: plot.id, buildingType: building.type }, !canManage || atMax));
-    }
-    plots.append(card);
-  });
-  sections.push(plots);
-
-  const bedroom = housingSection("Спальня",
-    `Сон использует травмы таверны. Таймер продолжается, пока игра закрыта; травмы снимаются только после завершения срока и получения результата. Сейчас травм: ${metaProgress.tavern.injuries}/3.`);
-  if (housing.sleep) {
-    const remaining = housing.sleep.endsAt - now;
-    bedroom.append(housingElement("p", "housing-note", remaining > 0
-      ? `Отдых завершится через ${housingRemaining(remaining)}. Из дома не выходи; закрыть страницу можно.`
-      : "Отдых завершён. Забери результат, чтобы снять травмы."));
-    bedroom.append(housingButton(remaining > 0 ? "Отдых продолжается" : "Завершить отдых и снять травмы",
-      "claim-sleep", {}, !freeToManage || remaining > 0));
-  } else {
-    bedroom.append(housingButton(`Начать отдых · ${topHouse ? housingRemaining(topHouse.sleepMs) : "нет дома"}`,
-      "sleep", {}, !freeToManage || !activeHome || metaProgress.tavern.injuries === 0));
-  }
-  sections.push(bedroom);
-
-  const facilities = housingSection("Комнаты и службы",
-    "Статус каждой комнаты указан прямо: будущие службы не принимают валюту и не изображаются работающими.");
-  const tier = topHouse?.tier || 0;
-  const features = [
-    ["Ремесленный стол", tier >= 1 ? "Запланировано · создание предметов ещё не подключено." : "Доступен с хижины."],
-    ["Почтовый ящик", tier >= 1 ? "Недоступен · в игре нет настоящей почты и межигрового обмена." : "Доступен с хижины."],
-    ["Кухня", tier >= 1 ? "Запланировано · готовая еда работает в таверне, домашней кухни пока нет." : "Доступна с хижины."],
-    ["Библиотека", tier >= 2 ? "Запланировано · покупка страниц и снятие навыков не реализованы." : "Появится в добротном доме."],
-    ["Лечебница", tier >= 3 ? "Спальня снимает травмы по таймеру; мгновенное лечение не реализовано." : "Появится в богатом особняке."],
-    ["Тренировочный зал", tier >= 3 ? "Запланировано · манекен и маскировка не реализованы." : "Появится в богатом особняке."],
-  ];
-  for (const [name, status] of features) {
-    facilities.append(housingElement("p", "housing-future-feature", `${name} — ${status}`));
-  }
-  if (topHouse?.tier === 3) {
-    const shrine = housingElement("article", "housing-card");
-    shrine.append(housingElement("strong", "", "Святилище · алтарные уровни"));
-    shrine.append(housingElement("p", "housing-note", "Следующий уровень указанной цены не продаётся, пока соответствующий эффект не поддержан игрой. Максимум: рыбалка 15, руны 20; для остальных верхний предел неизвестен."));
-    for (const [id, altar] of Object.entries(model.ALTARS)) {
-      const level = housing.altars[id];
-      const cap = altar.maxLevel === null ? "без подтверждённого максимума" : `макс. ${altar.maxLevel}`;
-      const cost = model.altarCost(level);
-      shrine.append(housingElement("p", "housing-future-feature",
-        `Алтарь ${altar.name}: ур. ${level} · ${cap} · расчётная цена следующего уровня ${cost} осколков — улучшение пока закрыто.`));
-    }
-    facilities.append(shrine);
-  } else {
-    facilities.append(housingElement("p", "housing-future-feature", "Святилище доступно только в богатом особняке."));
-  }
-  sections.push(facilities);
-  ui.housingContent.replaceChildren(...sections);
-}
-
-function commitHousing(housing, essence = metaProgress.essence, gold = metaProgress.tavern.gold, now = Date.now()) {
-  if (!window.WellHousingModel.isValidState(housing) || !Number.isInteger(essence) || essence < 0 ||
-    !Number.isInteger(gold) || gold < 0) {
-    housingMessage = "Не удалось проверить сохранение дома; изменения не применены.";
-    renderHousing();
-    return false;
-  }
-  const previous = {
-    housing: metaProgress.housing,
-    essence: metaProgress.essence,
-    tavern: JSON.parse(JSON.stringify(metaProgress.tavern)),
-  };
-  metaProgress.housing = housing;
-  metaProgress.essence = essence;
-  if (gold !== metaProgress.tavern.gold) {
-    metaProgress.tavern.gold = gold;
-    metaProgress.tavern.revision += 1;
-    metaProgress.tavern.updatedAt = Math.max(now, metaProgress.tavern.updatedAt);
-  }
-  if (!persistMetaProgress()) {
-    const attemptedRevision = metaProgress.tavern.revision;
-    const attemptedUpdatedAt = metaProgress.tavern.updatedAt;
-    metaProgress.housing = previous.housing;
-    metaProgress.essence = previous.essence;
-    metaProgress.tavern = previous.tavern;
-    if (attemptedRevision > previous.tavern.revision) {
-      metaProgress.tavern.revision = attemptedRevision + 1;
-      metaProgress.tavern.updatedAt = Math.max(Date.now(), attemptedUpdatedAt);
-      persistTavernToIndexedDb(metaProgress.tavern).catch((error) => {
-        console.warn("Не удалось отменить запись кошелька таверны после ошибки покупки дома.", error);
-      });
-    }
-    housingMessage = "Не удалось записать дом в локальное сохранение. Покупка не применена.";
-    renderHousing();
-    return false;
-  }
-  render();
-  return true;
-}
-
-function openHousing() {
-  if (state.started && !state.gameOver) return;
-  housingMessage = "";
-  renderHousing();
-  if (!ui.housingDialog.open) ui.housingDialog.showModal();
-}
-
-function housingBlocksTravel() {
-  if (!metaProgress.housing.sleep) return false;
-  openHousing();
-  housingMessage = "Отдых ещё не завершён. Нельзя покидать дом до получения результата спальни.";
-  renderHousing();
-  return true;
-}
-
-function handleHousingAction(button) {
-  if (!button || (state.started && !state.gameOver)) return;
-  const model = window.WellHousingModel;
-  const housing = metaProgress.housing;
-  const now = Date.now();
-  const id = housingId("home");
-  const action = button.dataset.housingAction;
-  if (housing.sleep && action !== "claim-sleep") {
-    housingMessage = "Во время отдыха хозяйственные действия недоступны.";
-    renderHousing();
-    return;
-  }
-  let result;
-  if (action === "purchase-house") {
-    const tier = button.dataset.tier;
-    const payment = button.dataset.payment;
-    const amount = payment === "gold" ? 20000 : payment === "sturdy-upgrade" ? 600
-      : tier === "sturdy" ? 400 : 1000;
-    const currency = payment === "gold" ? "золота" : "осколков";
-    if (!window.confirm(`Потратить ${amount} ${currency} на ${model.HOUSE_TYPES[tier]?.name || "дом"}? Осколки — редкая внутриигровая валюта; реальных платежей нет.`)) return;
-    result = model.purchaseHouse(housing, { gold: metaProgress.tavern.gold, essence: metaProgress.essence },
-      tier, payment, id, housingId("house"), now);
-    if (!result.purchased) {
-      housingMessage = result.reason === "gold" || result.reason === "essence"
-        ? `Недостаточно ${result.reason === "gold" ? "золота" : "осколков"} для покупки.`
-        : "Действие покупки дома недопустимо.";
-    } else {
-      housingMessage = `${model.HOUSE_TYPES[tier].name} приобретён. Владение домом открывает Верхний квартал; лучший дом выбран автоматически.`;
-      commitHousing(result.state, result.balances.essence, result.balances.gold, now);
-    }
-  } else if (action === "buy-plot") {
-    if (!window.confirm("Потратить 100 осколков на один участок? Осколки — редкая внутриигровая валюта; реальных платежей нет.")) return;
-    result = model.buyPlot(housing, metaProgress.essence, id, housingId("plot"), now);
-    if (!result.purchased) housingMessage = result.reason === "essence"
-      ? "Недостаточно осколков для участка." : "Участки исчерпали лимит текущего дома.";
-    else {
-      housingMessage = "Участок куплен за 100 осколков.";
-      commitHousing(result.state, result.essence, undefined, now);
-    }
-  } else if (action === "build" || action === "upgrade") {
-    const plotId = action === "build"
-      ? button.closest(".housing-card").querySelector("[data-housing-building]")?.value
-      : button.dataset.plotId;
-    if (!plotId) {
-      housingMessage = "Действие постройки недопустимо: выбери здание.";
-    } else {
-      result = model.construct(housing, plotId,
-        action === "build" ? button.closest(".housing-card").querySelector("[data-housing-building]").value : button.dataset.buildingType,
-        id, now);
-      if (!result.built) housingMessage = result.reason === "materials"
-        ? "Недостаточно строительных материалов для этого рецепта."
-        : result.reason === "max-level" ? "Достигнут максимальный уровень этого здания."
-          : "Участок занят или недоступен для постройки.";
-      else {
-        housingMessage = result.level === 1 ? "Постройка возведена." : `Постройка улучшена до уровня ${result.level}.`;
-        commitHousing(result.state, metaProgress.essence, undefined, now);
-      }
-    }
-  } else if (action === "craft") {
-    result = model.craft(housing, button.dataset.plotId, id, now);
-    if (!result.crafted) housingMessage = result.reason === "materials" ? "Не хватает трёх единиц исходного материала."
-      : result.reason === "daily-limit" ? "Дневной лимит переработок исчерпан."
-        : "Нет места для результата или мастерская недоступна.";
-    else {
-      housingMessage = `Получено: 1 ${HOUSING_ITEM_NAMES[result.item]}. Осталось переработок сегодня: ${result.remaining}.`;
-      commitHousing(result.state, metaProgress.essence, undefined, now);
-    }
-  } else if (action === "garden") {
-    result = model.collectGarden(housing, button.dataset.plotId, id, now);
-    if (!result.collected) housingMessage = result.reason === "cooldown"
-      ? `Сбор ещё на перезарядке: ${housingRemaining(result.availableAt - now)}.` : "Сбор сада сейчас недоступен.";
-    else {
-      housingMessage = `Собрано ${result.plants} дикорастущих растений и 1 семя.`;
-      commitHousing(result.state, metaProgress.essence, undefined, now);
-    }
-  } else if (action === "plant") {
-    result = model.plantCrop(housing, button.dataset.plotId, id, now);
-    if (!result.planted) housingMessage = "Посев невозможен: нужны свободный сад, семя и вода.";
-    else {
-      housingMessage = "Посев сделан и полит первым литром воды. Второй полив нужен через 10–12 часов.";
-      commitHousing(result.state, metaProgress.essence, undefined, now);
-    }
-  } else if (action === "water") {
-    result = model.waterCrop(housing, id, now);
-    if (!result.watered) housingMessage = result.reason === "too-soon" ? "Второй полив доступен только через 10 часов."
-      : result.reason === "window-missed" ? "Окно второго полива (10–12 часов) пропущено; посев потерян."
-        : "Для второго полива нужна вода.";
-    else {
-      housingMessage = "Посев полит второй раз; собрано 1 зерно.";
-      commitHousing(result.state, metaProgress.essence, undefined, now);
-    }
-  } else if (action === "discard-crop") {
-    result = model.discardExpiredCrop(housing, id, now);
-    housingMessage = result.discarded
-      ? "Испорченный посев убран без урожая; потраченные семя и вода не возвращены."
-      : "Посев ещё нельзя убрать как испорченный.";
-    if (result.discarded) commitHousing(result.state, metaProgress.essence, undefined, now);
-  } else if (action === "fish") {
-    result = model.fish(housing, button.dataset.plotId, id, now);
-    if (!result.caught) housingMessage = result.reason === "water" ? "Для рыбалки нужно не менее 300 воды."
-      : result.reason === "cooldown" ? `Рыбалка доступна через ${housingRemaining(result.availableAt - now)}.`
-        : "Рыбалка сейчас недоступна.";
-    else {
-      housingMessage = `Пруд принёс ${result.bait} наживки. Таймер следующего улова — 8 часов.`;
-      commitHousing(result.state, metaProgress.essence, undefined, now);
-    }
-  } else if (action === "sleep") {
-    result = model.startSleep(housing, id, now);
-    housingMessage = result.started ? `Начат отдых. Вернись через ${housingRemaining(result.endsAt - now)}; травмы снимутся только после завершения.` : "Отдых сейчас недоступен.";
-    if (result.started) commitHousing(result.state, metaProgress.essence, undefined, now);
-  } else if (action === "claim-sleep") {
-    result = model.claimSleep(housing, id, metaProgress.tavern.injuries, now);
-    if (!result.claimed) housingMessage = result.reason === "early"
-      ? `Отдых ещё не завершён: ${housingRemaining(result.availableAt - now)}.` : "Этот отдых уже получен или недоступен.";
-    else {
-      const previousInjuries = metaProgress.tavern.injuries;
-      metaProgress.tavern.injuries = result.injuries;
-      metaProgress.tavern.revision += 1;
-      metaProgress.tavern.updatedAt = Math.max(now, metaProgress.tavern.updatedAt);
-      housingMessage = `Отдых завершён: снято ${previousInjuries} травм.`;
-      commitHousing(result.state, metaProgress.essence, undefined, now);
-    }
-  }
-  renderHousing();
-  renderCity();
 }
 
 function harborReceiptId() {
@@ -3194,9 +2860,1003 @@ function harborActionButton(label, action, data = {}, disabled = false, classNam
   return button;
 }
 
+function homesteadReceiptId() {
+  return window.crypto?.randomUUID
+    ? window.crypto.randomUUID()
+    : `home-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function homesteadButton(label, action, data = {}, disabled = false) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "service-button";
+  button.textContent = label;
+  button.dataset.homesteadAction = action;
+  for (const [key, value] of Object.entries(data)) button.dataset[key] = String(value);
+  button.disabled = disabled || homesteadBusy || !localMetaReadable;
+  return button;
+}
+
+function homeSection(title, description = "") {
+  const section = document.createElement("section");
+  section.className = "homestead-section";
+  const heading = document.createElement("h3");
+  heading.textContent = title;
+  section.append(heading);
+  if (description) {
+    const note = document.createElement("p");
+    note.className = "homestead-note";
+    note.textContent = description;
+    section.append(note);
+  }
+  return section;
+}
+
+function homeCard(title, description, actions = []) {
+  const card = document.createElement("article");
+  card.className = "homestead-card";
+  const heading = document.createElement("h4");
+  heading.textContent = title;
+  const detail = document.createElement("p");
+  detail.textContent = description;
+  card.append(heading, detail);
+  if (actions.length) {
+    const controls = document.createElement("div");
+    controls.className = "homestead-actions";
+    controls.append(...actions);
+    card.append(controls);
+  }
+  return card;
+}
+
+function formatHomeCountdown(timestamp, now = Date.now()) {
+  const remaining = Math.max(0, timestamp - now);
+  const hours = Math.floor(remaining / window.WellHomesteadModel.HOUR);
+  const minutes = Math.ceil((remaining % window.WellHomesteadModel.HOUR) / 60000);
+  return `${hours} ч ${minutes} мин`;
+}
+
+function renderHomestead() {
+  if (!ui.homesteadDialog?.open || !metaProgress?.homestead) return;
+  const model = window.WellHomesteadModel;
+  const homestead = model.withDefaults(metaProgress.homestead);
+  const bestHome = model.getBestHome(homestead);
+  const homeType = bestHome ? model.HOME_TYPES[bestHome.tier] : null;
+  const now = Date.now();
+  ui.homesteadStatus.textContent = homesteadMessage || (bestHome
+    ? homestead.atHome
+      ? `Ты дома: используется ${homeType.name}. Закрытие окна покидает дом и прерывает сон.`
+      : `${homeType.name} используется автоматически. Войди в дом, чтобы собирать и строить.`
+    : "Домов пока нет. Покупка любого дома откроет Верхний квартал.");
+  ui.homesteadStatus.classList.toggle("error", Boolean(homesteadMessage) &&
+    /Не удалось|Недостаточно|Нужно |недоступ|заблок|ошиб/i.test(homesteadMessage));
+  ui.homesteadWallet.replaceChildren();
+  const walletData = [
+    ["ОСКОЛКИ", `${metaProgress.essence} ✦`],
+    ["ЗОЛОТО ТАВЕРНЫ", `${metaProgress.tavern.gold} золота`],
+    ["СКЛАД", `${model.resourceTotal(homestead)} / ${model.getStorageCapacity(homestead)}`],
+  ];
+  for (const [label, value] of walletData) {
+    const cell = document.createElement("div");
+    const caption = document.createElement("span");
+    caption.textContent = label;
+    const amount = document.createElement("strong");
+    amount.textContent = value;
+    cell.append(caption, amount);
+    ui.homesteadWallet.append(cell);
+  }
+  ui.homesteadContent.replaceChildren();
+
+  const shop = homeSection("Магазин домов", "После каждой покупки автоматически выбирается лучший дом. Домов можно покупать сколько угодно.");
+  shop.append(
+    homeCard("Простая хижина · 2 участка · сон 2 ч 40 мин",
+      "Комнаты: спальня, ремесленный стол и кухня. Почтовый ящик требует особняк у обоих игроков. Цена: 20 000 золота таверны.",
+      [homesteadButton("Купить хижину · 20 000 золота", "buy-home", { tier: "cabin", payment: "gold" },
+        metaProgress.tavern.gold < 20000)]),
+    homeCard("Добротный дом · 4 участка · сон 2 ч 20 мин",
+      "Комнаты: спальня, ремесленный стол, почтовый ящик, кухня, библиотека. Цена: 400 осколков.",
+      [homesteadButton("Купить дом · 400 осколков", "buy-home", { tier: "sturdy", payment: "essence" },
+        metaProgress.essence < 400)]),
+    homeCard("Богатый особняк · 6 участков · сон 2 ч",
+      "Комнаты: спальня, ремесленный стол, почтовый ящик, кухня, библиотека, лечебница и святилище. Подвал с тренировочным залом покупается отдельно за золото.",
+      [
+        homesteadButton("Купить · 1 000 осколков", "buy-home", { tier: "mansion", payment: "essence" },
+          metaProgress.essence < 1000),
+        homesteadButton("Добротный дом + 600 осколков", "buy-home", { tier: "mansion", payment: "upgrade" },
+          !homestead.homes.some((home) => home.tier === "sturdy") || metaProgress.essence < 600),
+      ]),
+  );
+  ui.homesteadContent.append(shop);
+  if (!bestHome) return;
+
+  const holdings = homeSection("Личные владения", `Куплено домов: ${homestead.homes.length} · используется ${homeType.name} · открыто ${model.getPlotLimit(homestead)} участков.`);
+  const enter = homestead.atHome
+    ? homesteadButton("Ты находишься дома", "noop", {}, true)
+    : homesteadButton("Войти в дом", "enter");
+  holdings.append(homeCard("Автоматический выбор дома",
+    `Всегда активен самый высокий купленный уровень: ${homeType.name}. Смена дома не удаляет купленные участки.`,
+    [enter]));
+  if (homestead.plots.length < model.getPlotLimit(homestead)) {
+    holdings.append(homeCard(`Новый участок · 100 осколков`,
+      `Куплено участков: ${homestead.plots.length} / ${model.getPlotLimit(homestead)}. Участок сохраняет номер и не пропадает при смене дома.`,
+      [homesteadButton("Купить участок · 100 осколков", "buy-plot", {}, metaProgress.essence < 100)]));
+  }
+  if (!homestead.atHome) {
+    holdings.append(homeCard("Работы и сбор доступны только дома",
+      "Войди в дом, чтобы заниматься участками. Покупать дома и участки можно и сейчас."));
+    ui.homesteadContent.append(holdings);
+    return;
+  }
+
+  holdings.append(homeCard("Домашний сбор · раз в 24 часа",
+    "Собирай ровно 5 брёвен, 5 камня, 3 руды, 3 льна, 1 семя и 3 приманки. Никаких бесконечных бесплатных материалов; сбор доступен только дома.",
+    [homesteadButton(
+      homestead.gatheredAt !== null && now - homestead.gatheredAt < model.DAY
+        ? `Следующий сбор через ${formatHomeCountdown(homestead.gatheredAt + model.DAY, now)}`
+        : "Собрать дневные материалы",
+      "gather",
+      {},
+      Boolean(homestead.gatheredAt !== null && now - homestead.gatheredAt < model.DAY) ||
+        model.resourceTotal(homestead) + 20 > model.getStorageCapacity(homestead),
+    )]));
+  const house = homeType;
+  const bedroom = homeSection("Комнаты", `Уровень сна выбранного дома: ${house.sleepMs / 60000} минут. Спальня восстанавливает травмы только по завершении таймера, пока путник остаётся дома.`);
+  bedroom.append(homeCard("Спальня",
+    homestead.sleep
+      ? now >= homestead.sleep.endsAt
+        ? "Сон окончен. Нажми, чтобы завершить отдых и вылечить травмы таверны."
+        : `Сон завершится через ${formatHomeCountdown(homestead.sleep.endsAt, now)}. Не покидай дом.`
+      : "Отдых лечит все травмы после точного срока; выход из дома отменяет сон.",
+    [homestead.sleep
+      ? homesteadButton(now >= homestead.sleep.endsAt ? "Завершить сон и вылечить травмы" : "Сон продолжается",
+        "finish-sleep", {}, now < homestead.sleep.endsAt)
+      : homesteadButton(`Лечь спать · ${Math.floor(house.sleepMs / 60000)} минут`, "sleep")]));
+  bedroom.append(homeCard("Ремесленный стол",
+    "Создавай экипировку из материалов домашних мастерских. Предмет попадёт в постоянный запас таверны для подготовки к следующему спуску.",
+    [homesteadButton("Открыть рецепты ремесла", "room-tab", { anchor: "craft" })]));
+  bedroom.append(homeCard("Кухня",
+    "Готовь лепёшку из домашнего зерна или одно специальное блюдо после завершённого сна. Каждая порция восстанавливает сытость до 100; специальное блюдо имеет 50% шанс дать выбранный временный боевой бонус на 2 часа.",
+    [homesteadButton("Перейти к рецептам кухни", "room-tab", { anchor: "kitchen" })]));
+  if (house.tier >= 3) {
+    bedroom.append(homeCard("Почтовый ящик",
+      "Отправка доступна только между владельцами особняков, состоящими в одной активной группе. Предмет сначала поступает в серверный эскроу и выдаётся только после локального сохранения отправителя.",
+      [homesteadButton("Открыть почтовый ящик", "room-tab", { anchor: "mailbox" })]));
+  } else {
+    bedroom.append(homeCard("Почтовый ящик · нужен особняк",
+      "Для отправителя и получателя требуется купленный особняк и свежий статус в одной группе."));
+  }
+  if (house.tier >= 2) {
+    bedroom.append(homeCard("Библиотека",
+      `Пустых страниц: ${homestead.pages}. Покупка не меняет характеристики. Надетая книга: ${homestead.equippedBook?.name || "нет"}.`,
+      [
+        homesteadButton("100 страниц · 300 золота", "buy-pages", { count: 100 }, metaProgress.tavern.gold < 300),
+        homesteadButton("1 000 страниц · 3 000 золота", "buy-pages", { count: 1000 }, metaProgress.tavern.gold < 3000),
+        homesteadButton("Снять надетую книгу", "unequip-book", {}, !homestead.equippedBook || homestead.books.length >= 10000),
+      ]));
+  }
+  if (house.tier >= 3) {
+    const clinic = model.useClinic(homestead, metaProgress.tavern.injuries, now);
+    const clinicReadyAt = homestead.clinicAt === null ? null : homestead.clinicAt + 20 * model.HOUR;
+    bedroom.append(homeCard("Лечебница",
+      `Лечит все травмы раз в 20 часов. Травм сейчас: ${metaProgress.tavern.injuries} / 3.${clinicReadyAt && !clinic.ok ? ` Доступна через ${formatHomeCountdown(clinicReadyAt, now)}.` : " Приём доступен; даже без травм начинается перезарядка."}`,
+      [homesteadButton("Пройти лечение · перезарядка 20 ч", "clinic", {}, !clinic.ok)]));
+    bedroom.append(homeCard("Подвал особняка",
+      homestead.basementPurchased
+        ? "Подвал куплен отдельно. Тренировочный зал не наносит урон игроку и не выдаёт золото или опыт."
+        : `Подвал отдельно открывает тренировочный зал. Цена: ${model.BASEMENT_GOLD_COST.toLocaleString("ru-RU")} золота таверны.`,
+      homestead.basementPurchased
+        ? [homesteadButton("Перейти к тренировочному залу", "room-tab", { anchor: "basement" })]
+        : [homesteadButton(`Купить подвал · ${model.BASEMENT_GOLD_COST.toLocaleString("ru-RU")} золота`,
+          "buy-basement", {}, metaProgress.tavern.gold < model.BASEMENT_GOLD_COST)]));
+    bedroom.append(homeCard("Святилище",
+      "Алтарь рыбалки влияет на настоящий улов. Рун, характеристик и боли в боевой системе пока нет: эти алтари честно отмечены недоступными.",
+      [homesteadButton("К святилищу", "sanctuary")]));
+  }
+  holdings.append(bedroom);
+
+  const workshop = homeSection("Ремесленный стол · профиль", "Все цены показаны до подтверждения. Экипировка сохраняется в постоянный запас; на материалы начисляются только рецептурные расходы.");
+  workshop.dataset.roomSection = "craft";
+  for (const [recipeId, recipe] of Object.entries(model.CRAFT_RECIPES)) {
+    const cost = Object.entries(recipe.recipe)
+      .map(([key, amount]) => `${amount} ${HOME_RESOURCE_NAMES[key]}`).join(" + ");
+    const tierLocked = house.tier < recipe.tier;
+    workshop.append(homeCard(`${recipe.name} · ${recipe.type === "weapon" ? "урон" : "защита"} +${recipe.bonus}`,
+      `Рецепт: ${cost}. ${tierLocked ? "Нужен добротный дом или особняк." : "Материалы списываются только после подтверждения."}`,
+      [homesteadButton(`Создать · ${cost}`, "craft-gear", { recipeId },
+        tierLocked || metaProgress.tavern.stash.length >= 10000 ||
+          Object.entries(recipe.recipe).some(([key, amount]) => homestead.resources[key] < amount))]));
+  }
+
+  const kitchen = homeSection("Кухня", "Зерно — это семена из ежедневного домашнего сбора. Обычная лепёшка полностью насыщает; каждое блюдо после сна доступно один раз на завершённый отдых.");
+  kitchen.dataset.roomSection = "kitchen";
+  const buffLabels = { attack: "атаки", defense: "защиты", dodge: "уклонения" };
+  for (const [mealId, meal] of Object.entries(model.MEALS)) {
+    const ingredients = Object.entries(meal.recipe)
+      .map(([key, amount]) => `${amount} ${HOME_RESOURCE_NAMES[key]}`).join(" + ");
+    const afterRest = meal.afterRest;
+    const lockedByRest = afterRest &&
+      (homestead.lastCompletedSleepAt === null ||
+        homestead.lastRestMealAt === homestead.lastCompletedSleepAt);
+    const effect = meal.stat
+      ? `После готовки блюда после сна даёт 50% шанс на +50% к ${buffLabels[meal.stat]} на 2 часа.`
+      : "Восстанавливает сытость до 100 без боевого усиления.";
+    kitchen.append(homeCard(`${meal.name} · запас ${homestead.meals[mealId]}`,
+      `Цена: ${ingredients}. ${effect}${afterRest && homestead.lastCompletedSleepAt !== null && !lockedByRest
+        ? " Отдых завершён: специальное блюдо можно приготовить сейчас."
+        : afterRest ? " Сначала заверши сон." : ""}`,
+      [
+        homesteadButton(`Приготовить · ${ingredients}`, "cook-meal", { mealId },
+          lockedByRest || Object.entries(meal.recipe).some(([key, amount]) => homestead.resources[key] < amount)),
+        homesteadButton("Съесть · сытость 100%", "eat-meal", { mealId }, homestead.meals[mealId] < 1),
+      ]));
+  }
+  if (homestead.mealBuff) {
+    const statName = buffLabels[homestead.mealBuff.stat] || homestead.mealBuff.stat;
+    kitchen.append(homeCard("Временный эффект еды",
+      homestead.mealBuff.expiresAt > now
+        ? `+50% к ${statName} действует ещё ${formatHomeCountdown(homestead.mealBuff.expiresAt, now)}.`
+        : `Эффект +50% к ${statName} завершился; время окончания ${new Date(homestead.mealBuff.expiresAt).toLocaleString("ru-RU")}.`));
+  }
+
+  if (house.tier >= 2) {
+    const library = homeSection("Библиотека");
+    library.dataset.roomSection = "library";
+    library.append(homeCard(`Пустые страницы · ${homestead.pages} в запасе`,
+      "100 страниц стоят ровно 300 золота; 1 000 страниц — ровно 3 000 золота. Покупка не расходует осколки и не меняет постоянные характеристики.",
+      [
+        homesteadButton("Купить 100 · 300 золота", "buy-pages", { count: 100 }, metaProgress.tavern.gold < 300),
+        homesteadButton("Купить 1 000 · 3 000 золота", "buy-pages", { count: 1000 }, metaProgress.tavern.gold < 3000),
+      ]));
+    library.append(homeCard(`Надетая книга · ${homestead.equippedBook?.name || "нет"}`,
+      homestead.books.length ? `Книг в инвентаре: ${homestead.books.length}.` : "Книг в инвентаре нет.",
+      [homesteadButton("Снять книгу в инвентарь", "unequip-book", {},
+        !homestead.equippedBook || homestead.books.length >= 10000)]));
+    holdings.append(library);
+  }
+
+  if (house.tier >= 3) {
+    const mailbox = homeSection("Почтовый ящик");
+    mailbox.dataset.roomSection = "mailbox";
+    mailbox.append(homeCard("Условия безопасной доставки",
+      "Оба игрока должны владеть особняком и быть в одной группе с недавним heartbeat (до 75 секунд). Сервер хранит gear в эскроу, пока локальное сохранение отправителя не подтвердило удаление; адреса электронной почты и сохранения партнёров не читаются.",
+      [homesteadButton(mailboxLoading ? "Обновление входящих…" : "Обновить входящие", "mail-refresh", {}, mailboxLoading)]));
+    const mailboxContext = window.WellPlayerGroups?.getMailboxContext?.();
+    const partners = mailboxContext?.fresh
+      ? mailboxContext.members.filter((member) => member.user_id !== mailboxContext.userId)
+      : [];
+    const transferRun = getMailboxRunState();
+    const availableGear = transferRun
+      ? [
+        ...["weapon", "armor"].map((type) => transferRun.equipment?.[type]).filter(Boolean)
+          .map((gear) => ({ gear, source: "equipment" })),
+        ...(transferRun.inventory || []).map((gear) => ({ gear, source: "inventory" })),
+      ]
+      : [];
+    if (!partners.length) {
+      mailbox.append(homeCard("Получатель не найден",
+        mailboxContext?.members?.length
+          ? "Обнови группу и дождись свежего heartbeat партнёра."
+          : "Войди в аккаунт и создай или вступи в группу из двух игроков."));
+    } else if (!availableGear.length) {
+      mailbox.append(homeCard("Нет переносимой экипировки",
+        "Для отправки нужен сохранённый спуск с экипированным предметом или предметом в рюкзаке."));
+    } else {
+      for (const partner of partners) {
+        for (const entry of availableGear) {
+          mailbox.append(homeCard(`Отправить ${entry.gear.name} к ${partner.nickname}`,
+            `${entry.gear.type === "weapon" ? "Оружие" : "Броня"} · +${entry.gear.bonus}. Подтверди цену 0; предмет сначала будет принят серверным эскроу.`,
+            [homesteadButton("Передать предмет", "mail-send", {
+              gearId: entry.gear.id,
+              recipientId: partner.user_id,
+              recipientName: partner.nickname,
+            }, !mailboxContext.fresh)]));
+        }
+      }
+    }
+    const pendingMail = loadPendingMailboxOperations();
+    for (const pending of pendingMail) {
+      mailbox.append(homeCard(`Отправка · ${pending.gear?.name || pending.itemId}`,
+        pending.removed
+          ? "Предмет удалён локально; эскроу откроется только после облачного сохранения. При сбое сначала нажми «Синхронизировать» в окне облака, затем повтори."
+          : "Предмет остаётся у отправителя, пока локальное и облачное удаление не сохранится.",
+        [homesteadButton("Повторить безопасное подтверждение", "mail-retry", { key: pending.key })]));
+    }
+    for (const incoming of mailboxInbox) {
+      mailbox.append(homeCard(`Входящее · ${incoming.gear?.name || "экипировка"} · от ${incoming.sender_nickname || "сопартийца"}`,
+        incoming.status === "delivered"
+          ? "Уже сохранено в постоянном запасе; повторная выдача защищена квитанцией."
+          : `Серверный эскроу хранит ${incoming.gear?.type === "armor" ? "броню" : "оружие"} +${incoming.gear?.bonus || "?"}; после подтверждения предмет останется в постоянном запасе таверны.`,
+        [homesteadButton(incoming.status === "delivered" ? "Проверить квитанцию" : "Принять в постоянный запас",
+          "mail-claim", { mailId: incoming.id })]));
+    }
+    holdings.append(mailbox);
+  }
+
+  if (house.tier >= 3 && homestead.basementPurchased) {
+    const basement = homeSection("Тренировочный зал · подвал");
+    basement.dataset.roomSection = "basement";
+    const armor = model.DUMMY_ARMOR[homestead.dummyArmor];
+    basement.append(homeCard(`Манекен · ${homestead.dummyHp.toLocaleString("ru-RU")} / 100 000 HP`,
+      `Броня манекена: ${armor.name} (снижает тренировочный урон на ${armor.reduction}). Удары не ранят игрока, не дают золото или опыт.${homestead.dummyAchievement ? " Достижение «Манекен повержен» уже сохранено." : ""}`,
+      [
+        ...Object.entries(model.DUMMY_ARMOR).map(([id, definition]) =>
+          homesteadButton(`Броня: ${definition.name}`, "dummy-armor", { armorId: id }, homestead.dummyArmor === id)),
+        homesteadButton("Ударить манекен", "dummy-hit", {}, homestead.dummyHp === 0),
+        homesteadButton("Восстановить манекен · 100 000 HP", "dummy-reset", {}, homestead.dummyHp > 0),
+      ]));
+    basement.append(homeCard(`Маскировка · ${homestead.camouflage} в инвентаре`,
+      `Цена: ${model.CAMOUFLAGE_GOLD_COST.toLocaleString("ru-RU")} золота. Расходуется, чтобы пропустить одного обычного врага (не босса и не элиту) в следующем спуске.`,
+      [homesteadButton("Купить маскировку · 1 000 золота", "buy-camouflage", {},
+        homestead.camouflage > 0 || metaProgress.tavern.gold < model.CAMOUFLAGE_GOLD_COST)]));
+    holdings.append(basement);
+  }
+
+  holdings.append(workshop, kitchen);
+
+  const plotsSection = homeSection("Участки и постройки", "На каждом участке — одна постройка. Перестройка в другой тип стоит полный рецепт новой постройки и не возвращает прежние материалы; активные посевы, вода и дневные квоты защищены.");
+  const resources = model.RESOURCE_KEYS.map((key) =>
+    `${HOME_RESOURCE_NAMES[key]}: ${homestead.resources[key]}`
+  ).join(" · ");
+  const inventory = document.createElement("p");
+  inventory.className = "homestead-note";
+  inventory.textContent = `Материалы: ${resources}`;
+  plotsSection.append(inventory);
+  if (!homestead.plots.length) {
+    plotsSection.append(homeCard("Участков пока нет", "Купи участок выше за 100 осколков, чтобы построить сооружение."));
+  }
+  const buildingLabels = model.BUILDINGS;
+  for (const plot of homestead.plots) {
+    const inactive = plot.index >= model.getPlotLimit(homestead);
+    const built = plot.building ? `${buildingLabels[plot.building].name} · ур. ${plot.level}` : "Пустой участок";
+    const actions = [];
+    if (!inactive && !plot.building) {
+      for (const [buildingId, definition] of Object.entries(buildingLabels)) {
+        const price = Object.entries(definition.recipe)
+          .map(([key, amount]) => `${amount} ${HOME_RESOURCE_NAMES[key]}`).join(" + ");
+        actions.push(homesteadButton(`Построить ${definition.name} · ${price}`, "build",
+          { index: plot.index, building: buildingId },
+          Object.entries(definition.recipe).some(([key, amount]) => homestead.resources[key] < amount)));
+      }
+    } else if (!inactive && plot.building) {
+      const definition = buildingLabels[plot.building];
+      const price = Object.entries(definition.recipe)
+        .map(([key, amount]) => `${amount} ${HOME_RESOURCE_NAMES[key]}`).join(" + ");
+      const capped = plot.level >= definition.maxLevel;
+      actions.push(homesteadButton(capped ? "Достигнут предел уровня" : `Улучшить · ${price}`,
+        "build", { index: plot.index, building: plot.building },
+        capped || Object.entries(definition.recipe).some(([key, amount]) => homestead.resources[key] < amount)));
+      for (const [buildingId, replacement] of Object.entries(buildingLabels)) {
+        if (buildingId === plot.building) continue;
+        const replacementPrice = Object.entries(replacement.recipe)
+          .map(([key, amount]) => `${amount} ${HOME_RESOURCE_NAMES[key]}`).join(" + ");
+        const canReplace = model.canReplaceBuilding(homestead, plot.index, buildingId, now);
+        actions.push(homesteadButton(`Перестроить в ${replacement.name} · ${replacementPrice}`, "build",
+          { index: plot.index, building: buildingId },
+          !canReplace.ok ||
+            Object.entries(replacement.recipe).some(([key, amount]) => homestead.resources[key] < amount)));
+      }
+      if (plot.building === "boards" || plot.building === "blocks" ||
+        plot.building === "ingots" || plot.building === "cloth") {
+        const today = new Date(now).toISOString().slice(0, 10);
+        const used = plot.daily.day === today ? plot.daily.processed : 0;
+        const quota = 2 + plot.level;
+        const raw = definition.input;
+        actions.push(homesteadButton(`Переработать 3 ${HOME_RESOURCE_NAMES[raw]} → 1 ${HOME_RESOURCE_NAMES[definition.output]} · ${used}/${quota} сегодня`,
+          "process", { index: plot.index }, used >= quota || homestead.resources[raw] < 3));
+      } else if (plot.building === "pond") {
+        const waterReady = plot.waterAt === null || now - plot.waterAt >= 8 * model.HOUR;
+        const fishReady = plot.fishedAt === null || now - plot.fishedAt >= 8 * model.HOUR;
+        actions.push(homesteadButton(
+          waterReady ? "Набрать 300 воды (кулдаун 8 ч)" : `Вода через ${formatHomeCountdown(plot.waterAt + 8 * model.HOUR, now)}`,
+          "draw-water", { index: plot.index }, !waterReady || plot.water >= 1000));
+        const baitCost = 2 + plot.level;
+        actions.push(homesteadButton(
+          fishReady ? `Ловить · ≥300 воды, ${baitCost} приманки, кулдаун 8 ч` : `Ловля через ${formatHomeCountdown(plot.fishedAt + 8 * model.HOUR, now)}`,
+          "fish", { index: plot.index }, !fishReady || plot.water < 300 || homestead.resources.bait < baitCost));
+        const waterNote = document.createElement("p");
+        waterNote.className = "homestead-note";
+        waterNote.textContent = `В пруду ${plot.water} / 1 000 воды. Ловля даёт ${2 + plot.level} рыбы; источник воды: 300 каждые 8 часов, только пока ты дома.`;
+        plotsSection.append(homeCard(`Участок ${plot.index + 1} · ${built}`, "", actions), waterNote);
+        continue;
+      } else if (plot.building === "garden") {
+        const crop = plot.crop;
+        if (!crop) {
+          actions.push(homesteadButton("Посеять · 1 семя", "plant", { index: plot.index },
+            homestead.resources.seeds < 1));
+        } else if (crop.secondWateredAt === null) {
+          const elapsed = now - crop.plantedAt;
+          actions.push(homesteadButton(
+            elapsed < 10 * model.HOUR ? `Второй полив через ${formatHomeCountdown(crop.plantedAt + 10 * model.HOUR, now)}`
+              : elapsed > 12 * model.HOUR ? "Окно полива пропущено" : "Полить второй раз (10–12 ч)",
+            elapsed > 12 * model.HOUR ? "discard-crop" : "water-garden",
+            { index: plot.index },
+            elapsed < 10 * model.HOUR));
+        } else {
+          actions.push(homesteadButton(
+            now - crop.plantedAt < 20 * model.HOUR
+              ? `Урожай через ${formatHomeCountdown(crop.plantedAt + 20 * model.HOUR, now)}`
+              : `Собрать ${2 + plot.level} растений`,
+            "harvest-garden", { index: plot.index }, now - crop.plantedAt < 20 * model.HOUR));
+        }
+      }
+    }
+    if (inactive) {
+      plotsSection.append(homeCard(`Участок ${plot.index + 1} · не активен`,
+        "Этот ранее купленный участок сохранён, но доступен после приобретения дома более высокого уровня."));
+    } else {
+      plotsSection.append(homeCard(`Участок ${plot.index + 1} · ${built}`, "", actions));
+    }
+    if (plot.building === "garden" && plot.crop) {
+      const cropNote = document.createElement("p");
+      cropNote.className = "homestead-note";
+      cropNote.textContent = `Посев от ${new Date(plot.crop.plantedAt).toLocaleString("ru-RU")}; первый полив уже выполнен. Второй обязателен через 10–12 часов.`;
+      plotsSection.append(cropNote);
+    }
+  }
+  holdings.append(plotsSection);
+
+  if (house.tier >= 3) {
+    const sanctuary = homeSection("Алтари особняка");
+    for (const [id, altar] of Object.entries(model.ALTARS)) {
+      const level = homestead.altars[id];
+      if (id === "fishing") {
+        const cost = 100 * (level + 1);
+        sanctuary.append(homeCard(`Алтарь рыбалки · ур. ${level} / ${altar.maxLevel}`,
+          `${model.ALTAR_EFFECTS[id]} Следующее улучшение: ${cost} осколков.`,
+          [homesteadButton(level >= altar.maxLevel ? "Предел уровня" : `Улучшить · ${cost} осколков`,
+            "upgrade-altar", { altar: id, cost },
+            level >= altar.maxLevel || metaProgress.essence < cost)]));
+      } else {
+        sanctuary.append(homeCard(`Алтарь ${altar.name} · ур. ${level} / ${altar.maxLevel} · недоступен`,
+          `${model.ALTAR_EFFECTS[id]} Списание осколков отключено, пока нет работающего эффекта.`));
+      }
+    }
+    holdings.append(sanctuary);
+  }
+  ui.homesteadContent.append(holdings);
+  if (homesteadAnchor) {
+    const target = [...ui.homesteadContent.querySelectorAll("[data-room-section]")]
+      .find((section) => section.dataset.roomSection === homesteadAnchor);
+    if (target) window.setTimeout(() => target.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
+  }
+}
+
+function saveHomesteadResult(result, message, options = {}) {
+  if (!result.ok) {
+    homesteadMessage = result.reason;
+    renderHomestead();
+    return false;
+  }
+  const previous = metaProgress;
+  let tavern = result.tavern ? JSON.parse(JSON.stringify(result.tavern)) : previous.tavern;
+  if (!result.tavern && result.gold !== undefined && result.gold !== previous.tavern.gold) {
+    tavern = {
+      ...previous.tavern,
+      gold: result.gold,
+      revision: previous.tavern.revision + 1,
+      updatedAt: Date.now(),
+    };
+  }
+  if (options.healInjuries) {
+    tavern = {
+      ...tavern,
+      injuries: 0,
+      revision: tavern.revision + 1,
+      updatedAt: Date.now(),
+    };
+  }
+  metaProgress = {
+    ...previous,
+    essence: result.essence === undefined ? previous.essence : result.essence,
+    tavern,
+    homestead: result.state,
+  };
+  if (!persistMetaProgress()) {
+    metaProgress = previous;
+    homesteadMessage = "Не удалось сохранить изменение дома. Ничего не списано и действие не применено.";
+    renderHomestead();
+    return false;
+  }
+  homesteadMessage = message;
+  render();
+  renderHomestead();
+  return true;
+}
+
+function latestHomesteadBalances() {
+  let stored;
+  try {
+    stored = JSON.parse(window.localStorage.getItem(META_SAVE_KEY) || "null");
+  } catch {
+    throw new Error("Не удалось проверить сохранённый кошелёк. Покупка не выполнена.");
+  }
+  if (stored === null) {
+    return { essence: metaProgress.essence, gold: metaProgress.tavern.gold };
+  }
+  if (!isValidMetaProgress(stored)) {
+    throw new Error("Сохранённый кошелёк повреждён; покупка заблокирована без списания.");
+  }
+  metaProgress = mergeMetaProgress(metaProgress, stored);
+  return {
+    essence: metaProgress.essence,
+    gold: metaProgress.tavern.gold,
+  };
+}
+
+function getMailboxRunState() {
+  return !state.started && savedRun && isValidRun({ version: SAVE_VERSION, state: savedRun })
+    ? savedRun
+    : null;
+}
+
+function mailboxStoragePrefix(userId) {
+  return `well-of-whispers-mail-outbox:${userId}:`;
+}
+
+function loadPendingMailboxOperations() {
+  const context = window.WellPlayerGroups?.getMailboxContext?.();
+  if (!context?.userId) return [];
+  const prefix = mailboxStoragePrefix(context.userId);
+  const pending = [];
+  try {
+    for (let index = 0; index < window.localStorage.length; index += 1) {
+      const key = window.localStorage.key(index);
+      if (!key?.startsWith(prefix)) continue;
+      const operation = JSON.parse(window.localStorage.getItem(key) || "null");
+      if (operation && operation.key === key && typeof operation.itemId === "string" &&
+        typeof operation.recipientId === "string" && typeof operation.requestId === "string" &&
+        isValidGear(operation.gear)) pending.push(operation);
+    }
+  } catch (error) {
+    console.warn("Не удалось прочитать очередь почтового ящика.", error);
+    homesteadMessage = "Не удалось проверить незавершённые отправки; новые письма временно заблокированы.";
+  }
+  return pending;
+}
+
+function persistMailboxOperation(operation) {
+  try {
+    window.localStorage.setItem(operation.key, JSON.stringify(operation));
+    return true;
+  } catch (error) {
+    console.warn("Не удалось сохранить состояние отправки предмета.", error);
+    throw new Error("Не удалось сохранить локальную квитанцию отправки. Предмет не будет снят с вашего сохранения.");
+  }
+}
+
+function mailboxRequestId() {
+  if (window.crypto?.randomUUID) return window.crypto.randomUUID();
+  const bytes = new Uint8Array(16);
+  window.crypto.getRandomValues(bytes);
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  return [...bytes].map((value, index) => {
+    const hex = value.toString(16).padStart(2, "0");
+    return [4, 6, 8, 10].includes(index) ? `-${hex}` : hex;
+  }).join("");
+}
+
+async function mailboxRpc(name, args = {}) {
+  const api = window.WellPlayerGroups;
+  if (!api?.mailboxRpc) throw new Error("Почтовый ящик не настроен в клиенте групп.");
+  return api.mailboxRpc(name, args);
+}
+
+function writeSavedMailboxRun(nextRun) {
+  try {
+    window.localStorage.setItem(RUN_SAVE_KEY, JSON.stringify({ version: SAVE_VERSION, state: nextRun }));
+  } catch (error) {
+    console.warn("Не удалось сохранить спуск после подготовки почты.", error);
+    return false;
+  }
+  savedRun = nextRun;
+  if (window.WellCloudSave) window.WellCloudSave.scheduleSave(getCloudSaveSnapshot());
+  return true;
+}
+
+async function finishMailboxSend(operation) {
+  let escrow = operation.escrowId
+    ? { id: operation.escrowId }
+    : await mailboxRpc("player_mailbox_send", {
+      p_recipient_id: operation.recipientId,
+      p_request_id: operation.requestId,
+      p_gear: operation.gear,
+    });
+  if (!escrow || typeof escrow.id !== "string") throw new Error("Сервер не подтвердил приём предмета в эскроу.");
+  operation.escrowId = escrow.id;
+  persistMailboxOperation(operation);
+
+  const currentRun = getMailboxRunState();
+  const itemStillExists = currentRun &&
+    [...(currentRun.inventory || []), currentRun.equipment?.weapon, currentRun.equipment?.armor]
+      .filter(Boolean).some((item) => item.id === operation.itemId);
+  if (itemStillExists) {
+    const nextRun = JSON.parse(JSON.stringify(currentRun));
+    nextRun.inventory = nextRun.inventory.filter((item) => item.id !== operation.itemId);
+    for (const type of ["weapon", "armor"]) {
+      if (nextRun.equipment?.[type]?.id === operation.itemId) nextRun.equipment[type] = null;
+    }
+    if (!writeSavedMailboxRun(nextRun)) {
+      throw new Error("Предмет принят сервером в ожидающий эскроу, но локальный спуск не сохранился. Предмет остался у вас; повтори подтверждение позже.");
+    }
+  }
+  operation.removed = true;
+  persistMailboxOperation(operation);
+  if (!window.WellCloudSave?.saveNow) {
+    throw new Error("Немедленное облачное сохранение недоступно; эскроу остаётся закрытым.");
+  }
+  await window.WellCloudSave.saveNow(getCloudSaveSnapshot());
+
+  const receipt = await mailboxRpc("player_mailbox_sender_removed", { p_mail_id: operation.escrowId });
+  if (!receipt || !["ready", "claimed", "delivered"].includes(receipt.status)) {
+    throw new Error("Сервер не подтвердил завершение отправки. Повтори подтверждение; идентификатор эскроу сохранён.");
+  }
+  window.localStorage.removeItem(operation.key);
+  return receipt;
+}
+
+async function sendMailboxGear(gearId, recipientId, recipientName) {
+  const context = window.WellPlayerGroups?.getMailboxContext?.();
+  const run = getMailboxRunState();
+  if (!metaProgress.homestead.atHome || window.WellHomesteadModel.getBestHome(metaProgress.homestead)?.tier !== "mansion") {
+    throw new Error("Отправка доступна только из почтового ящика особняка.");
+  }
+  if (!context?.fresh || !context.members.some((member) => member.user_id === recipientId)) {
+    throw new Error("Получатель не найден в группе с актуальным heartbeat.");
+  }
+  if (!run) throw new Error("Для отправки нужен сохранённый спуск между боями.");
+  const gear = [
+    ...(run.inventory || []),
+    run.equipment?.weapon,
+    run.equipment?.armor,
+  ].filter(Boolean).find((item) => item.id === gearId);
+  if (!isValidGear(gear)) throw new Error("Можно отправить только валидную экипировку из сохранённого инвентаря.");
+  if (!window.confirm(`Передать ${gear.name} (+${gear.bonus}) игроку ${recipientName || "из вашей группы"}? Цена отправки — 0. Предмет останется вашим, пока локальное удаление не сохранится.`)) return;
+  const key = `${mailboxStoragePrefix(context.userId)}${encodeURIComponent(gear.id)}:${encodeURIComponent(recipientId)}`;
+  let operation;
+  try {
+    operation = JSON.parse(window.localStorage.getItem(key) || "null");
+  } catch {
+    throw new Error("Локальная квитанция почты повреждена; предмет не отправлен.");
+  }
+  if (!operation) {
+    operation = {
+      key,
+      requestId: mailboxRequestId(),
+      itemId: gear.id,
+      recipientId,
+      gear: JSON.parse(JSON.stringify(gear)),
+      removed: false,
+    };
+    persistMailboxOperation(operation);
+  }
+  const receipt = await finishMailboxSend(operation);
+  homesteadMessage = `Экипировка сохранена в серверном эскроу и открыта получателю. Статус: ${receipt.status}.`;
+}
+
+async function retryMailboxSend(key) {
+  if (typeof key !== "string" || !key.startsWith("well-of-whispers-mail-outbox:")) {
+    throw new Error("Неверная квитанция отправки.");
+  }
+  let operation;
+  try {
+    operation = JSON.parse(window.localStorage.getItem(key) || "null");
+  } catch {
+    throw new Error("Не удалось прочитать квитанцию отправки.");
+  }
+  if (!operation || operation.key !== key || !isValidGear(operation.gear)) {
+    throw new Error("Квитанция отправки отсутствует или повреждена.");
+  }
+  const receipt = await finishMailboxSend(operation);
+  homesteadMessage = `Отправка подтверждена. Статус эскроу: ${receipt.status}.`;
+}
+
+async function refreshMailbox() {
+  mailboxLoading = true;
+  renderHomestead();
+  try {
+    const result = await mailboxRpc("player_mailbox_list");
+    if (!Array.isArray(result) || result.some((row) =>
+      !row || typeof row.id !== "string" || typeof row.status !== "string"
+    )) throw new Error("Сервер вернул неверный список писем.");
+    mailboxInbox = result.filter((row) => ["ready", "claimed", "delivered"].includes(row.status));
+    homesteadMessage = `Почтовый ящик обновлён: писем для получения — ${mailboxInbox.length}.`;
+  } finally {
+    mailboxLoading = false;
+    renderHomestead();
+  }
+}
+
+async function claimMailboxItem(mailId) {
+  const claim = await mailboxRpc("player_mailbox_claim", { p_mail_id: mailId });
+  if (!claim || claim.id !== mailId || !isValidGear(claim.gear)) {
+    throw new Error("Сервер не вернул валидный предмет для получения.");
+  }
+  const current = metaProgress.homestead;
+  const existingReceipt = current.mailReceipts.find((receipt) => receipt.mailId === mailId);
+  if (!existingReceipt) {
+    if (metaProgress.tavern.stash.length >= 10000) {
+      throw new Error("Постоянный запас переполнен. Эскроу хранит предмет; освободи место и повтори получение.");
+    }
+    const nextHome = JSON.parse(JSON.stringify(current));
+    const nextTavern = JSON.parse(JSON.stringify(metaProgress.tavern));
+    const highestSequence = Math.max(
+      nextTavern.nextGearSequence,
+      ...nextTavern.stash.map((item) => Number(item.id.slice(5))),
+    );
+    const gearId = `gear-${highestSequence + 1}`;
+    const gear = { id: gearId, type: claim.gear.type, name: claim.gear.name, bonus: claim.gear.bonus };
+    nextTavern.stash.push(gear);
+    nextTavern.nextGearSequence = highestSequence + 1;
+    nextTavern.revision += 1;
+    nextTavern.updatedAt = Date.now();
+    nextHome.mailReceipts.push({ mailId, gearId });
+    nextHome.revision += 1;
+    nextHome.updatedAt = Date.now();
+    const saved = saveHomesteadResult({ ok: true, state: nextHome, tavern: nextTavern },
+      `${gear.name} сохранён в постоянном запасе таверны.`);
+    if (!saved) throw new Error("Не удалось сохранить предмет получателя. Серверный эскроу не подтверждён и его можно забрать повторно.");
+  }
+  if (!window.WellCloudSave?.saveNow) {
+    throw new Error("Немедленное облачное сохранение недоступно; серверный эскроу не подтверждён.");
+  }
+  await window.WellCloudSave.saveNow(getCloudSaveSnapshot());
+  const receipt = await mailboxRpc("player_mailbox_ack_claim", { p_mail_id: mailId });
+  if (!receipt || receipt.acknowledged !== true) {
+    throw new Error("Предмет сохранён локально, но серверное подтверждение не получено. Повтори получение; квитанция исключит дубликат.");
+  }
+  homesteadMessage = "Получение подтверждено; предмет добавлен в постоянный запас.";
+}
+
+function openHomestead(anchor = "") {
+  homesteadAnchor = anchor;
+  if (state.started && !state.gameOver) {
+    homesteadMessage = "Домашняя лавка доступна между спусками.";
+    return;
+  }
+  homesteadMessage = "";
+  const homestead = metaProgress.homestead;
+  if (window.WellHomesteadModel.getBestHome(homestead) && !homestead.atHome) {
+    const entered = window.WellHomesteadModel.enterHome(homestead);
+    if (!saveHomesteadResult(entered, "")) return;
+  }
+  if (!ui.homesteadDialog.open) ui.homesteadDialog.showModal();
+  renderHomestead();
+}
+
+function closeHomestead() {
+  if (metaProgress.homestead.atHome) {
+    const result = window.WellHomesteadModel.leaveHome(metaProgress.homestead);
+    if (!saveHomesteadResult(result, "Ты покинул дом; незавершённый сон отменён.")) return false;
+  }
+  if (ui.homesteadDialog.open) ui.homesteadDialog.close();
+  homesteadAnchor = "";
+  selectedDistrict = "upper";
+  renderCity();
+  return true;
+}
+
+async function handleHomesteadAction(action, data = {}) {
+  if (homesteadBusy || !localMetaReadable) return;
+  homesteadBusy = true;
+  const model = window.WellHomesteadModel;
+  let current = metaProgress.homestead;
+  const now = Date.now();
+  try {
+    let result;
+    let message = "";
+    let options = {};
+    if (action === "noop") return;
+    if (action === "enter") {
+      result = model.enterHome(current, now);
+      message = "Ты вошёл в дом.";
+    } else if (action === "buy-home") {
+      const price = data.payment === "gold" ? "20 000 золотых таверны"
+        : data.payment === "upgrade" ? "600 осколков"
+          : data.tier === "sturdy" ? "400 осколков" : "1 000 осколков";
+      if (!window.confirm(`Купить «${model.HOME_TYPES[data.tier]?.name}» за ${price}? Будет списан только существующий игровой баланс.`)) return;
+      const balances = latestHomesteadBalances();
+      current = metaProgress.homestead;
+      result = model.purchaseHome(current, data.tier, data.payment, balances.essence,
+        balances.gold, homesteadReceiptId(), now);
+      if (result.ok) {
+        result.state = model.enterHome(result.state, now).state;
+        message = `${model.HOME_TYPES[data.tier].name} куплен. Теперь автоматически используется лучший дом.`;
+      }
+    } else if (action === "buy-plot") {
+      if (!window.confirm("Купить новый участок за 100 имеющихся осколков?")) return;
+      const balances = latestHomesteadBalances();
+      current = metaProgress.homestead;
+      result = model.buyPlot(current, balances.essence, homesteadReceiptId(), now);
+      message = result.ok ? `Участок ${result.plot.index + 1} куплен.` : "";
+    } else if (action === "gather") {
+      result = model.gather(current, now);
+      message = result.ok ? "Материалы собраны. Следующий сбор — через 24 часа." : "";
+    } else if (action === "build") {
+      const plotIndex = Number(data.index);
+      const plot = current.plots[plotIndex];
+      if (plot?.building && plot.building !== data.building) {
+        const replacement = model.canReplaceBuilding(current, plotIndex, data.building, now);
+        if (!replacement.ok) throw new Error(replacement.reason);
+        const definition = model.BUILDINGS[data.building];
+        if (!definition) throw new Error("Неизвестная постройка.");
+        const recipe = Object.entries(definition.recipe)
+          .map(([key, amount]) => `${amount} ${HOME_RESOURCE_NAMES[key]}`).join(" + ");
+        if (!window.confirm(
+          `Перестроить участок ${plotIndex + 1} в «${definition.name}» за ${recipe}? ` +
+          "Полный рецепт будет списан; уровень и вложенные материалы прежней постройки не возвращаются.",
+        )) return;
+      }
+      result = model.buildOrUpgrade(current, plotIndex, data.building, now);
+      message = result.ok ? `${model.BUILDINGS[data.building].name}: уровень ${result.plot.level}. Материалы списаны по рецепту.` : "";
+    } else if (action === "process") {
+      result = model.processMaterials(current, Number(data.index), 1, now);
+      message = result.ok ? `Переработано: ${result.output} ед. материала. Операции списаны из дневного лимита.` : "";
+    } else if (action === "draw-water") {
+      result = model.drawWater(current, Number(data.index), now);
+      message = result.ok ? `В пруду ${result.water} / 1 000 воды.` : "";
+    } else if (action === "fish") {
+      result = model.fish(current, Number(data.index), now);
+      message = result.ok ? `Улов: ${result.fish} рыбы${result.bait ? ` и ${result.bait} приманки` : ""}.` : "";
+    } else if (action === "plant") {
+      result = model.plant(current, Number(data.index), now);
+      message = result.ok ? "Посев сделан и полит. Второй полив требуется через 10–12 часов." : "";
+    } else if (action === "water-garden") {
+      result = model.waterGarden(current, Number(data.index), now);
+      message = result.ok ? "Второй полив выполнен. Урожай созреет через 20 часов после посева." : "";
+    } else if (action === "discard-crop") {
+      result = model.discardCrop(current, Number(data.index), now);
+      message = result.ok ? "Посев удалён без возврата семени." : "";
+    } else if (action === "harvest-garden") {
+      result = model.harvestGarden(current, Number(data.index), now);
+      message = result.ok ? `Собрано растений: ${result.herbs}.` : "";
+    } else if (action === "sleep") {
+      result = model.startSleep(current, now);
+      message = result.ok ? `Сон начался на ${result.durationMs / 60000} минут. Не покидай дом.` : "";
+    } else if (action === "finish-sleep") {
+      result = model.completeSleep(current, now);
+      options.healInjuries = result.ok;
+      message = result.ok ? "Сон завершён; травмы вылечены." : "";
+    } else if (action === "clinic") {
+      result = model.useClinic(current, metaProgress.tavern.injuries, now);
+      options.healInjuries = result.ok;
+      message = result.ok
+        ? `Приём запущен. Снято травм: ${result.healed}. Следующий доступен через 20 часов.`
+        : "";
+    } else if (action === "room-tab") {
+      homesteadAnchor = data.anchor;
+      homesteadMessage = "";
+      renderHomestead();
+      window.setTimeout(() => {
+        const target = ui.homesteadContent.querySelector(`[data-room-section="${CSS.escape(data.anchor)}"]`);
+        target?.scrollIntoView({ behavior: "smooth", block: "start" });
+      }, 0);
+      return;
+    } else if (action === "craft-gear") {
+      const recipe = model.CRAFT_RECIPES[data.recipeId];
+      if (!recipe) throw new Error("Рецепт не найден.");
+      const cost = Object.entries(recipe.recipe)
+        .map(([key, amount]) => `${amount} ${HOME_RESOURCE_NAMES[key]}`).join(" + ");
+      if (!window.confirm(`Создать «${recipe.name}» (+${recipe.bonus}) за ${cost}? Предмет попадёт в постоянный запас таверны.`)) return;
+      if (metaProgress.tavern.stash.length >= 10000) throw new Error("Постоянный запас полон. Создание не выполнено и материалы не списаны.");
+      const gearId = `gear-${metaProgress.tavern.nextGearSequence + 1}`;
+      result = model.craftGear(current, data.recipeId, gearId, now);
+      if (result.ok) {
+        result.tavern = JSON.parse(JSON.stringify(metaProgress.tavern));
+        result.tavern.stash.push(result.gear);
+        result.tavern.nextGearSequence += 1;
+        result.tavern.revision += 1;
+        result.tavern.updatedAt = now;
+        message = `${recipe.name} сохранён в постоянном запасе.`;
+      }
+    } else if (action === "cook-meal") {
+      result = model.cookMeal(current, data.mealId, now);
+      message = result.ok ? `${result.meal.name} приготовлено и добавлено в запас.` : "";
+    } else if (action === "eat-meal") {
+      result = model.eatMeal(current, metaProgress.tavern, data.mealId, now, Math.random,
+        Boolean(state.enemy && !state.gameOver));
+      if (result.ok) {
+        const statName = { attack: "атаку", defense: "защиту", dodge: "уклонение" }[result.meal.stat];
+        message = result.buffTriggered
+          ? `Сытость восстановлена до 100. Сработал бонус: +50% к ${statName} до ${new Date(result.buff.expiresAt).toLocaleTimeString("ru-RU")}.`
+          : result.meal.stat
+            ? "Сытость восстановлена до 100; 50% шанс временного боевого бонуса не сработал."
+            : "Сытость восстановлена до 100.";
+      }
+    } else if (action === "buy-pages") {
+      const count = Number(data.count);
+      const cost = count === 100 ? 300 : count === 1000 ? 3000 : null;
+      if (cost === null || !window.confirm(`Купить ${count.toLocaleString("ru-RU")} пустых страниц за ${cost.toLocaleString("ru-RU")} золотых таверны?`)) return;
+      const balances = latestHomesteadBalances();
+      current = metaProgress.homestead;
+      result = model.buyPages(current, count, balances.gold, homesteadReceiptId(), now);
+      if (result.ok) {
+        result.tavern = { ...metaProgress.tavern, gold: result.gold,
+          revision: metaProgress.tavern.revision + 1, updatedAt: now };
+        message = `Куплено страниц: ${result.count}. Осталось ${result.tavern.gold} золотых.`;
+      }
+    } else if (action === "unequip-book") {
+      result = model.unequipBook(current, now);
+      message = result.ok ? `Книга «${result.book.name}» перемещена в инвентарь.` : "";
+    } else if (action === "buy-basement") {
+      if (!window.confirm(`Отдельно купить подвал особняка за ${model.BASEMENT_GOLD_COST.toLocaleString("ru-RU")} золотых? Откроется тренировочный зал.`)) return;
+      const balances = latestHomesteadBalances();
+      current = metaProgress.homestead;
+      result = model.purchaseBasement(current, balances.gold, homesteadReceiptId(), now);
+      if (result.ok) {
+        result.tavern = { ...metaProgress.tavern, gold: result.gold,
+          revision: metaProgress.tavern.revision + 1, updatedAt: now };
+        message = "Подвал особняка куплен за золото таверны.";
+      }
+    } else if (action === "buy-camouflage") {
+      if (!window.confirm(`Купить одну маскировку за ${model.CAMOUFLAGE_GOLD_COST.toLocaleString("ru-RU")} золота? Ею можно пропустить одного обычного врага, но не элиту или босса.`)) return;
+      const balances = latestHomesteadBalances();
+      current = metaProgress.homestead;
+      result = model.buyCamouflage(current, balances.gold, homesteadReceiptId(), now);
+      if (result.ok) {
+        result.tavern = { ...metaProgress.tavern, gold: result.gold,
+          revision: metaProgress.tavern.revision + 1, updatedAt: now };
+        message = "Маскировка добавлена в инвентарь подвала.";
+      }
+    } else if (action === "dummy-armor") {
+      result = model.setDummyArmor(current, data.armorId, now);
+      message = result.ok ? `На манекен надета броня: ${model.DUMMY_ARMOR[data.armorId].name}.` : "";
+    } else if (action === "dummy-hit") {
+      const attack = state.started ? getAttackPower() : state.attack;
+      result = model.strikeDummy(current, Math.max(1, attack), now);
+      message = result.ok
+        ? `Манекен получил ${result.damage} урона; осталось ${result.state.dummyHp} HP.${result.achievementAwarded ? " Достижение «Манекен повержен» получено!" : ""}`
+        : "";
+    } else if (action === "dummy-reset") {
+      result = model.resetDummy(current, now);
+      message = result.ok ? "Манекен восстановлен до 100 000 HP. Достижение сохраняется." : "";
+    } else if (action === "mail-send") {
+      await sendMailboxGear(data.gearId, data.recipientId, data.recipientName);
+      renderHomestead();
+      return;
+    } else if (action === "mail-retry") {
+      await retryMailboxSend(data.key);
+      renderHomestead();
+      return;
+    } else if (action === "mail-refresh") {
+      await refreshMailbox();
+      return;
+    } else if (action === "mail-claim") {
+      await claimMailboxItem(data.mailId);
+      renderHomestead();
+      return;
+    } else if (action === "upgrade-altar") {
+      const cost = Number(data.cost);
+      if (!window.confirm(`Улучшить алтарь рыбалки за ${cost} имеющихся осколков?`)) return;
+      const balances = latestHomesteadBalances();
+      current = metaProgress.homestead;
+      result = model.upgradeAltar(current, data.altar, balances.essence, homesteadReceiptId(), now);
+      message = result.ok ? `Алтарь рыбалки улучшен до уровня ${result.state.altars.fishing}.` : "";
+    } else if (action === "kitchen") {
+      if (!model.getBestHome(current) || !current.atHome) throw new Error("Кухня доступна только в собственном доме.");
+      if (!closeHomestead()) return;
+      openTavern();
+      return;
+    } else if (action === "sanctuary") {
+      homesteadMessage = "Алтари доступны в разделе «Алтари особняка» ниже.";
+      renderHomestead();
+      ui.homesteadContent.scrollTo({ top: ui.homesteadContent.scrollHeight, behavior: "smooth" });
+      return;
+    } else {
+      throw new Error("Неизвестное действие домашней лавки.");
+    }
+    if (!result) return;
+    saveHomesteadResult(result, message, options);
+  } catch (error) {
+    homesteadMessage = error.message;
+  } finally {
+    homesteadBusy = false;
+    renderHomestead();
+  }
+}
+
 function openHarbor() {
   if (state.started && !state.gameOver) return;
-  if (housingBlocksTravel()) return;
   selectedDistrict = "port";
   renderCity();
   harborMessage = "";
@@ -3411,7 +4071,6 @@ function tavernActionButton(label, action, data = {}, className = "action-button
 
 function openTavern() {
   if (state.started && !state.gameOver) return;
-  if (housingBlocksTravel()) return;
   selectedDistrict = "port";
   renderCity();
   selectedTavernTab = "food";
@@ -3851,6 +4510,10 @@ function render() {
   const coopBattle = window.WellPlayerGroups?.getBattle();
   const inGroupBattle = Boolean(coopBattle && ["waiting", "active"].includes(coopBattle.status));
   ui.combatActions.hidden = !state.enemy || state.gameOver || inGroupBattle;
+  const camouflageButton = $("camouflage-run-button");
+  camouflageButton.hidden = !state.enemy || state.gameOver || state.enemy.boss || state.enemy.elite;
+  camouflageButton.disabled = metaProgress.homestead.camouflage < 1;
+  camouflageButton.textContent = `Маскировка · ${metaProgress.homestead.camouflage} в инвентаре`;
   ui.merchantActions.hidden = !state.merchantAvailable || state.gameOver;
   ui.buyPotion.disabled = state.potions >= getPotionLimit() || state.gold < MERCHANT_PRICES.potion;
   ui.buyPotion.textContent = `⚗ Зелье · ${MERCHANT_PRICES.potion} ✦`;
@@ -3896,7 +4559,6 @@ function render() {
   renderRunQuests();
   renderCity();
   if (ui.tavernDialog.open) renderTavern();
-  if (ui.housingDialog.open) renderHousing();
   saveActiveRun();
   if (window.WellPlayerGroups) {
     window.WellPlayerGroups.setPlayerState(state.level, state.started && !state.gameOver);
@@ -3996,6 +4658,7 @@ $("combat-potion-button").addEventListener("click", () => drinkPotion(true));
 $("guard-button").addEventListener("click", () => {
   if (state.enemy && !state.gameOver) enemyTurn(true);
 });
+$("camouflage-run-button").addEventListener("click", useCamouflage);
 ui.descend.addEventListener("click", descend);
 ui.restart.addEventListener("click", openClassDialog);
 ui.buyPotion.addEventListener("click", () => merchantPurchase("potion"));
@@ -4048,19 +4711,26 @@ ui.cityServices.addEventListener("click", (event) => {
     openTavern();
   } else if (button.dataset.cityAction === "harbor") {
     openHarbor();
-  } else if (button.dataset.cityAction === "houses") {
-    openHousing();
+  } else if (button.dataset.cityAction === "homestead") {
+    openHomestead();
   }
 });
-ui.housingDialog.addEventListener("click", (event) => {
-  const button = event.target.closest("button[data-housing-action]");
-  if (button) handleHousingAction(button);
+ui.homesteadOpenButton.addEventListener("click", openHomestead);
+$("profile-crafting-button").addEventListener("click", () => openHomestead("craft"));
+ui.homesteadContent.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-homestead-action]");
+  if (button) handleHomesteadAction(button.dataset.homesteadAction, button.dataset);
 });
-ui.housingDialog.addEventListener("close", () => {
-  housingMessage = "";
+$("homestead-close-button").addEventListener("click", closeHomestead);
+$("homestead-return-button").addEventListener("click", closeHomestead);
+ui.homesteadDialog.addEventListener("cancel", (event) => {
+  event.preventDefault();
+  closeHomestead();
+});
+ui.homesteadDialog.addEventListener("close", () => {
+  selectedDistrict = "upper";
   renderCity();
 });
-$("housing-return-button").addEventListener("click", () => ui.housingDialog.close());
 ui.harborDialog.addEventListener("click", (event) => {
   const button = event.target.closest("button[data-harbor-action]");
   if (button) handleHarborAction(button.dataset.harborAction, button.dataset);
@@ -4109,7 +4779,9 @@ $("harbor-return-button").addEventListener("click", closeHarbor);
 $("tavern-waiter-hours").addEventListener("change", renderTavern);
 setInterval(() => {
   if (ui.tavernDialog.open) renderTavern();
-  if (ui.housingDialog.open) renderHousing();
+}, 1000);
+setInterval(() => {
+  if (ui.homesteadDialog.open) renderHomestead();
 }, 1000);
 
 async function initializeGameServices() {

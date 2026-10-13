@@ -204,6 +204,40 @@ create table if not exists public.player_group_reward_receipts (
   primary key (sender_id, request_id)
 );
 
+-- Gear mail is an independent server-side escrow. Rows are accessible only
+-- through the narrowly scoped RPCs below; group inbox payloads never carry gear.
+create table if not exists public.player_mailbox_escrow (
+  id uuid primary key default gen_random_uuid(),
+  request_id uuid not null,
+  group_id uuid not null,
+  sender_id uuid not null references auth.users (id) on delete cascade,
+  recipient_id uuid not null references auth.users (id) on delete cascade,
+  sender_nickname text not null check (length(sender_nickname) between 1 and 24),
+  source_gear_id text not null check (source_gear_id ~ '^gear-[0-9]+$'),
+  gear jsonb not null check (
+    jsonb_typeof(gear) = 'object' and
+    gear ?& array['id', 'type', 'name', 'bonus'] and
+    gear ->> 'id' ~ '^gear-[0-9]+$' and
+    gear ->> 'type' in ('weapon', 'armor') and
+    length(gear ->> 'name') between 1 and 60 and
+    gear ->> 'bonus' ~ '^[1-9]$|^10$'
+  ),
+  status text not null default 'sender_pending'
+    check (status in ('sender_pending', 'ready', 'claimed', 'delivered')),
+  created_at timestamptz not null default now(),
+  sender_removed_at timestamptz,
+  claimed_at timestamptz,
+  delivered_at timestamptz,
+  unique (sender_id, request_id),
+  unique (sender_id, source_gear_id),
+  check (sender_id <> recipient_id)
+);
+
+create index if not exists player_mailbox_escrow_recipient_idx
+  on public.player_mailbox_escrow (recipient_id, status, created_at);
+alter table public.player_mailbox_escrow enable row level security;
+revoke all on public.player_mailbox_escrow from public, anon, authenticated;
+
 create index if not exists player_group_members_group_idx
   on public.player_group_members (group_id, joined_at);
 create index if not exists player_group_inbox_recipient_idx
@@ -1133,6 +1167,239 @@ begin
 end;
 $$;
 
+create or replace function public.player_mailbox_send(
+  p_recipient_id uuid,
+  p_request_id uuid,
+  p_gear jsonb
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+set row_security = off
+as $$
+declare
+  v_sender_id uuid := (select auth.uid());
+  v_group_id uuid;
+  v_sender_nickname text;
+  v_gear jsonb;
+  v_existing public.player_mailbox_escrow%rowtype;
+  v_mail_id uuid;
+  v_request_key bigint;
+  v_gear_key bigint;
+  v_pair_key bigint;
+begin
+  if v_sender_id is null then raise exception 'Войди в аккаунт, чтобы отправить предмет.'; end if;
+  if p_recipient_id is null or p_recipient_id = v_sender_id or p_request_id is null then
+    raise exception 'Получатель или ключ отправки недопустим.';
+  end if;
+  if p_gear is null or jsonb_typeof(p_gear) <> 'object' or
+    coalesce(p_gear ->> 'id', '') !~ '^gear-[0-9]+$' or
+    coalesce(p_gear ->> 'type', '') not in ('weapon', 'armor') or
+    coalesce(p_gear ->> 'name', '') = '' or length(p_gear ->> 'name') > 60 or
+    coalesce(p_gear ->> 'bonus', '') !~ '^[1-9]$|^10$' then
+    raise exception 'Можно отправить только корректную экипировку.';
+  end if;
+  v_gear := jsonb_build_object(
+    'id', p_gear ->> 'id',
+    'type', p_gear ->> 'type',
+    'name', p_gear ->> 'name',
+    'bonus', (p_gear ->> 'bonus')::integer
+  );
+
+  v_request_key := pg_catalog.hashtextextended(
+    v_sender_id::text || ':mail-request:' || p_request_id::text, 0
+  );
+  v_gear_key := pg_catalog.hashtextextended(
+    v_sender_id::text || ':mail-gear:' || (v_gear ->> 'id'), 0
+  );
+  v_pair_key := pg_catalog.hashtextextended(
+    least(v_sender_id::text, p_recipient_id::text) || ':mail-pair:' ||
+      greatest(v_sender_id::text, p_recipient_id::text), 0
+  );
+  perform pg_catalog.pg_advisory_xact_lock(v_request_key);
+  perform pg_catalog.pg_advisory_xact_lock(v_gear_key);
+  perform pg_catalog.pg_advisory_xact_lock(v_pair_key);
+
+  select * into v_existing
+  from public.player_mailbox_escrow
+  where sender_id = v_sender_id and request_id = p_request_id
+  for update;
+  if found then
+    if v_existing.source_gear_id <> (v_gear ->> 'id') or
+      v_existing.recipient_id <> p_recipient_id or v_existing.gear <> v_gear then
+      raise exception 'Этот предмет уже связан с другой отправкой.';
+    end if;
+    return jsonb_build_object('id', v_existing.id, 'status', v_existing.status);
+  end if;
+
+  select * into v_existing
+  from public.player_mailbox_escrow
+  where sender_id = v_sender_id and source_gear_id = (v_gear ->> 'id')
+  for update;
+  if found then
+    if v_existing.recipient_id <> p_recipient_id or v_existing.gear <> v_gear then
+      raise exception 'Этот предмет уже связан с другой отправкой.';
+    end if;
+    return jsonb_build_object('id', v_existing.id, 'status', v_existing.status);
+  end if;
+
+  select sender.group_id, sender.nickname into v_group_id, v_sender_nickname
+  from public.player_group_members sender
+  join public.player_group_members recipient on recipient.group_id = sender.group_id
+  where sender.user_id = v_sender_id and recipient.user_id = p_recipient_id
+    and sender.heartbeat_at > now() - interval '75 seconds'
+    and recipient.heartbeat_at > now() - interval '75 seconds'
+  for update of sender, recipient;
+  if v_group_id is null then
+    raise exception 'Получатель должен быть участником той же группы с heartbeat не старше 75 секунд.';
+  end if;
+
+  if not exists (
+    select 1 from public.game_saves s
+    where s.user_id = v_sender_id
+      and case
+        when jsonb_typeof(s.save_data #> '{meta,homestead,homes}') = 'array'
+        then exists (
+          select 1
+          from jsonb_array_elements(s.save_data #> '{meta,homestead,homes}') h
+          where h ->> 'tier' = 'mansion'
+        )
+        else false
+      end
+  ) or not exists (
+    select 1 from public.game_saves s
+    where s.user_id = p_recipient_id
+      and case
+        when jsonb_typeof(s.save_data #> '{meta,homestead,homes}') = 'array'
+        then exists (
+          select 1
+          from jsonb_array_elements(s.save_data #> '{meta,homestead,homes}') h
+          where h ->> 'tier' = 'mansion'
+        )
+        else false
+      end
+  ) then
+    raise exception 'Отправитель и получатель должны сохранить покупку особняка в облаке.';
+  end if;
+
+  insert into public.player_mailbox_escrow (
+    request_id, group_id, sender_id, recipient_id, sender_nickname,
+    source_gear_id, gear
+  ) values (
+    p_request_id, v_group_id, v_sender_id, p_recipient_id, v_sender_nickname,
+    v_gear ->> 'id', v_gear
+  ) returning id into v_mail_id;
+  return jsonb_build_object('id', v_mail_id, 'status', 'sender_pending');
+end;
+$$;
+
+create or replace function public.player_mailbox_sender_removed(p_mail_id uuid)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+set row_security = off
+as $$
+declare
+  v_user_id uuid := (select auth.uid());
+  v_mail public.player_mailbox_escrow%rowtype;
+begin
+  if v_user_id is null then raise exception 'Войди в аккаунт.'; end if;
+  select * into v_mail from public.player_mailbox_escrow
+  where id = p_mail_id and sender_id = v_user_id for update;
+  if not found then raise exception 'Отправка не найдена.'; end if;
+  if v_mail.status = 'sender_pending' then
+    update public.player_mailbox_escrow
+    set status = 'ready', sender_removed_at = now()
+    where id = p_mail_id returning * into v_mail;
+  end if;
+  return jsonb_build_object('id', v_mail.id, 'status', v_mail.status);
+end;
+$$;
+
+create or replace function public.player_mailbox_list()
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+set row_security = off
+as $$
+declare
+  v_user_id uuid := (select auth.uid());
+begin
+  if v_user_id is null then raise exception 'Войди в аккаунт.'; end if;
+  return coalesce((
+    select jsonb_agg(jsonb_build_object(
+      'id', mail.id,
+      'status', mail.status,
+      'sender_nickname', mail.sender_nickname,
+      'gear', mail.gear,
+      'created_at', mail.created_at
+    ) order by mail.created_at, mail.id)
+    from public.player_mailbox_escrow mail
+    where mail.recipient_id = v_user_id and mail.status in ('ready', 'claimed', 'delivered')
+  ), '[]'::jsonb);
+end;
+$$;
+
+create or replace function public.player_mailbox_claim(p_mail_id uuid)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+set row_security = off
+as $$
+declare
+  v_user_id uuid := (select auth.uid());
+  v_mail public.player_mailbox_escrow%rowtype;
+begin
+  if v_user_id is null then raise exception 'Войди в аккаунт.'; end if;
+  select * into v_mail from public.player_mailbox_escrow
+  where id = p_mail_id and recipient_id = v_user_id for update;
+  if not found or v_mail.status = 'sender_pending' then
+    raise exception 'Письмо ещё не готово к получению.';
+  end if;
+  if v_mail.status = 'ready' then
+    update public.player_mailbox_escrow
+    set status = 'claimed', claimed_at = now()
+    where id = p_mail_id returning * into v_mail;
+  end if;
+  return jsonb_build_object(
+    'id', v_mail.id,
+    'status', v_mail.status,
+    'sender_nickname', v_mail.sender_nickname,
+    'gear', v_mail.gear
+  );
+end;
+$$;
+
+create or replace function public.player_mailbox_ack_claim(p_mail_id uuid)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+set row_security = off
+as $$
+declare
+  v_user_id uuid := (select auth.uid());
+  v_mail public.player_mailbox_escrow%rowtype;
+begin
+  if v_user_id is null then raise exception 'Войди в аккаунт.'; end if;
+  select * into v_mail from public.player_mailbox_escrow
+  where id = p_mail_id and recipient_id = v_user_id for update;
+  if not found or v_mail.status not in ('claimed', 'delivered') then
+    raise exception 'Сначала сохрани предмет в постоянном запасе.';
+  end if;
+  if v_mail.status = 'claimed' then
+    update public.player_mailbox_escrow
+    set status = 'delivered', delivered_at = now()
+    where id = p_mail_id returning * into v_mail;
+  end if;
+  return jsonb_build_object('id', v_mail.id, 'acknowledged', true, 'status', v_mail.status);
+end;
+$$;
+
 revoke all on function public.create_player_group(text, integer) from public, anon, authenticated;
 revoke all on function public.create_player_group_invite() from public, anon, authenticated;
 revoke all on function public.accept_player_group_invite(text, text, integer) from public, anon, authenticated;
@@ -1148,6 +1415,11 @@ revoke all on function public.join_player_group_battle(uuid, jsonb) from public,
 revoke all on function public.get_player_group_battle(uuid) from public, anon, authenticated;
 revoke all on function public.player_group_battle_action(uuid, text, uuid) from public, anon, authenticated;
 revoke all on function public.leave_player_group_battle(uuid) from public, anon, authenticated;
+revoke all on function public.player_mailbox_send(uuid, uuid, jsonb) from public, anon, authenticated;
+revoke all on function public.player_mailbox_sender_removed(uuid) from public, anon, authenticated;
+revoke all on function public.player_mailbox_list() from public, anon, authenticated;
+revoke all on function public.player_mailbox_claim(uuid) from public, anon, authenticated;
+revoke all on function public.player_mailbox_ack_claim(uuid) from public, anon, authenticated;
 grant execute on function public.create_player_group(text, integer) to authenticated;
 grant execute on function public.create_player_group_invite() to authenticated;
 grant execute on function public.accept_player_group_invite(text, text, integer) to authenticated;
@@ -1162,3 +1434,8 @@ grant execute on function public.join_player_group_battle(uuid, jsonb) to authen
 grant execute on function public.get_player_group_battle(uuid) to authenticated;
 grant execute on function public.player_group_battle_action(uuid, text, uuid) to authenticated;
 grant execute on function public.leave_player_group_battle(uuid) to authenticated;
+grant execute on function public.player_mailbox_send(uuid, uuid, jsonb) to authenticated;
+grant execute on function public.player_mailbox_sender_removed(uuid) to authenticated;
+grant execute on function public.player_mailbox_list() to authenticated;
+grant execute on function public.player_mailbox_claim(uuid) to authenticated;
+grant execute on function public.player_mailbox_ack_claim(uuid) to authenticated;

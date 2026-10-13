@@ -67,6 +67,7 @@
             <div class="inventory-list" id="inventory-list" aria-live="polite">
               <p class="inventory-empty">Рюкзак пуст. Экипировка иногда выпадает с врагов.</p>
             </div>
+            <button class="service-button profile-crafting-button" id="profile-crafting-button" type="button">Ремесленный стол · открыть в доме</button>
           </section>
           <div class="panel-divider"></div>
           <div class="best-run"><span>ЛУЧШИЙ СПУСК</span><strong id="best-floor">—</strong></div>
@@ -75,6 +76,7 @@
             <p>Осколки за забеги и найденные тайны усиливают следующие спуски.</p>
             <div class="meta-upgrades" id="meta-upgrades"></div>
             <div class="meta-secrets"><strong>Летопись глубин</strong><span id="meta-secrets">0/4 записей · исследуй тайные залы</span></div>
+            <button class="service-button profile-homes-button" id="homestead-open-button" type="button">Магазин · Дома</button>
           </section>
           <p class="save-note"><span aria-hidden="true">●</span> Прогресс сохраняется автоматически</p>
         </aside>
@@ -105,18 +107,6 @@
             <div class="district-lock-note" id="district-lock-note" role="status" hidden></div>
             <div class="city-services" id="city-services" aria-live="polite"></div>
           </section>
-
-          <dialog class="game-dialog housing-dialog" id="housing-dialog" aria-labelledby="housing-title">
-            <form method="dialog" class="dialog-close-form">
-              <button class="dialog-close" aria-label="Закрыть профиль домов и вернуться в город">×</button>
-            </form>
-            <span class="eyebrow">ГОРОД · ПРОФИЛЬ</span>
-            <h2 id="housing-title">Магазин домов и участков</h2>
-            <p class="dialog-intro">Осколки — редкая внутриигровая премиальная валюта. Каждая покупка за осколки требует отдельного подтверждения; платежей реальными деньгами нет.</p>
-            <p class="housing-status" id="housing-status" role="status" aria-live="polite"></p>
-            <div class="housing-content" id="housing-content"></div>
-            <button class="action-button housing-return-button" id="housing-return-button" type="button">Вернуться в город</button>
-          </dialog>
 
           <div class="dungeon-content" id="dungeon-content" hidden>
             <div class="dungeon-heading">
@@ -182,6 +172,7 @@
             <button class="action-button secondary-action" id="combat-potion-button" type="button"><span aria-hidden="true">⚗</span> Зелье <span id="combat-potion-count">2</span></button>
             <button class="action-button guard-action" id="guard-button" type="button"><span aria-hidden="true">⬡</span> Защищаться</button>
             <button class="action-button ability-action" id="class-ability-button" type="button"><span id="class-ability-icon" aria-hidden="true">✦</span><span id="class-ability-label">Способность</span></button>
+            <button class="action-button secondary-action" id="camouflage-run-button" type="button" hidden>Маскировка · уйти от обычного врага</button>
           </div>
           <button class="action-button coop-start-button" id="coop-start-button" type="button" hidden>Позвать напарника на совместный бой</button>
           <section class="coop-battle-panel" id="coop-battle-panel" aria-label="Совместный бой" hidden>
@@ -235,6 +226,18 @@
       </section>
       <footer class="footer-note"><span>КОЛОДЕЦ ШЁПОТА</span><span>Каждый спуск — новая история</span><span>✧</span></footer>
     </main>
+    <dialog class="game-dialog homestead-dialog" id="homestead-dialog" aria-labelledby="homestead-title">
+      <div class="dialog-close-form">
+        <button class="dialog-close" id="homestead-close-button" type="button" aria-label="Закрыть дом и вернуться в город">×</button>
+      </div>
+      <span class="eyebrow">ПРОФИЛЬ · МАГАЗИН · ДОМА</span>
+      <h2 id="homestead-title">Дома и участки</h2>
+      <p class="dialog-intro">Покупай дома без ограничения по количеству: автоматически используется самый высокий из купленных. Цены указаны до покупки; списываются только уже имеющиеся игровые осколки или золото таверны — платёжных операций нет.</p>
+      <p class="homestead-status" id="homestead-status" role="status" aria-live="polite"></p>
+      <div class="homestead-wallet" id="homestead-wallet"></div>
+      <div class="homestead-content" id="homestead-content" aria-live="polite"></div>
+      <button class="tavern-return-button" id="homestead-return-button" type="button">← Вернуться в город (прервать сон)</button>
+    </dialog>
     <dialog class="game-dialog tavern-dialog" id="tavern-dialog" aria-labelledby="tavern-title">
       <form method="dialog" class="dialog-close-form">
         <button class="dialog-close" aria-label="Закрыть таверну и вернуться в город">×</button>
@@ -436,7 +439,7 @@
     <script src="player-groups.js"></script>
     <script src="tavern-model.js"></script>
     <script src="expeditions-model.js"></script>
-    <script src="housing-model.js"></script>
+    <script src="homestead-model.js"></script>
     <script src="game.js"></script>
   </body>
 </html>

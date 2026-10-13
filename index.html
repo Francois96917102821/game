@@ -67,6 +67,7 @@
             <div class="inventory-list" id="inventory-list" aria-live="polite">
               <p class="inventory-empty">Рюкзак пуст. Экипировка иногда выпадает с врагов.</p>
             </div>
+            <p class="inventory-empty">Обычную добычу можно продать между встречами: 3 золота за пункт бонуса. Золото остаётся в этом спуске; складские и особые вещи не продаются.</p>
             <button class="service-button profile-crafting-button" id="profile-crafting-button" type="button">Ремесленный стол · открыть в доме</button>
             <button class="service-button profile-crafting-button" id="profile-soul-crafting-button" type="button">Души и R-ремесло</button>
           </section>
@@ -314,6 +315,10 @@
       </nav>
       <section class="tavern-pane" data-tavern-pane="food">
         <p class="tavern-note">Сытость убывает на 5 пунктов за каждый полный час реального времени, включая время вне игры. На нуле штрафа к бою нет. Рецепты хранятся по 3 порции; некоторые блюда также влияют на травмы.</p>
+        <article class="tavern-recipe">
+          <div><strong>Горячий обед</strong><span>+20 сытости (до 100), без лечения травм. Оплата из кошелька таверны; рецепты не расходуются.</span></div>
+          <button class="action-button" type="button" id="tavern-buy-meal" data-tavern-action="buy-meal">Купить · 6 зол.</button>
+        </article>
         <div class="tavern-recipe-list" id="tavern-recipes"></div>
         <h3>Склад находок</h3>
         <p class="tavern-note">Уборка приносит случайный предмет экипировки. Выбери один предмет, чтобы взять его в следующий новый спуск; предмет останется на складе, пока спуск не сохранится.</p>
@@ -493,6 +498,7 @@
     <script src="cloud-save.js"></script>
     <script src="player-groups.js"></script>
     <script src="tavern-model.js"></script>
+    <script src="gold-economy-model.js"></script>
     <script src="expeditions-model.js"></script>
     <script src="homestead-model.js"></script>
     <script src="soul-crafting-model.js"></script>

@@ -1839,8 +1839,8 @@ function explore() {
     addGold(reward);
     const foundPotion = Math.random() < 0.28 && state.potions < getPotionLimit();
     if (foundPotion) state.potions += 1;
-    const loot = `Под осыпавшимися камнями нашлось ${reward} монет${foundPotion ? " и зелье" : ""}.${claimChestLoot()}`;
-    setEvent("ТАЙНИК НАЙДЕН", loot, "✦");
+    const loot = `Под осыпавшимися камнями нашёлся горшок с ${reward} золотыми${foundPotion ? " и зелье рядом" : ""}.${claimChestLoot()}`;
+    setEvent("ГОРШОК С ЗОЛОТОМ", loot, "✦");
     addJournal("Спрятанная добыча", loot, "✦");
     setCaption("Здесь кто-то был");
     playSound("loot");
@@ -2074,8 +2074,10 @@ function resolveDungeonEvent(action) {
     const damage = damageFromEvent(3, 6);
     const gold = 4 + state.floor;
     addGold(gold);
+    const endurance = window.WellGoldEconomyModel.rubbleEndurance(state.maxHp);
+    state.maxHp += endurance;
     const gear = claimEventGear("armor");
-    finishDungeonEvent("ПРОХОД РАСЧИЩЕН", `Завал поддался, но камни отняли ${damage} здоровья. За ними было ${gold} монет.${gear}`, "⚒", "Разобранный завал");
+    finishDungeonEvent("ПРОХОД РАСЧИЩЕН", `Завал поддался, но камни отняли ${damage} здоровья. За ними было ${gold} монет. Выносливость: +${endurance} к максимуму здоровья до конца спуска.${gear}`, "⚒", "Разобранный завал");
   } else if (action === "rubble-squeeze") {
     const gold = 3 + state.floor;
     addGold(gold);
@@ -2899,6 +2901,53 @@ function equipGear(gearId) {
   render();
 }
 
+function getRunGearSalePrice(gear) {
+  if (!isValidGear(gear) || state.tavernGearIds?.includes(gear.id)) return null;
+  return window.WellGoldEconomyModel.gearSalePrice(gear);
+}
+
+function sellRunGear(gearId) {
+  if (!state.started || state.gameOver || state.enemy || dungeonDuelLocked() ||
+    state.event.actions?.length) return;
+  const gear = state.inventory.find((item) => item.id === gearId);
+  const price = getRunGearSalePrice(gear);
+  if (price === null) return;
+  try {
+    if (state.gold + price > window.WellGoldEconomyModel.MAX_GOLD) {
+      throw new Error("В кошельке нет места: сначала потрать золото. Предмет не продан.");
+    }
+    for (let index = 0; index < window.localStorage.length; index += 1) {
+      const key = window.localStorage.key(index);
+      if (!key?.startsWith("well-of-whispers-mail-outbox:")) continue;
+      const operation = JSON.parse(window.localStorage.getItem(key));
+      if (operation?.itemId === gearId) {
+        throw new Error("Предмет ожидает подтверждения отправки по почте. Продажа заблокирована.");
+      }
+    }
+    const stored = window.localStorage.getItem(RUN_SAVE_KEY);
+    if (stored !== JSON.stringify({ version: SAVE_VERSION, state })) {
+      throw new Error("Сохранение спуска изменилось. Перезагрузи игру перед продажей.");
+    }
+    const candidate = JSON.parse(JSON.stringify(state));
+    candidate.inventory = candidate.inventory.filter((item) => item.id !== gearId);
+    candidate.gold += price;
+    if (!isValidRun({ version: SAVE_VERSION, state: candidate })) {
+      throw new Error("Не удалось проверить продажу. Предмет не продан.");
+    }
+    // Item removal and payment share one durable run snapshot.
+    window.localStorage.setItem(RUN_SAVE_KEY, JSON.stringify({ version: SAVE_VERSION, state: candidate }));
+    state = candidate;
+    setEvent("ПРЕДМЕТ ПРОДАН", `${gear.name}: получено ${price} золота в кошелёк спуска.`, "✦");
+    addJournal("Продажа добычи", `${gear.name} продан за ${price} золота.`, "✦");
+  } catch (error) {
+    console.warn("Не удалось продать добычу.", error);
+    // Do not render/save a stale run over another tab's committed transaction.
+    ui.eventText.textContent = `Продажа не выполнена: ${error.message}`;
+    return;
+  }
+  render();
+}
+
 function useCamouflage() {
   if (!state.enemy || state.gameOver || state.extraActionUsed || state.enemy.boss || state.enemy.elite || dungeonDuelLocked()) return;
   const previous = metaProgress;
@@ -3102,7 +3151,22 @@ function renderEquipment() {
     equip.dataset.gearId = gear.id;
     equip.textContent = "Надеть";
     equip.disabled = Boolean(state.enemy) || state.gameOver || dungeonDuelLocked();
-    item.append(icon, details, equip);
+    const actions = document.createElement("div");
+    actions.className = "inventory-actions";
+    actions.append(equip);
+    const price = getRunGearSalePrice(gear);
+    if (price !== null) {
+      const sell = document.createElement("button");
+      sell.className = "equip-button";
+      sell.type = "button";
+      sell.dataset.sellGearId = gear.id;
+      sell.textContent = `Продать · ${price} зол.`;
+      sell.setAttribute("aria-label", `Продать ${gear.name} за ${price} золота спуска`);
+      sell.disabled = equip.disabled || Boolean(state.event.actions?.length) ||
+        state.gold + price > window.WellGoldEconomyModel.MAX_GOLD;
+      actions.append(sell);
+    }
+    item.append(icon, details, actions);
     ui.inventory.append(item);
   }
 }
@@ -4844,6 +4908,10 @@ function renderTavern() {
     ui.tavernStatus.append(retry);
   }
   ui.tavernGold.textContent = `${tavern.gold} ✦`;
+  const mealButton = $("tavern-buy-meal");
+  mealButton.textContent = `Купить · ${window.WellTavernModel.MEAL_PRICE} зол.`;
+  mealButton.disabled = tavernDialogBusy || !tavernStorageReady || Boolean(tavernStorageError) ||
+    Boolean(pendingTavernState) || tavern.gold < window.WellTavernModel.MEAL_PRICE || tavern.satiety === 100;
   ui.tavernSatiety.textContent = `${tavern.satiety} / 100`;
   ui.tavernSatietyBar.style.width = `${tavern.satiety}%`;
   ui.tavernInjuries.textContent = `${tavern.injuries} / ${window.WellTavernModel.MAX_INJURIES}`;
@@ -4992,6 +5060,8 @@ async function handleTavernAction(action, data = {}) {
     let candidate = window.WellTavernModel.withDefaults(metaProgress.tavern);
     if (action === "eat") {
       candidate = window.WellTavernModel.useRecipe(candidate, data.recipeId, now);
+    } else if (action === "buy-meal") {
+      candidate = window.WellTavernModel.buyMeal(candidate, now);
     } else if (action === "start-job") {
       const kind = data.kind;
       const options = { level: getTavernLevel() };
@@ -5349,6 +5419,11 @@ ui.buyHealing.addEventListener("click", () => merchantPurchase("healing"));
 ui.buyFireSoul.addEventListener("click", () => merchantPurchase("fireSoul"));
 ui.leaveMerchant.addEventListener("click", leaveMerchant);
 ui.inventory.addEventListener("click", (event) => {
+  const sell = event.target.closest("button[data-sell-gear-id]");
+  if (sell) {
+    sellRunGear(sell.dataset.sellGearId);
+    return;
+  }
   const button = event.target.closest("button[data-gear-id]");
   if (button) equipGear(button.dataset.gearId);
 });

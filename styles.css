@@ -106,6 +106,7 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--gold-light); ou
 .inventory-item { display: flex; align-items: center; justify-content: space-between; gap: 7px; }
 .inventory-art { width: 32px; height: 32px; flex: 0 0 32px; padding: 2px; border: 1px solid #363c30; border-radius: 5px; background: #171b16; }
 .inventory-item > div { min-width: 0; }
+.inventory-actions { display: flex; flex-direction: column; gap: 4px; flex: 0 0 auto; }
 .inventory-item strong, .inventory-item span { display: block; }
 .inventory-item strong { color: #d6d6c9; font-size: 9px; line-height: 1.35; }
 .inventory-item span { margin-top: 2px; color: #9b9d8f; font-size: 8px; }

@@ -5,6 +5,8 @@
   const MAX_GOLD = 1000000000;
   const MAX_INJURIES = 3;
   const MAX_RECIPES = 3;
+  const MEAL_PRICE = 6;
+  const MEAL_SATIETY = 20;
   const HOUR = 60 * 60 * 1000;
   const SATIETY_PER_HOUR = 5;
   const RECIPE_LIST = [
@@ -254,6 +256,19 @@
     return state;
   }
 
+  function buyMeal(current, now = Date.now()) {
+    if (!isValidState(current)) throw new Error("Некорректное сохранение таверны.");
+    const state = updateSatiety(current, now);
+    if (state.gold < MEAL_PRICE) throw new Error(`Нужно ${MEAL_PRICE} золотых на еду.`);
+    if (state.satiety === 100) throw new Error("Ты уже сыт. Золото не списано.");
+    state.gold -= MEAL_PRICE;
+    state.satiety = Math.min(100, state.satiety + MEAL_SATIETY);
+    state.revision = current.revision + 1;
+    state.updatedAt = now;
+    if (!isValidState(state)) throw new Error("Не удалось проверить покупку еды.");
+    return state;
+  }
+
   function buildDeck(random) {
     const deck = [];
     for (const suit of CARD_SUITS) {
@@ -424,6 +439,8 @@
     MAX_GOLD,
     MAX_INJURIES,
     MAX_RECIPES,
+    MEAL_PRICE,
+    MEAL_SATIETY,
     HOUR,
     RECIPE_LIST,
     RECIPES,
@@ -435,6 +452,7 @@
     startJob,
     claimJob,
     useRecipe,
+    buyMeal,
     startGame,
     hit21,
     stand21,

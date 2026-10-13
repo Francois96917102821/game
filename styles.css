@@ -43,6 +43,9 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--gold-light); ou
 .live-dot { width: 6px; height: 6px; display: inline-block; border-radius: 50%; background: #a3b47e; box-shadow: 0 0 9px #90a35a; }
 .icon-button { width: 36px; height: 36px; border: 1px solid var(--border); border-radius: 50%; background: transparent; color: var(--muted); cursor: pointer; }
 .icon-button[aria-pressed="true"] { color: var(--gold-light); border-color: #76613d; }
+.sound-toggle { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 38px; border: 1px solid var(--border); border-radius: 20px; padding: 7px 11px; background: #171a16; color: #aeb2a5; cursor: pointer; font-size: 11px; }
+.sound-toggle[aria-pressed="true"] { border-color: #76613d; color: var(--gold-light); background: #211e16; }
+.sound-toggle:hover { border-color: #76613d; }
 .cloud-status-button { display: inline-flex; align-items: center; gap: 7px; max-width: 230px; border: 1px solid #414638; border-radius: 18px; padding: 8px 11px; background: #1b2019; color: #bfc6ac; cursor: pointer; }
 .cloud-status-button:hover { border-color: #78865f; background: #242b20; }
 .cloud-status-icon { color: var(--gold-light); font-size: 15px; }
@@ -314,6 +317,7 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--gold-light); ou
   .top-note { display: none; }
   .cloud-status-button { gap: 4px; max-width: 152px; padding: 7px 8px; }
   .cloud-status-button > span:last-child { max-width: 91px; font-size: 6px; }
+  .sound-toggle { gap: 4px; min-height: 36px; padding: 6px 8px; font-size: 10px; white-space: nowrap; }
   .brand-mark { width: 32px; height: 32px; font-size: 21px; }
   .brand strong { font-size: 13px; }
   .game-layout { display: flex; flex-direction: column; gap: 12px; padding-top: 15px; }

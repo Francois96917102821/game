@@ -8,7 +8,8 @@ const SAVE_VERSION = 1;
 const POTION_LIMIT = 4;
 const MAX_FOCUS = 3;
 const HEAVY_ATTACK_COST = 2;
-const MERCHANT_PRICES = { potion: 12, weapon: 18, healing: 8 };
+const MAX_GEAR = 6;
+const MERCHANT_PRICES = { potion: 12, weapon: 18, armor: 24, healing: 8 };
 const FLOOR_THEMES = [
   {
     id: "well",
@@ -122,9 +123,14 @@ const ui = {
   focusValue: $("focus-value"),
   focusBar: $("focus-bar"),
   heavyButton: $("heavy-button"),
+  equippedWeapon: $("equipped-weapon"),
+  equippedArmor: $("equipped-armor"),
+  inventoryCount: $("inventory-count"),
+  inventory: $("inventory-list"),
   merchantActions: $("merchant-actions"),
   buyPotion: $("buy-potion-button"),
   buyWeapon: $("buy-weapon-button"),
+  buyArmor: $("buy-armor-button"),
   buyHealing: $("buy-healing-button"),
   leaveMerchant: $("leave-merchant-button"),
   descend: $("descend-button"),
@@ -158,6 +164,9 @@ function createState() {
     enemy: null,
     guarding: false,
     focus: 0,
+    equipment: { weapon: null, armor: null },
+    inventory: [],
+    gearSequence: 0,
     merchantAvailable: false,
     waitingToDescend: false,
     caption: "Внизу кто-то ждёт",
@@ -191,12 +200,33 @@ function isValidRun(run) {
     !isIntegerBetween(saved.xp, 0, XP_PER_LEVEL * saved.level - 1) ||
     typeof saved.guarding !== "boolean" ||
     (saved.focus !== undefined && !isIntegerBetween(saved.focus, 0, MAX_FOCUS)) ||
+    (saved.inventory !== undefined && (
+      !Array.isArray(saved.inventory) || saved.inventory.length > MAX_GEAR ||
+      !saved.inventory.every(isValidGear)
+    )) ||
+    (saved.equipment !== undefined && (
+      !saved.equipment || typeof saved.equipment !== "object" ||
+      !["weapon", "armor"].every((type) =>
+        saved.equipment[type] === null || isValidGear(saved.equipment[type], type)
+      )
+    )) ||
+    (saved.gearSequence !== undefined && !isIntegerBetween(saved.gearSequence, 0, 1000000000)) ||
     typeof saved.waitingToDescend !== "boolean" ||
     (saved.merchantAvailable !== undefined && typeof saved.merchantAvailable !== "boolean") ||
     !Array.isArray(saved.journal) || saved.journal.length > 7 ||
     !saved.event || typeof saved.event !== "object" ||
     typeof saved.caption !== "string" || saved.caption.length > 100 ||
     (saved.room === MAX_ROOMS && !saved.enemy && !saved.waitingToDescend)
+  ) return false;
+
+  const storedGear = [
+    ...(saved.inventory || []),
+    ...["weapon", "armor"].map((type) => saved.equipment?.[type]).filter(Boolean),
+  ];
+  if (
+    new Set(storedGear.map((item) => item.id)).size !== storedGear.length ||
+    (storedGear.length > 0 && saved.gearSequence === undefined) ||
+    storedGear.some((item) => Number(item.id.slice(5)) > saved.gearSequence)
   ) return false;
 
   if (saved.enemy !== null) {
@@ -233,6 +263,17 @@ function isValidRun(run) {
     typeof saved.event.text === "string" && saved.event.text.length <= 300 &&
     typeof saved.event.icon === "string" && saved.event.icon.length <= 8 &&
     typeof saved.event.tag === "string" && saved.event.tag.length <= 100;
+}
+
+function isValidGear(item, expectedType) {
+  return Boolean(
+    item && typeof item === "object" &&
+    typeof item.id === "string" && /^gear-\d+$/.test(item.id) &&
+    (item.type === "weapon" || item.type === "armor") &&
+    (!expectedType || item.type === expectedType) &&
+    typeof item.name === "string" && item.name.length > 0 && item.name.length <= 60 &&
+    isIntegerBetween(item.bonus, 1, 10)
+  );
 }
 
 function readBestFloor() {
@@ -348,7 +389,10 @@ function startGame() {
 function resumeGame() {
   if (!savedRun) return;
   state = savedRun;
-  state.focus ??= 0;
+  if (state.focus === undefined) state.focus = 0;
+  if (state.equipment === undefined) state.equipment = { weapon: null, armor: null };
+  if (state.inventory === undefined) state.inventory = [];
+  if (state.gearSequence === undefined) state.gearSequence = 0;
   savedRun = null;
   render();
   playTone(220, 0.09);
@@ -454,7 +498,7 @@ function attackEnemy(multiplier = 1, focusCost = 0) {
   if (!state.enemy || state.gameOver || state.focus < focusCost) return;
   if (focusCost > 0) state.focus -= focusCost;
   else state.focus = Math.min(MAX_FOCUS, state.focus + 1);
-  const damage = Math.max(1, Math.floor((state.attack + randomInt(0, 3)) * multiplier));
+  const damage = Math.max(1, Math.floor((getAttackPower() + randomInt(0, 3)) * multiplier));
   state.enemy.hp = Math.max(0, state.enemy.hp - damage);
   const focusMessage = focusCost > 0
     ? ` Сокрушительный удар расходует ${focusCost} запаса силы.`
@@ -479,7 +523,9 @@ function attackEnemy(multiplier = 1, focusCost = 0) {
 function enemyTurn(guarding = false) {
   if (guarding) state.focus = Math.min(MAX_FOCUS, state.focus + 1);
   const rawDamage = randomInt(Math.max(1, state.enemy.damage - 2), state.enemy.damage);
-  const damage = Math.max(1, guarding || state.guarding ? Math.ceil(rawDamage * 0.4) : rawDamage);
+  const armorDefense = getArmorDefense();
+  const reducedDamage = Math.max(1, rawDamage - armorDefense);
+  const damage = Math.max(1, guarding || state.guarding ? Math.ceil(reducedDamage * 0.4) : reducedDamage);
   state.guarding = false;
   state.hp = Math.max(0, state.hp - damage);
   if (state.hp === 0) {
@@ -490,7 +536,8 @@ function enemyTurn(guarding = false) {
     setCaption("Тишина");
   } else {
     const focusMessage = guarding ? ` Запас силы: ${state.focus} из ${MAX_FOCUS}.` : "";
-    setEvent("ВРАГ АТАКУЕТ", `${state.enemy.name} наносит ${damage} урона${guarding ? ", но твоя защита смягчает удар" : ""}.${focusMessage}`, "⬡");
+    const armorMessage = armorDefense ? ` Броня поглотила ${Math.min(armorDefense, rawDamage - 1)} урона.` : "";
+    setEvent("ВРАГ АТАКУЕТ", `${state.enemy.name} наносит ${damage} урона${guarding ? ", но твоя защита смягчает удар" : ""}.${armorMessage}${focusMessage}`, "⬡");
     setCaption("Бой продолжается");
   }
   playTone(guarding ? 185 : 125, 0.1);
@@ -502,18 +549,29 @@ function defeatEnemy() {
   state.enemy = null;
   state.gold += enemy.gold;
   gainXp(enemy.xp);
+  let gearMessage = "";
+  if (enemy.boss || Math.random() < 0.3) {
+    if (state.inventory.length < MAX_GEAR) {
+      const gear = createGear(randomInt(0, 1) === 0 ? "weapon" : "armor");
+      state.inventory.push(gear);
+      gearMessage = ` Найдено: ${gear.name} (+${gear.bonus} ${gear.type === "weapon" ? "к силе" : "к защите"}), предмет в рюкзаке.`;
+      addJournal("Найдена экипировка", `${gear.name}: +${gear.bonus} ${gear.type === "weapon" ? "к урону" : "к защите"}.`, gear.type === "weapon" ? "⚔" : "⬡");
+    } else {
+      gearMessage = " Рюкзак полон: трофей остался в зале.";
+    }
+  }
   if (enemy.boss) {
     state.waitingToDescend = true;
     const bonus = Math.min(8, state.maxHp - state.hp);
     state.hp += bonus;
-    setEvent("СТРАЖ ПОВЕРЖЕН", `Ты получил ${enemy.xp} опыта и ${enemy.gold} монет.${bonus ? ` Передышка вернула ${bonus} здоровья.` : ""} Путь вниз открыт.`, "✧", "ПУТЬ ОТКРЫТ");
+    setEvent("СТРАЖ ПОВЕРЖЕН", `Ты получил ${enemy.xp} опыта и ${enemy.gold} монет.${bonus ? ` Передышка вернула ${bonus} здоровья.` : ""}${gearMessage} Путь вниз открыт.`, "✧", "ПУТЬ ОТКРЫТ");
     addJournal("Путь открыт", `Страж повержен. Ты готов спуститься на ${state.floor + 1}-й этаж.`, "↓");
     setCaption("Лестница открыта");
     playTone(560, 0.2);
   } else {
     const foundPotion = Math.random() < 0.2 && state.potions < 4;
     if (foundPotion) state.potions += 1;
-    setEvent("ПОБЕДА", `Враг повержен: +${enemy.xp} опыта, +${enemy.gold} монет${foundPotion ? ", +1 зелье" : ""}.`, "✧");
+    setEvent("ПОБЕДА", `Враг повержен: +${enemy.xp} опыта, +${enemy.gold} монет${foundPotion ? ", +1 зелье" : ""}.${gearMessage}`, "✧");
     addJournal("Враг повержен", `+${enemy.xp} опыта и +${enemy.gold} монет.`, "⚔");
     setCaption("В зале тихо");
     playTone(420, 0.14);
@@ -531,6 +589,51 @@ function gainXp(amount) {
     state.attack += 1;
     addJournal("Новый уровень", `Уровень ${state.level}: здоровье и сила выросли.`, "✦");
   }
+}
+
+function getAttackPower() {
+  return state.attack + (state.equipment.weapon?.bonus || 0);
+}
+
+function getArmorDefense() {
+  return state.equipment.armor?.bonus || 0;
+}
+
+function createGear(type) {
+  const theme = getFloorTheme();
+  const names = {
+    well: { weapon: "Клинок каменного эха", armor: "Плащ колодезного стража" },
+    drowned: { weapon: "Якорный тесак", armor: "Панцирь глубин" },
+    roots: { weapon: "Серп живых корней", armor: "Кора древнего собора" },
+    forge: { weapon: "Молот пепельной кузни", armor: "Кованый доспех" },
+  };
+  const bonus = Math.min(type === "weapon" ? 6 : 4, 1 + Math.floor((state.floor - 1) / 3));
+  state.gearSequence += 1;
+  return {
+    id: `gear-${state.gearSequence}`,
+    type,
+    name: names[theme.id][type],
+    bonus,
+  };
+}
+
+function equipGear(gearId) {
+  if (!state.started || state.gameOver || state.enemy) return;
+  const index = state.inventory.findIndex((item) => item.id === gearId);
+  if (index < 0) return;
+  const gear = state.inventory[index];
+  const previous = state.equipment[gear.type];
+  state.inventory.splice(index, 1);
+  state.equipment[gear.type] = gear;
+  if (previous) state.inventory.push(previous);
+  setEvent(
+    gear.type === "weapon" ? "ОРУЖИЕ СМЕНЕНО" : "БРОНЯ НАДЕТА",
+    `${gear.name} экипирован: +${gear.bonus} ${gear.type === "weapon" ? "к силе удара" : "к защите"}.`,
+    gear.type === "weapon" ? "⚔" : "⬡",
+    "ЭКИПИРОВКА",
+  );
+  addJournal("Экипировка изменена", `${gear.name} даёт +${gear.bonus} ${gear.type === "weapon" ? "к силе" : "к защите"}.`, gear.type === "weapon" ? "⚔" : "⬡");
+  render();
 }
 
 function drinkPotion(inCombat = false) {
@@ -574,6 +677,13 @@ function merchantPurchase(item) {
     state.attack += 1;
     setEvent("КЛИНОК ЗАТОЧЕН", `Оружие заточено. Твоя сила навсегда увеличена до ${state.attack}.`, "⚔", "КУПЛЕНО");
     addJournal("Заточка оружия", "Торговец наточил оружие: сила выросла на 1.", "⚔");
+  } else if (item === "armor") {
+    if (state.gold < MERCHANT_PRICES.armor || state.inventory.length >= MAX_GEAR) return;
+    state.gold -= MERCHANT_PRICES.armor;
+    const armor = createGear("armor");
+    state.inventory.push(armor);
+    setEvent("ДОСПЕХ НАЙДЕН", `${armor.name}: +${armor.bonus} к защите. Предмет добавлен в рюкзак.`, "⬡", "КУПЛЕНО");
+    addJournal("Покупка брони", `${armor.name} добавлен в рюкзак за ${MERCHANT_PRICES.armor} монет.`, "⬡");
   } else if (item === "healing") {
     if (state.gold < MERCHANT_PRICES.healing || state.hp >= state.maxHp) return;
     state.gold -= MERCHANT_PRICES.healing;
@@ -643,6 +753,40 @@ function renderJournal() {
   }
 }
 
+function renderEquipment() {
+  const weapon = state.equipment.weapon;
+  const armor = state.equipment.armor;
+  ui.equippedWeapon.textContent = weapon ? `${weapon.name} · +${weapon.bonus}` : "Нет";
+  ui.equippedArmor.textContent = armor ? `${armor.name} · +${armor.bonus}` : "Нет";
+  ui.inventoryCount.textContent = `${state.inventory.length} / ${MAX_GEAR}`;
+  ui.inventory.replaceChildren();
+  if (!state.inventory.length) {
+    const empty = document.createElement("p");
+    empty.className = "inventory-empty";
+    empty.textContent = "Рюкзак пуст. Экипировка иногда выпадает с врагов.";
+    ui.inventory.append(empty);
+    return;
+  }
+  for (const gear of state.inventory) {
+    const item = document.createElement("div");
+    item.className = "inventory-item";
+    const details = document.createElement("div");
+    const name = document.createElement("strong");
+    name.textContent = gear.name;
+    const stat = document.createElement("span");
+    stat.textContent = `+${gear.bonus} к ${gear.type === "weapon" ? "урону" : "защите"}`;
+    details.append(name, stat);
+    const equip = document.createElement("button");
+    equip.className = "equip-button";
+    equip.type = "button";
+    equip.dataset.gearId = gear.id;
+    equip.textContent = "Надеть";
+    equip.disabled = Boolean(state.enemy) || state.gameOver;
+    item.append(details, equip);
+    ui.inventory.append(item);
+  }
+}
+
 function render() {
   const theme = getFloorTheme();
   ui.level.textContent = `УР. ${state.level}`;
@@ -651,7 +795,7 @@ function render() {
   const xpTarget = XP_PER_LEVEL * state.level;
   ui.xp.textContent = `${state.xp} / ${xpTarget}`;
   ui.xpBar.style.width = `${Math.min(100, (state.xp / xpTarget) * 100)}%`;
-  ui.attack.textContent = `${state.attack}–${state.attack + 3}`;
+  ui.attack.textContent = `${getAttackPower()}–${getAttackPower() + 3}`;
   ui.gold.textContent = String(state.gold);
   ui.potions.textContent = String(state.potions);
   ui.focusValue.textContent = `${state.focus} / ${MAX_FOCUS}`;
@@ -692,6 +836,8 @@ function render() {
   ui.buyPotion.textContent = `⚗ Зелье · ${MERCHANT_PRICES.potion} ✦`;
   ui.buyWeapon.disabled = state.gold < MERCHANT_PRICES.weapon;
   ui.buyWeapon.textContent = `⚔ Заточка · ${MERCHANT_PRICES.weapon} ✦`;
+  ui.buyArmor.disabled = state.inventory.length >= MAX_GEAR || state.gold < MERCHANT_PRICES.armor;
+  ui.buyArmor.textContent = `⬡ Броня · ${MERCHANT_PRICES.armor} ✦`;
   ui.buyHealing.disabled = state.hp >= state.maxHp || state.gold < MERCHANT_PRICES.healing;
   ui.buyHealing.textContent = `✚ Лечение · ${MERCHANT_PRICES.healing} ✦`;
   ui.descend.hidden = !state.waitingToDescend || state.gameOver;
@@ -724,6 +870,7 @@ function render() {
   ui.journalStatus.textContent = state.gameOver ? "Путешествие завершено" : state.waitingToDescend ? "Лестница в глубину открыта" : state.started ? "Ты внутри колодца" : "Твой путь ждёт начала";
   renderTrack();
   renderJournal();
+  renderEquipment();
   saveActiveRun();
 }
 
@@ -760,8 +907,13 @@ ui.descend.addEventListener("click", descend);
 ui.restart.addEventListener("click", startGame);
 ui.buyPotion.addEventListener("click", () => merchantPurchase("potion"));
 ui.buyWeapon.addEventListener("click", () => merchantPurchase("weapon"));
+ui.buyArmor.addEventListener("click", () => merchantPurchase("armor"));
 ui.buyHealing.addEventListener("click", () => merchantPurchase("healing"));
 ui.leaveMerchant.addEventListener("click", leaveMerchant);
+ui.inventory.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-gear-id]");
+  if (button) equipGear(button.dataset.gearId);
+});
 $("sound-toggle").addEventListener("click", (event) => {
   soundEnabled = !soundEnabled;
   event.currentTarget.setAttribute("aria-pressed", String(soundEnabled));

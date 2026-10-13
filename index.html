@@ -45,6 +45,17 @@
             <div><span class="stat-icon">✦</span><span><strong id="gold-value">0</strong><small>МОНЕТЫ</small></span></div>
             <div><span class="stat-icon">⚗</span><span><strong id="potion-value">2</strong><small>ЗЕЛЬЯ</small></span></div>
           </div>
+          <section class="equipment-panel" aria-labelledby="equipment-heading">
+            <div class="equipment-heading" id="equipment-heading">ЭКИПИРОВКА</div>
+            <div class="equipment-slots">
+              <div><span>ОРУЖИЕ</span><strong id="equipped-weapon">Нет</strong></div>
+              <div><span>БРОНЯ</span><strong id="equipped-armor">Нет</strong></div>
+            </div>
+            <div class="inventory-heading">РЮКЗАК <span id="inventory-count">0 / 6</span></div>
+            <div class="inventory-list" id="inventory-list" aria-live="polite">
+              <p class="inventory-empty">Рюкзак пуст. Экипировка иногда выпадает с врагов.</p>
+            </div>
+          </section>
           <div class="panel-divider"></div>
           <div class="best-run"><span>ЛУЧШИЙ СПУСК</span><strong id="best-floor">—</strong></div>
           <p class="save-note"><span aria-hidden="true">●</span> Прогресс сохраняется автоматически</p>
@@ -116,6 +127,7 @@
           <div class="merchant-actions" id="merchant-actions" aria-label="Прилавок странствующего торговца" hidden>
             <button class="action-button secondary-action" id="buy-potion-button" type="button">⚗ Зелье · 12 ✦</button>
             <button class="action-button" id="buy-weapon-button" type="button">⚔ Заточка · 18 ✦</button>
+            <button class="action-button guard-action" id="buy-armor-button" type="button">⬡ Броня · 24 ✦</button>
             <button class="action-button secondary-action" id="buy-healing-button" type="button">✚ Лечение · 8 ✦</button>
             <button class="action-button guard-action" id="leave-merchant-button" type="button">Продолжить путь <span aria-hidden="true">→</span></button>
           </div>

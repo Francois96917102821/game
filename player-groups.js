@@ -6,6 +6,8 @@
   const SHARE_REMAINDER_PREFIX = "well-of-whispers-group-share-remainder:";
   const PENDING_SHARES_PREFIX = "well-of-whispers-pending-group-shares:";
   const PENDING_INBOX_PREFIX = "well-of-whispers-pending-group-inbox:";
+  const PENDING_BATTLE_INVITE_PREFIX = "well-of-whispers-pending-battle-invite:";
+  const ACTIVE_BATTLE_PREFIX = "well-of-whispers-active-group-battle:";
   const HANDLED_HINTS_PREFIX = "well-of-whispers-handled-group-hints:";
   const HEARTBEAT_INTERVAL = 25_000;
   const PRESENCE_TTL = 75_000;
@@ -29,6 +31,8 @@
     disband: $("group-disband-button"),
     notifications: $("group-notifications"),
     toast: $("group-notice"),
+    toastText: $("group-notice-text"),
+    battleInviteButton: $("group-battle-invite-button"),
   };
 
   let options = null;
@@ -48,6 +52,11 @@
   const inboxInFlight = new Map();
   let lastPartnerActivity = null;
   let toastTimer = 0;
+  let battle = null;
+  let battleInvite = null;
+  let battlePollTimer = 0;
+  let battlePollInFlight = false;
+  let battleActionInFlight = false;
 
   function notificationsEnabled() {
     try {
@@ -95,14 +104,268 @@
     return Boolean(own?.in_dungeon && playerState.inDungeon && group.members.every((member) => member.in_dungeon));
   }
 
-  function showNotice(message) {
-    if (!notificationsEnabled()) return;
-    ui.toast.textContent = message;
+  function showNotice(message, force = false) {
+    if (!force && !notificationsEnabled()) return;
+    ui.toastText.textContent = message;
     ui.toast.hidden = false;
     window.clearTimeout(toastTimer);
     toastTimer = window.setTimeout(() => {
-      ui.toast.hidden = true;
+      ui.toast.hidden = Boolean(battleInvite);
     }, 6000);
+  }
+
+  function getBattlePlayer() {
+    const player = options?.getBattlePlayer?.();
+    if (!player || !Number.isInteger(player.hp) || !Number.isInteger(player.max_hp) ||
+      !Number.isInteger(player.potions) || !Number.isInteger(player.attack) ||
+      !Number.isInteger(player.defense) || !Number.isInteger(player.focus) ||
+      !Number.isFinite(player.heavy_multiplier)) {
+      throw new Error("Не удалось получить показатели искателя для совместного боя.");
+    }
+    return player;
+  }
+
+  function saveActiveBattleId(battleId, groupId) {
+    try {
+      window.localStorage.setItem(`${ACTIVE_BATTLE_PREFIX}${user?.id}`, JSON.stringify({ battleId, groupId }));
+    } catch (error) {
+      console.error("Не удалось сохранить совместный бой.", error);
+      setStatus("Не удалось сохранить ссылку на совместный бой; не закрывай эту вкладку до конца боя.", true);
+    }
+  }
+
+  function clearPendingBattleInvite() {
+    battleInvite = null;
+    try {
+      if (user) window.localStorage.removeItem(`${PENDING_BATTLE_INVITE_PREFIX}${user.id}`);
+    } catch (error) {
+      console.warn("Не удалось удалить обработанное приглашение в бой.", error);
+    }
+    renderBattleInvite();
+  }
+
+  function renderBattleInvite() {
+    const visible = Boolean(battleInvite && battleInvite.group_id === group?.id && playerState.inDungeon);
+    ui.battleInviteButton.hidden = !visible;
+  }
+
+  function formatBattleLogItem(item, players) {
+    const participant = players.find((entry) => entry.user_id === item.user_id);
+    const target = players.find((entry) => entry.user_id === item.target_id);
+    const name = participant?.nickname || "Игрок";
+    const targetName = target?.nickname || "игрока";
+    if (item.type === "player" && item.action === "attack") return `${name} нанёс ${item.damage} урона!`;
+    if (item.type === "player" && item.action === "heavy") return `${name} нанёс сокрушительный удар на ${item.damage} урона!`;
+    if (item.type === "player" && item.action === "potion") return `${name} выпил зелье и восстановил ${item.healing} здоровья.`;
+    if (item.type === "player" && item.action === "guard") return `${name} приготовился защищаться.`;
+    if (item.type === "boss") return `Страж атакует ${targetName} на ${item.damage} урона!`;
+    return item.text || "";
+  }
+
+  function renderBattleControls() {
+    const panel = $("coop-battle-panel");
+    panel.hidden = !battle || !["waiting", "active", "victory", "defeat"].includes(battle.status);
+    $("coop-start-button").hidden = !canStartBattle() || Boolean(battle && ["waiting", "active"].includes(battle.status));
+    if (!battle) return;
+
+    const own = battle.players?.find((player) => player.user_id === user?.id);
+    const boss = battle.boss || {};
+    $("coop-boss-name").textContent = boss.name || "Страж";
+    $("coop-boss-icon").textContent = boss.icon || "☠";
+    $("coop-boss-hp").textContent = `${boss.hp ?? 0} / ${boss.max_hp ?? 0}`;
+    $("coop-boss-health").style.width = `${boss.max_hp ? Math.max(0, boss.hp / boss.max_hp * 100) : 0}%`;
+    const members = $("coop-players");
+    members.replaceChildren();
+    for (const player of battle.players || []) {
+      const card = document.createElement("div");
+      card.className = `coop-player-card${player.user_id === user?.id ? " own-player" : ""}`;
+      const avatar = document.createElement("span");
+      avatar.className = "coop-player-avatar";
+      avatar.textContent = (player.nickname || "?").trim().slice(0, 1).toLocaleUpperCase("ru-RU");
+      const heading = document.createElement("div");
+      heading.className = "coop-card-heading";
+      const nickname = document.createElement("strong");
+      nickname.textContent = `${player.nickname}${player.user_id === user?.id ? " · ты" : ""}`;
+      const health = document.createElement("span");
+      health.textContent = `${player.hp} / ${player.max_hp}`;
+      heading.append(nickname, health);
+      const meter = document.createElement("div");
+      meter.className = "meter health-meter";
+      const fill = document.createElement("span");
+      fill.style.width = `${player.max_hp ? Math.max(0, player.hp / player.max_hp * 100) : 0}%`;
+      meter.append(fill);
+      const resources = document.createElement("small");
+      resources.textContent = `Зелья: ${player.potions} · запас силы: ${player.focus} / 3`;
+      const turn = document.createElement("small");
+      turn.textContent = player.acted ? "Ход сделан" : battle.status === "active" ? "Ждёт хода" : "Подключается";
+      card.append(avatar, heading, meter, resources, turn);
+      members.append(card);
+    }
+
+    const statusMessage = $("coop-turn-message");
+    if (battle.status === "waiting") {
+      statusMessage.textContent = "Ждём напарника — он получил приглашение в бой.";
+    } else if (battle.status === "victory") {
+      statusMessage.textContent = "Победа! Оба искателя могут спускаться глубже.";
+    } else if (battle.status === "defeat") {
+      statusMessage.textContent = "Отряд пал. Совместный бой завершён.";
+    } else if (battle.status === "abandoned") {
+      statusMessage.textContent = "Бой покинут.";
+    } else if (own?.acted) {
+      statusMessage.textContent = "Ты уже походил. Ждём напарника — после его хода ответит страж.";
+    } else {
+      statusMessage.textContent = `Раунд ${battle.round} · твой ход! Напарник тоже должен походить, затем атакует страж.`;
+    }
+
+    const log = $("coop-log");
+    log.replaceChildren();
+    for (const item of (battle.action_log || []).slice(-18)) {
+      const row = document.createElement("p");
+      row.textContent = formatBattleLogItem(item, battle.players || []);
+      log.append(row);
+    }
+    log.scrollTop = log.scrollHeight;
+    const canAct = battle.status === "active" && own && own.hp > 0 && !own.acted && !battleActionInFlight;
+    for (const id of ["coop-attack-button", "coop-heavy-button", "coop-potion-button", "coop-guard-button"]) {
+      $(id).disabled = !canAct;
+    }
+    $("coop-heavy-button").disabled = !canAct || (own?.focus || 0) < 2;
+    $("coop-potion-button").textContent = `⚗ Выпить зелье · ${own?.potions ?? 0}`;
+    $("coop-potion-button").disabled = !canAct || !own?.potions || own.hp >= own.max_hp;
+    $("coop-leave-button").hidden = !["waiting", "active"].includes(battle.status);
+  }
+
+  function setBattle(nextBattle) {
+    battle = nextBattle;
+    if (battle?.id && group?.id) saveActiveBattleId(battle.id, group.id);
+    if (typeof options?.onBattleUpdate === "function") options.onBattleUpdate(battle, user?.id);
+    renderBattleControls();
+    if (battle && ["waiting", "active"].includes(battle.status)) scheduleBattlePoll();
+    else if (battlePollTimer) {
+      window.clearTimeout(battlePollTimer);
+      battlePollTimer = 0;
+    }
+  }
+
+  function scheduleBattlePoll() {
+    if (battlePollTimer || !battle || !["waiting", "active"].includes(battle.status)) return;
+    battlePollTimer = window.setTimeout(pollBattle, 1800);
+  }
+
+  async function pollBattle() {
+    battlePollTimer = 0;
+    if (!battle?.id || !user || battlePollInFlight) return;
+    const userId = user.id;
+    const battleId = battle.id;
+    battlePollInFlight = true;
+    try {
+      const result = await rpc("get_player_group_battle", { p_battle_id: battleId });
+      if (user?.id === userId && battle?.id === battleId) setBattle(result);
+    } catch (error) {
+      if (user?.id === userId && battle?.id === battleId) {
+        setStatus(`Не удалось обновить совместный бой: ${friendlyError(error)}`, true);
+        console.error("Не удалось опросить состояние совместного боя.", error);
+      }
+    } finally {
+      battlePollInFlight = false;
+      scheduleBattlePoll();
+    }
+  }
+
+  async function restoreBattle() {
+    if (!user || !group || !playerState.inDungeon || battle) return;
+    try {
+      const saved = JSON.parse(window.localStorage.getItem(`${ACTIVE_BATTLE_PREFIX}${user.id}`) || "null");
+      if (!saved || saved.groupId !== group.id || typeof saved.battleId !== "string") return;
+      const result = await rpc("get_player_group_battle", { p_battle_id: saved.battleId });
+      if (user && group?.id === saved.groupId && result?.id === saved.battleId) setBattle(result);
+    } catch (error) {
+      console.warn("Не удалось восстановить совместный бой.", error);
+    }
+  }
+
+  async function startBattle(boss) {
+    if (!canStartBattle()) throw new Error("Совместный бой доступен, когда оба игрока находятся в подземелье.");
+    const userId = user.id;
+    const groupId = group.id;
+    const result = await rpc("start_player_group_battle", {
+      p_floor: boss.floor,
+      p_boss_name: boss.name,
+      p_boss_icon: boss.icon,
+      p_boss_skin: boss.skin,
+      p_boss_hp: boss.hp,
+      p_boss_max_hp: boss.max_hp,
+      p_boss_damage: boss.damage,
+      p_boss_xp: boss.xp,
+      p_boss_gold: boss.gold,
+      p_player: getBattlePlayer(),
+    });
+    if (!isCurrentContext(userId, groupId)) return;
+    setBattle(result);
+    if (result.status === "waiting") showNotice("Приглашение отправлено напарнику. Ждём его в бою.");
+    else showNotice("Совместный бой начался!");
+  }
+
+  async function joinBattle(battleId) {
+    if (!battleId || !playerState.inDungeon) throw new Error("Чтобы вступить в совместный бой, сначала начни свой спуск.");
+    const userId = user.id;
+    const groupId = group.id;
+    const result = await rpc("join_player_group_battle", {
+      p_battle_id: battleId,
+      p_player: getBattlePlayer(),
+    });
+    if (!isCurrentContext(userId, groupId)) return;
+    const invitation = battleInvite;
+    clearPendingBattleInvite();
+    setBattle(result);
+    if (invitation?.inbox_id) {
+      try {
+        const pending = loadPendingInbox(userId) || [];
+        savePendingInbox(userId, pending.filter((update) => update.id !== invitation.inbox_id));
+        await rpc("ack_player_group_inbox", { p_ids: [invitation.inbox_id] });
+      } catch (error) {
+        console.warn("Не удалось подтвердить приглашение в совместный бой.", error);
+      }
+    }
+    showNotice("Ты вступил в совместный бой со стражем!");
+  }
+
+  function canStartBattle() {
+    return Boolean(
+      isGroupActive() && playerState.inDungeon && group?.members?.length === 2 &&
+      options?.getBossEncounter?.()
+    );
+  }
+
+  function requestBattleAction(action) {
+    if (!battle?.id || battleActionInFlight) return;
+    const userId = user?.id;
+    const battleId = battle.id;
+    battleActionInFlight = true;
+    const requestId = createRequestId();
+    for (const id of ["coop-attack-button", "coop-heavy-button", "coop-potion-button", "coop-guard-button"]) {
+      $(id).disabled = true;
+    }
+    rpc("player_group_battle_action", {
+      p_battle_id: battleId,
+      p_action: action,
+      p_request_id: requestId,
+    }).then((result) => {
+      if (user?.id === userId && battle?.id === battleId) setBattle(result);
+    }).catch((error) => {
+      if (user?.id !== userId || battle?.id !== battleId) return;
+      setStatus(`Не удалось выполнить ход: ${friendlyError(error)}`, true);
+      console.error("Не удалось выполнить действие совместного боя.", error);
+    }).finally(() => {
+      battleActionInFlight = false;
+      if (user?.id === userId && battle?.id === battleId) renderBattleControls();
+    });
+  }
+
+  async function leaveBattle() {
+    if (!battle?.id) return;
+    const result = await rpc("leave_player_group_battle", { p_battle_id: battle.id });
+    setBattle(result);
   }
 
   function render() {
@@ -114,6 +377,7 @@
     ui.invite.disabled = busy || group?.members?.length !== 1;
     ui.disband.disabled = busy || !group;
     ui.copyInvite.disabled = busy || !invite?.invite_code;
+    ui.battleInviteButton.disabled = busy;
     ui.notifications.checked = notificationsEnabled();
     ui.nickname.disabled = Boolean(group) || busy;
     ui.acceptCode.disabled = Boolean(group) || busy;
@@ -158,6 +422,8 @@
             ? "Пригласи второго игрока по одноразовому коду."
             : "Создай приглашение для второго игрока.";
     }
+    renderBattleInvite();
+    renderBattleControls();
   }
 
   function friendlyError(error) {
@@ -191,9 +457,10 @@
       return saved.filter((update) =>
         update && typeof update.id === "string" && /^\d{1,19}$/.test(update.id) &&
         typeof update.group_id === "string" &&
-        ["gold", "essence", "hint_secret", "hint_rare"].includes(update.kind) &&
+        ["gold", "essence", "hint_secret", "hint_rare", "coop_battle"].includes(update.kind) &&
         Number.isInteger(update.amount) && update.amount >= 0 &&
-        Number.isInteger(update.floor) && update.floor >= 0
+        Number.isInteger(update.floor) && update.floor >= 0 &&
+        (update.kind !== "coop_battle" || typeof update.battle_id === "string")
       );
     } catch (error) {
       console.error("Не удалось восстановить очередь групповых обновлений.", error);
@@ -229,6 +496,23 @@
 
   function applyInboxUpdate(userId, update) {
     if (user?.id !== userId) return false;
+    if (update.kind === "coop_battle" && update.battle_id) {
+      if (battle?.id === update.battle_id) return true;
+      if (battleInvite?.battle_id !== update.battle_id) {
+        battleInvite = { battle_id: update.battle_id, group_id: update.group_id, inbox_id: update.id };
+        let persisted = true;
+        try {
+          window.localStorage.setItem(`${PENDING_BATTLE_INVITE_PREFIX}${userId}`, JSON.stringify(battleInvite));
+        } catch (error) {
+          persisted = false;
+          console.error("Не удалось сохранить приглашение в совместный бой.", error);
+        }
+        showNotice("Напарник зовёт на совместный бой со стражем!", true);
+        renderBattleInvite();
+        return persisted;
+      }
+      return true;
+    }
     if (update.kind === "gold" && Number.isInteger(update.amount) && update.amount > 0) {
       return options.onSharedGold(update.amount, update.id) === true;
     }
@@ -330,7 +614,16 @@
       group = result?.group || null;
       groupStateReceivedAt = group ? Date.now() : 0;
       invite = result?.invite || null;
-      if (!group) invite = null;
+      if (!group) {
+        invite = null;
+        battle = null;
+        battleActionInFlight = false;
+        battleInvite = null;
+        if (battlePollTimer) window.clearTimeout(battlePollTimer);
+        battlePollTimer = 0;
+        renderBattleControls();
+        renderBattleInvite();
+      }
       const partner = group?.members?.find((member) => member.user_id !== user.id);
       lastPartnerActivity = partner ? Boolean(partner.in_dungeon) : null;
       if (result?.dissolved) {
@@ -352,6 +645,7 @@
       }
       if (isGroupActive()) await flushPendingShares();
       if (playerState.inDungeon && group) await consumeInbox();
+      await restoreBattle();
     } catch (error) {
       if (user?.id === userId) {
         setStatus(`Не удалось обновить группу: ${friendlyError(error)}`, true);
@@ -429,6 +723,10 @@
       groupStateReceivedAt = 0;
       invite = null;
       lastPartnerActivity = null;
+      battle = null;
+      battleInvite = null;
+      if (battlePollTimer) window.clearTimeout(battlePollTimer);
+      battlePollTimer = 0;
       if (pendingCount) setStatus("Группа распущена; невыплаченную сопартийцу долю вернул себе.");
     }, "Группа распущена.");
   }
@@ -630,6 +928,7 @@
       own.in_dungeon = playerState.inDungeon;
     }
     render();
+    renderBattleInvite();
     const changed = previous.level !== playerState.level || previous.inDungeon !== playerState.inDungeon ||
       lastHeartbeatLevel !== playerState.level || lastHeartbeatDungeon !== playerState.inDungeon;
     if (user && (changed || Date.now() - lastHeartbeatAt >= HEARTBEAT_INTERVAL)) heartbeat();
@@ -646,6 +945,16 @@
       lastHeartbeatLevel = null;
       lastHeartbeatDungeon = null;
       lastPartnerActivity = null;
+      battle = null;
+      battlePollInFlight = false;
+      if (battlePollTimer) window.clearTimeout(battlePollTimer);
+      battlePollTimer = 0;
+      try {
+        battleInvite = JSON.parse(window.localStorage.getItem(`${PENDING_BATTLE_INVITE_PREFIX}${user?.id}`) || "null");
+      } catch (error) {
+        battleInvite = null;
+        console.warn("Не удалось восстановить приглашение в совместный бой.", error);
+      }
     }
     render();
     if (user) heartbeat();
@@ -664,6 +973,25 @@
     ui.invite.addEventListener("click", createInvite);
     ui.copyInvite.addEventListener("click", copyInvite);
     ui.disband.addEventListener("click", dissolveGroup);
+    ui.battleInviteButton.addEventListener("click", () => {
+      if (!battleInvite) return;
+      withBusy(() => joinBattle(battleInvite.battle_id), "Совместный бой начался.");
+    });
+    $("coop-start-button").addEventListener("click", () => {
+      const encounter = options.getBossEncounter();
+      if (encounter) startBattle(encounter).catch((error) => {
+        setStatus(`Не удалось начать совместный бой: ${friendlyError(error)}`, true);
+        console.error("Не удалось начать совместный бой.", error);
+      });
+    });
+    $("coop-attack-button").addEventListener("click", () => requestBattleAction("attack"));
+    $("coop-heavy-button").addEventListener("click", () => requestBattleAction("heavy"));
+    $("coop-potion-button").addEventListener("click", () => requestBattleAction("potion"));
+    $("coop-guard-button").addEventListener("click", () => requestBattleAction("guard"));
+    $("coop-leave-button").addEventListener("click", () => leaveBattle().catch((error) => {
+      setStatus(`Не удалось покинуть совместный бой: ${friendlyError(error)}`, true);
+      console.error("Не удалось покинуть совместный бой.", error);
+    }));
     ui.notifications.addEventListener("change", () => {
       try {
         window.localStorage.setItem(NOTIFICATIONS_KEY, String(ui.notifications.checked));
@@ -678,6 +1006,8 @@
       if (user && document.visibilityState === "visible") heartbeat();
     }, HEARTBEAT_INTERVAL);
     render();
+    renderBattleInvite();
+    renderBattleControls();
     window.WellCloudSave.onAuthChange(setUser);
     setPlayerState(options.getLevel(), options.isInDungeon());
   }
@@ -687,5 +1017,7 @@
     setPlayerState,
     splitReward,
     hint,
+    canStartBattle,
+    getBattle: () => battle,
   };
 })();

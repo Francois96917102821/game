@@ -202,6 +202,7 @@ begin
   ) ->> 'id')::uuid <> v_battle_id then
     raise exception 'Retrying battle creation should reconnect to the existing group battle';
   end if;
+  perform set_config('request.jwt.claim.sub', '22222222-2222-4222-8222-222222222222', true);
   if not exists (
     select 1 from public.player_group_inbox
     where group_id = v_group_id and recipient_id = '22222222-2222-4222-8222-222222222222'
@@ -210,7 +211,6 @@ begin
     raise exception 'Starting a group battle should notify the partner';
   end if;
 
-  perform set_config('request.jwt.claim.sub', '22222222-2222-4222-8222-222222222222', true);
   v_updates := public.consume_player_group_inbox();
   if not exists (
     select 1 from jsonb_array_elements(v_updates) as update_item(value)

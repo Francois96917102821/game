@@ -8,6 +8,7 @@
     <h1 id="result">RUNNING</h1>
     <pre id="log"></pre>
     <script src="../tavern-model.js"></script>
+    <script src="../expeditions-model.js"></script>
     <script src="../homestead-model.js"></script>
     <script>
       "use strict";
@@ -286,7 +287,7 @@
           "fishing altar stops at level 15 after exact incremental shard costs");
       });
 
-      check("sleep durations, offline completion, at-home guard, clinic calendar cap", () => {
+      check("sleep durations, offline completion, at-home guard, 20-hour clinic cooldown", () => {
         for (const [tier, minutes] of [["cabin", 160], ["sturdy", 140], ["mansion", 120]]) {
           let state = createHouseWithPlots(tier, 0, 20000);
           const sleep = model.startSleep(state, 30000);
@@ -302,10 +303,115 @@
         let state = createHouseWithPlots("mansion", 0, 40000);
         const clinic = model.useClinic(state, 2, Date.UTC(2026, 0, 1, 10));
         assert(clinic.ok && clinic.healed === 2, "mansion clinic reuses current injury count");
-        assert(!model.useClinic(clinic.state, 1, Date.UTC(2026, 0, 1, 23)).ok,
-          "clinic cannot be used twice in the same real calendar day");
-        assert(model.useClinic(clinic.state, 1, Date.UTC(2026, 0, 2, 0)).ok,
-          "clinic becomes available on the next calendar day");
+        assert(!model.useClinic(clinic.state, 1, Date.UTC(2026, 0, 2, 5, 59)).ok,
+          "clinic stays closed until the full 20-hour timer expires");
+        assert(model.useClinic(clinic.state, 1, Date.UTC(2026, 0, 2, 6)).ok,
+          "clinic becomes available after exactly 20 hours");
+        const emptyClinic = model.useClinic(state, 0, Date.UTC(2026, 0, 1, 10));
+        assert(emptyClinic.ok && emptyClinic.healed === 0 &&
+          !model.useClinic(emptyClinic.state, 1, Date.UTC(2026, 0, 1, 11)).ok,
+        "clicking the clinic with no injuries still starts the 20-hour cooldown");
+        const legacyDate = "2026-01-01";
+        const migrated = model.withDefaults({ ...state, clinicDate: legacyDate, clinicAt: undefined },
+          Date.UTC(2026, 0, 1, 12));
+        assert(migrated.clinicAt === Date.UTC(2026, 0, 1, 12) &&
+          !model.useClinic(migrated, 1, Date.UTC(2026, 0, 1, 13)).ok,
+        "a legacy same-day clinic date conservatively migrates to a fresh cooldown");
+      });
+
+      check("real crafting recipes consume only their exact homestead materials", () => {
+        let cabin = createHouseWithPlots("cabin", 0, 100000);
+        cabin.resources = resourceBag({ boards: 2, ingots: 1 });
+        const blade = model.craftGear(cabin, "roughBlade", "gear-1", 100010);
+        assert(blade.ok && blade.gear.type === "weapon" && blade.gear.bonus === 1 &&
+          blade.state.resources.boards === 0 && blade.state.resources.ingots === 0,
+        "cabin recipe creates a real +1 weapon and consumes 2 boards plus 1 ingot");
+        const away = model.craftGear({ ...cabin, atHome: false }, "roughBlade", "gear-2", 100011);
+        assert(!away.ok && cabin.resources.boards === 2, "crafting is home-only and a blocked craft spends nothing");
+        const locked = model.craftGear({ ...cabin, resources: resourceBag({ boards: 2, ingots: 3 }) },
+          "steelBlade", "gear-3", 100012);
+        assert(!locked.ok && locked.state.resources.ingots === 3,
+          "tier-2 recipes are locked outside a sturdy house without consuming stock");
+      });
+
+      check("kitchen meals use seed grain, completed rest, 100% satiety and a real two-hour proc", () => {
+        let state = createHouseWithPlots("cabin", 0, 200000);
+        state.resources = resourceBag({ seeds: 1 });
+        const bread = model.cookMeal(state, "grainBread", 200010);
+        assert(bread.ok && bread.state.resources.seeds === 0 && bread.state.meals.grainBread === 1,
+          "one gathered seed produces one stored 100%-satiety grain meal");
+        const beforeRest = model.cookMeal({ ...state, resources: resourceBag({
+          seeds: 1, fish: 1, herbs: 1,
+        }) }, "attackMeal", 200011);
+        assert(!beforeRest.ok, "the three stat meals are locked until a full sleep completes");
+        state.resources = resourceBag({ seeds: 1, fish: 1, herbs: 1 });
+        const sleep = model.startSleep(state, 200020);
+        const rested = model.completeSleep(sleep.state, sleep.endsAt);
+        const meal = model.cookMeal(rested.state, "attackMeal", sleep.endsAt + 1);
+        assert(meal.ok && meal.state.meals.attackMeal === 1 && meal.state.lastRestMealAt === sleep.endsAt,
+          "a finished rest unlocks one selected special meal");
+        const repeat = model.cookMeal(meal.state, "defenseMeal", sleep.endsAt + 2);
+        assert(!repeat.ok && repeat.state.resources.seeds === 0,
+          "one special meal opportunity is allowed per completed sleep");
+        const tavern = window.WellTavernModel.createState(sleep.endsAt + 3);
+        const eaten = model.eatMeal(meal.state, tavern, "attackMeal", sleep.endsAt + 3, () => 0.49);
+        assert(eaten.ok && eaten.tavern.satiety === 100 && eaten.buffTriggered &&
+          eaten.buff.stat === "attack" && eaten.buff.expiresAt === sleep.endsAt + 3 + 2 * hour,
+        "meal sets full satiety and the 50% proc stores an absolute two-hour attack buff expiry");
+        const combatMeal = model.eatMeal(eaten.state, eaten.tavern, "grainBread", sleep.endsAt + 4,
+          () => 0, true);
+        assert(!combatMeal.ok, "food cannot be consumed during combat");
+      });
+
+      check("library page prices and book transfer are exact and home-gated", () => {
+        let state = createHouseWithPlots("sturdy", 0, 300000);
+        const small = model.buyPages(state, 100, 300, "pages-100", 300010);
+        assert(small.ok && small.count === 100 && small.cost === 300 && small.gold === 0 &&
+          small.state.pages === 100, "100 pages cost exactly 300 gold");
+        const large = model.buyPages(state, 1000, 3000, "pages-1000", 300011);
+        assert(large.ok && large.count === 1000 && large.cost === 3000 &&
+          large.state.pages === 1000, "1,000 pages cost exactly 3,000 gold");
+        const blocked = model.buyPages({ ...state, atHome: false }, 100, 300, "pages-away", 300012);
+        assert(!blocked.ok && state.pages === 0, "library purchases are only available at home");
+        state.equippedBook = { id: "book-old", name: "Старая книга" };
+        const removed = model.unequipBook(state, 300013);
+        assert(removed.ok && removed.state.equippedBook === null &&
+          removed.state.books[0].id === "book-old", "library moves an equipped book into inventory without loss");
+      });
+
+      check("mansion basement purchase, dummy armor, unique achievement and camouflage item", () => {
+        const mansion = createHouseWithPlots("mansion", 0, 400000);
+        const blocked = model.purchaseBasement({ ...mansion, homes: mansion.homes.filter((home) => home.tier !== "mansion") },
+          20000, "basement-blocked", 400010);
+        assert(!blocked.ok, "basement cannot be purchased without an owned mansion");
+        const bought = model.purchaseBasement(mansion, 20000, "basement-1", 400011);
+        assert(bought.ok && bought.gold === 0 && bought.state.basementPurchased,
+          "separate basement costs exactly 20,000 gold");
+        const armored = model.setDummyArmor(bought.state, "plate", 400012);
+        const firstHit = model.strikeDummy(armored.state, 100, 400013);
+        assert(firstHit.ok && firstHit.damage === 90 && firstHit.state.dummyHp === 99910,
+          "selected dummy armor reduces practice damage, not player health");
+        let dummy = firstHit.state;
+        let awards = 0;
+        for (let hit = 0; dummy.dummyHp > 0; hit += 1) {
+          const strike = model.strikeDummy(dummy, 100000, 400014 + hit);
+          assert(strike.ok, "dummy remains attackable until defeated");
+          if (strike.achievementAwarded) awards += 1;
+          dummy = strike.state;
+        }
+        assert(dummy.dummyHp === 0 && dummy.dummyAchievement && awards === 1,
+          "defeating 100,000 HP dummy awards one persisted achievement");
+        const reset = model.resetDummy(dummy, 401000);
+        const second = model.strikeDummy(reset.state, 100000, 401001);
+        assert(reset.ok && reset.state.dummyHp === 100000 && !second.achievementAwarded,
+          "dummy can be reset for practice without repeating the achievement");
+        const camo = model.buyCamouflage(bought.state, 1000, "camo-1", 402000);
+        assert(camo.ok && camo.gold === 0 && camo.state.camouflage === 1,
+          "camouflage is an actual one-item inventory purchase for 1,000 gold");
+        assert(!model.buyCamouflage(camo.state, 1000, "camo-2", 402001).ok,
+          "a second camouflage cannot be bought while one is already held");
+        const used = model.consumeCamouflage(camo.state, 402002);
+        assert(used.ok && used.state.camouflage === 0, "camouflage use consumes the inventory item exactly once");
       });
 
       check("cloud merge unions permanent purchases and preserves their shard/gold debits", () => {
@@ -341,6 +447,18 @@
         });
         const app = game.contentWindow;
         let doc = app.document;
+        const click = (selector) => {
+          const element = doc.querySelector(selector);
+          assert(element, `missing UI element: ${selector}; available actions: ${
+            [...doc.querySelectorAll("[data-homestead-action]")].map((button) =>
+              `${button.dataset.homesteadAction}:${button.dataset.tier || ""}`).join(", ")}; saved homes: ${
+            JSON.stringify(JSON.parse(app.localStorage.getItem("well-of-whispers-camp-progress") || "{}")
+              .homestead?.homes)}; runtime homes: ${
+            JSON.stringify(app.getCloudSaveSnapshot().meta.homestead.homes)}; runtime atHome ${
+            app.getCloudSaveSnapshot().meta.homestead.atHome}; dialog open ${
+            doc.querySelector("#homestead-dialog")?.open}`);
+          element.click();
+        };
         const debited = app.createMetaProgress(5000);
         debited.essence = 100;
         const sturdyHome = app.WellHomesteadModel.purchaseHome(
@@ -358,10 +476,22 @@
           mergedCloud.homestead.homes.length === 2,
         "meta cloud merge preserves house receipts without refunding shard or gold purchases");
         assert(app.isValidMetaProgress(mergedCloud), "merged homestead remains valid in the complete cloud meta snapshot");
+        const claimed = app.createMetaProgress(5000);
+        claimed.tavern.stash.push({ id: "gear-1", type: "weapon", name: "Escrow blade", bonus: 3 });
+        claimed.tavern.nextGearSequence = 1;
+        claimed.tavern.updatedAt = 5001;
+        claimed.homestead.mailReceipts.push({ mailId: "mail-receipt-1", gearId: "gear-1" });
+        claimed.homestead.updatedAt = 5001;
+        const staleClaim = app.createMetaProgress(6000);
+        const mergedClaim = app.mergeMetaProgress(claimed, staleClaim);
+        assert(mergedClaim.homestead.mailReceipts.length === 1 &&
+          mergedClaim.tavern.stash.some((gear) => gear.name === "Escrow blade") &&
+          app.isValidMetaProgress(mergedClaim),
+        "a stale cross-device merge retains the claimed escrow gear together with its dedupe receipt");
         game.contentWindow.confirm = () => false;
-        doc.querySelector("#homestead-open-button").click();
+        click("#homestead-open-button");
         await waitFor(() => doc.querySelector("#homestead-dialog").open, "profile shop did not open");
-        doc.querySelector('[data-homestead-action="buy-home"][data-tier="cabin"]').click();
+        click('[data-homestead-action="buy-home"][data-tier="cabin"]');
         let saved = JSON.parse(app.localStorage.getItem("well-of-whispers-camp-progress"));
         assert((saved.homestead?.homes || []).length === 0 && saved.tavern.gold === 25000,
           "canceling the explicit price confirmation spends no currency");
@@ -374,32 +504,137 @@
         concurrent.homestead = concurrentHome.state;
         app.localStorage.setItem("well-of-whispers-camp-progress", JSON.stringify(concurrent));
         game.contentWindow.confirm = () => true;
-        doc.querySelector('[data-homestead-action="buy-home"][data-tier="sturdy"]').click();
+        click('[data-homestead-action="buy-home"][data-tier="sturdy"]');
         saved = JSON.parse(game.contentWindow.localStorage.getItem("well-of-whispers-camp-progress"));
         assert(saved.homestead.homes.length === 2 && saved.homestead.homes.every((home) => home.tier === "sturdy") &&
           saved.essence === 200,
         `concurrent home receipt merges without double-charging its 400-shard debit (${saved.homestead.homes.length} homes, ${saved.essence} shards)`);
         assert(doc.querySelector('[data-district="upper"]').getAttribute("aria-label") === "Верхний квартал",
           "owning a house unlocks the upper district");
-        doc.querySelector('[data-homestead-action="buy-plot"]').click();
-        saved = JSON.parse(game.contentWindow.localStorage.getItem("well-of-whispers-camp-progress"));
-        assert(saved.homestead.plots.length === 1 && saved.essence === 100,
-          "plot purchase persists its fixed slot and debits exactly 100 shards after receipt reconciliation");
-        assert(game.contentWindow.getCloudSaveSnapshot().meta.homestead.plots[0].index === 0,
-          "cloud snapshot includes persistent homestead slots");
-        doc.querySelector("#homestead-close-button").click();
-        const secondReload = new Promise((resolve, reject) => {
-          game.addEventListener("load", resolve, { once: true });
-          game.addEventListener("error", reject, { once: true });
-        });
-        game.src = "../index.html?homestead-test=reload";
-        await secondReload;
-        doc = game.contentWindow.document;
-        doc.querySelector("#homestead-open-button").click();
-        await waitFor(() => doc.querySelector("#homestead-dialog").open, "house did not reopen after reload");
-        assert(JSON.parse(game.contentWindow.localStorage.getItem("well-of-whispers-camp-progress"))
-          .homestead.plots[0].index === 0, "persistent plot slot survives page reload");
+        assert(doc.querySelector("#profile-crafting-button"),
+          "profile exposes a direct crafting-table entry point");
         game.remove();
+
+        const rooms = document.createElement("iframe");
+        rooms.title = "Проверка комнат дома";
+        const now = Date.now();
+        let home = addHome(model.createState(now), "mansion", "essence", 1000, 50000,
+          "ui-mansion", now).state;
+        for (let index = 0; index < 6; index += 1) {
+          home = addPlot(home, 1000, `ui-plot-${index}`, now + index + 1).state;
+        }
+        home = model.enterHome(home, now + 10).state;
+        home.resources = resourceBag({
+          boards: 2, ingots: 1, cloth: 2, blocks: 1,
+          seeds: 3, fish: 2, herbs: 2, bait: 2,
+        });
+        home.lastCompletedSleepAt = now - hour;
+        home.books = [{ id: "book-shelf", name: "Книга в инвентаре" }];
+        home.equippedBook = { id: "book-equipped", name: "Надетая книга" };
+        const roomTavern = window.WellTavernModel.createState(now);
+        roomTavern.gold = 50000;
+        roomTavern.satiety = 25;
+        roomTavern.stash = [{ id: "gear-1", type: "weapon", name: "Старый меч", bonus: 1 }];
+        roomTavern.nextGearSequence = 1;
+        const roomMeta = {
+          essence: 0,
+          upgrades: { vitality: 0, power: 0, supplies: 0 },
+          bossesDefeated: 0,
+          secretsFound: [],
+          groupInboxReceipts: [],
+          tavern: roomTavern,
+          harbor: window.WellExpeditionsModel.createState(),
+          homestead: home,
+        };
+        assert(model.isValidState(home), "home UI fixture must pass homestead-save validation");
+        assert(window.WellTavernModel.isValidState(roomTavern),
+          "home UI fixture must pass tavern-save validation");
+        assert(window.WellExpeditionsModel.isValidState(roomMeta.harbor),
+          "home UI fixture must pass expedition-save validation");
+        localStorage.setItem("well-of-whispers-camp-progress", JSON.stringify(roomMeta));
+        rooms.style.width = "390px";
+        rooms.style.height = "800px";
+        rooms.src = "../index.html?homestead-test=rooms";
+        document.body.append(rooms);
+        await new Promise((resolve, reject) => {
+          rooms.addEventListener("load", resolve, { once: true });
+          rooms.addEventListener("error", reject, { once: true });
+        });
+        const roomApp = rooms.contentWindow;
+        const roomDoc = roomApp.document;
+        assert(roomApp.getCloudSaveSnapshot().meta.homestead.homes.some((owned) => owned.id === "ui-mansion"),
+          "reloaded app must read the seeded mansion save");
+        const roomClick = (selector) => {
+          const element = roomDoc.querySelector(selector);
+          assert(element, `missing room UI element: ${selector}`);
+          assert(!element.disabled, `room UI action is disabled: ${selector}`);
+          element.click();
+        };
+        roomApp.confirm = () => true;
+        roomApp.Math.random = () => 0.1;
+        roomClick("#profile-crafting-button");
+        await waitFor(() => roomDoc.querySelector("#homestead-dialog").open,
+          "profile crafting shortcut did not open the homestead");
+        for (const section of ["craft", "kitchen", "library", "mailbox"]) {
+          assert(roomDoc.querySelector(`[data-room-section="${section}"]`),
+            `mansion UI is missing the ${section} section; rendered ${
+              [...roomDoc.querySelectorAll("[data-room-section]")].map((element) =>
+                element.dataset.roomSection).join(", ")}; atHome ${
+              roomApp.getCloudSaveSnapshot().meta.homestead.atHome}; dialog ${
+              roomDoc.querySelector("#homestead-dialog").open}`);
+        }
+        roomClick('[data-room-section="craft"] [data-homestead-action="craft-gear"][data-recipe-id="roughBlade"]');
+        let roomSaved = JSON.parse(roomApp.localStorage.getItem("well-of-whispers-camp-progress"));
+        assert(roomSaved.tavern.stash.some((gear) => gear.id === "gear-2" && gear.name === "Клинок домашней кузни") &&
+          roomSaved.homestead.resources.boards === 0 && roomSaved.homestead.resources.ingots === 0,
+        "crafting UI atomically spends the recipe and stores the resulting gear");
+        roomClick('[data-room-section="library"] [data-homestead-action="buy-pages"][data-count="100"]');
+        roomSaved = JSON.parse(roomApp.localStorage.getItem("well-of-whispers-camp-progress"));
+        assert(roomSaved.homestead.pages === 100 && roomSaved.tavern.gold === 49700,
+          "library UI buys the exact 100-page bundle for 300 gold");
+        roomClick('[data-room-section="library"] [data-homestead-action="unequip-book"]');
+        roomSaved = JSON.parse(roomApp.localStorage.getItem("well-of-whispers-camp-progress"));
+        assert(roomSaved.homestead.equippedBook === null &&
+          roomSaved.homestead.books.some((book) => book.id === "book-equipped"),
+        "library UI moves the equipped book into its inventory without loss");
+        roomClick('[data-room-section="kitchen"] [data-homestead-action="cook-meal"][data-meal-id="attackMeal"]');
+        roomSaved = JSON.parse(roomApp.localStorage.getItem("well-of-whispers-camp-progress"));
+        assert(roomSaved.homestead.meals.attackMeal === 1 && roomSaved.homestead.resources.seeds === 2,
+          "a completed sleep unlocks exactly one UI special meal and charges ingredients");
+        roomClick('[data-room-section="kitchen"] [data-homestead-action="eat-meal"][data-meal-id="attackMeal"]');
+        roomSaved = JSON.parse(roomApp.localStorage.getItem("well-of-whispers-camp-progress"));
+        assert(roomSaved.tavern.satiety === 100 && roomSaved.homestead.mealBuff.stat === "attack" &&
+          roomSaved.homestead.mealBuff.expiresAt > Date.now(),
+        "eating a cooked meal restores satiety and saves the actual two-hour combat effect");
+        roomClick('[data-homestead-action="clinic"]');
+        roomSaved = JSON.parse(roomApp.localStorage.getItem("well-of-whispers-camp-progress"));
+        assert(roomSaved.homestead.clinicAt > 0 && roomSaved.tavern.injuries === 0,
+          "clinic UI starts its 20-hour cooldown even with zero injuries");
+        roomClick('[data-homestead-action="buy-basement"]');
+        roomSaved = JSON.parse(roomApp.localStorage.getItem("well-of-whispers-camp-progress"));
+        assert(roomSaved.homestead.basementPurchased && roomSaved.tavern.gold === 29700 &&
+          roomDoc.querySelector('[data-room-section="basement"]'),
+        "mansion UI separately buys the basement at its displayed 20,000-gold price");
+        roomClick('[data-room-section="basement"] [data-homestead-action="dummy-armor"][data-armor-id="plate"]');
+        roomClick('[data-room-section="basement"] [data-homestead-action="dummy-hit"]');
+        roomSaved = JSON.parse(roomApp.localStorage.getItem("well-of-whispers-camp-progress"));
+        assert(roomSaved.homestead.dummyArmor === "plate" && roomSaved.homestead.dummyHp < 100000,
+          "training-room UI applies selected dummy armor and records a non-lethal practice hit");
+        roomClick('[data-room-section="basement"] [data-homestead-action="buy-camouflage"]');
+        roomSaved = JSON.parse(roomApp.localStorage.getItem("well-of-whispers-camp-progress"));
+        assert(roomSaved.homestead.camouflage === 1 && roomSaved.tavern.gold === 28700,
+          "training-room UI buys one usable camouflage item only when none is held");
+        const roomReload = new Promise((resolve, reject) => {
+          rooms.addEventListener("load", resolve, { once: true });
+          rooms.addEventListener("error", reject, { once: true });
+        });
+        rooms.src = "../index.html?homestead-test=rooms-reload";
+        await roomReload;
+        roomSaved = JSON.parse(rooms.contentWindow.localStorage.getItem("well-of-whispers-camp-progress"));
+        assert(roomSaved.homestead.clinicAt > 0 && roomSaved.homestead.basementPurchased &&
+          roomSaved.homestead.camouflage === 1 && roomSaved.homestead.mealBuff.expiresAt > Date.now(),
+        "clinic cooldown, basement, camouflage and absolute buff expiry survive reload");
+        rooms.remove();
       }
 
       function waitFor(predicate, message, timeout = 8000) {
@@ -417,7 +652,7 @@
         });
       }
 
-      checkBrowserUi().catch((error) => failures.push(`browser UI: ${error.message}`)).finally(() => {
+      checkBrowserUi().catch((error) => failures.push(`browser UI: ${error.stack || error.message}`)).finally(() => {
         if (failures.length) {
           output.textContent += `${failures.length} FAILURE(S)\n${failures.join("\n")}\n`;
           document.getElementById("result").textContent = "FAIL";

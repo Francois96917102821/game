@@ -354,6 +354,37 @@
     }));
   }
 
+  async function saveNow(snapshot) {
+    if (!session || !ready || pendingConflict) {
+      throw new Error("Облачное сохранение недоступно или требует разрешения конфликта.");
+    }
+    if (!isValidSnapshot(snapshot)) throw new Error("Нельзя сохранить недопустимый снимок игры.");
+    window.clearTimeout(saveTimer);
+    const operation = syncQueue.then(async () => {
+      if (!session || !ready || pendingConflict) {
+        throw new Error("Облачное сохранение изменилось; повтори отправку после синхронизации.");
+      }
+      const remote = await fetchLatest();
+      if (remote && latestRemote && !sameSnapshot(remote.save_data, latestRemote) &&
+        !sameSnapshot(remote.save_data, snapshot)) {
+        ready = false;
+        showConflict(snapshot, remote);
+        await loadHistory();
+        throw new Error("Обнаружен конфликт облачных сохранений. Предмет остаётся в закрытом эскроу до разрешения конфликта.");
+      }
+      if (!remote || !sameSnapshot(snapshot, remote.save_data)) await writeLatest(snapshot);
+      latestRemote = snapshot;
+      setStatus("Прогресс сохранён в облаке.");
+      return true;
+    });
+    syncQueue = operation.catch((error) => {
+      ready = false;
+      setStatus(`Не удалось синхронизировать: ${error.message}`, true);
+      console.error("Ошибка немедленного облачного сохранения.", error);
+    });
+    return operation;
+  }
+
   async function authenticate(isSignUp) {
     if (busy) return;
     const email = ui.email.value.trim();
@@ -632,6 +663,7 @@
   window.WellCloudSave = {
     initialize,
     scheduleSave,
+    saveNow,
     isConfigured,
     getCurrentUser: () => session?.user || null,
     groupRpc,

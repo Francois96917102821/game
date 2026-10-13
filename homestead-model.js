@@ -13,6 +13,27 @@
     "logs", "stone", "ore", "flax", "boards", "blocks", "ingots", "cloth",
     "seeds", "herbs", "fish", "bait",
   ]);
+  const CRAFT_RECIPES = Object.freeze({
+    roughBlade: Object.freeze({ name: "Клинок домашней кузни", type: "weapon", bonus: 1, tier: 1, recipe: Object.freeze({ boards: 2, ingots: 1 }) }),
+    barkArmor: Object.freeze({ name: "Дублёный доспех", type: "armor", bonus: 1, tier: 1, recipe: Object.freeze({ cloth: 2, blocks: 1 }) }),
+    steelBlade: Object.freeze({ name: "Стальной клинок", type: "weapon", bonus: 2, tier: 2, recipe: Object.freeze({ boards: 2, ingots: 3 }) }),
+    reinforcedArmor: Object.freeze({ name: "Усиленный доспех", type: "armor", bonus: 2, tier: 2, recipe: Object.freeze({ cloth: 3, blocks: 2 }) }),
+  });
+  const MEALS = Object.freeze({
+    grainBread: Object.freeze({ name: "Зерновая лепёшка", satiety: 100, recipe: Object.freeze({ seeds: 1 }), stat: null, afterRest: false }),
+    attackMeal: Object.freeze({ name: "Похлёбка силы", satiety: 100, recipe: Object.freeze({ seeds: 1, fish: 1, herbs: 1 }), stat: "attack", afterRest: true }),
+    defenseMeal: Object.freeze({ name: "Травяной суп", satiety: 100, recipe: Object.freeze({ seeds: 1, herbs: 2, bait: 1 }), stat: "defense", afterRest: true }),
+    dodgeMeal: Object.freeze({ name: "Рыбная похлёбка", satiety: 100, recipe: Object.freeze({ seeds: 1, fish: 2 }), stat: "dodge", afterRest: true }),
+  });
+  const DUMMY_ARMOR = Object.freeze({
+    none: Object.freeze({ name: "Без брони", reduction: 0 }),
+    leather: Object.freeze({ name: "Кожаная броня", reduction: 2 }),
+    chain: Object.freeze({ name: "Кольчуга", reduction: 5 }),
+    plate: Object.freeze({ name: "Латы", reduction: 10 }),
+  });
+  const MAILBOX_TIER = "mansion";
+  const BASEMENT_GOLD_COST = 20000;
+  const CAMOUFLAGE_GOLD_COST = 1000;
   const BUILDINGS = Object.freeze({
     boards: Object.freeze({ name: "Столярная мастерская", input: "logs", output: "boards", maxLevel: Infinity, recipe: { logs: 5, stone: 5 } }),
     blocks: Object.freeze({ name: "Каменотёсная мастерская", input: "stone", output: "blocks", maxLevel: Infinity, recipe: { logs: 5, stone: 5 } }),
@@ -39,6 +60,17 @@
     return JSON.parse(JSON.stringify(value));
   }
 
+  function isValidBook(book) {
+    return Boolean(book && typeof book === "object" &&
+      typeof book.id === "string" && book.id.length > 0 && book.id.length <= 100 &&
+      typeof book.name === "string" && book.name.length > 0 && book.name.length <= 100);
+  }
+
+  function hasRoom(state, minimumTier) {
+    return Boolean(state.atHome && getBestHome(state) &&
+      HOME_TYPES[getBestHome(state).tier].tier >= HOME_TYPES[minimumTier].tier);
+  }
+
   function createState(now = Date.now()) {
     return {
       version: VERSION,
@@ -51,6 +83,20 @@
       gatheredAt: null,
       atHome: false,
       sleep: null,
+      lastCompletedSleepAt: null,
+      lastRestMealAt: null,
+      meals: Object.fromEntries(Object.keys(MEALS).map((id) => [id, 0])),
+      mealBuff: null,
+      pages: 0,
+      books: [],
+      equippedBook: null,
+      mailReceipts: [],
+      clinicAt: null,
+      basementPurchased: false,
+      dummyHp: 100000,
+      dummyArmor: "none",
+      dummyAchievement: false,
+      camouflage: 0,
       altars: { fishing: 0, runes: 0, attributes: 0, pain: 0 },
       clinicDate: null,
     };
@@ -60,14 +106,15 @@
     return Boolean(
       receipt && typeof receipt === "object" &&
       typeof receipt.id === "string" && receipt.id.length > 0 && receipt.id.length <= 160 &&
-      ["home", "plot", "altar"].includes(receipt.kind) &&
+      ["home", "plot", "altar", "pages", "basement", "camouflage"].includes(receipt.kind) &&
       Number.isInteger(receipt.essenceCost) && receipt.essenceCost >= 0 && receipt.essenceCost <= 1000000000 &&
       Number.isInteger(receipt.goldCost) && receipt.goldCost >= 0 && receipt.goldCost <= 1000000000 &&
       Number.isFinite(receipt.at) &&
       (receipt.homeId === undefined || typeof receipt.homeId === "string") &&
       (receipt.plotIndex === undefined || Number.isInteger(receipt.plotIndex) && receipt.plotIndex >= 0) &&
       (receipt.altarType === undefined || Object.hasOwn(ALTARS, receipt.altarType)) &&
-      (receipt.altarLevel === undefined || Number.isInteger(receipt.altarLevel) && receipt.altarLevel >= 1)
+      (receipt.altarLevel === undefined || Number.isInteger(receipt.altarLevel) && receipt.altarLevel >= 1) &&
+      (receipt.pageCount === undefined || Number.isInteger(receipt.pageCount) && [100, 1000].includes(receipt.pageCount))
     );
   }
 
@@ -124,11 +171,35 @@
       (state.sleep !== null && !(state.sleep && typeof state.sleep === "object" &&
         typeof state.sleep.homeId === "string" && Number.isFinite(state.sleep.startedAt) &&
         Number.isFinite(state.sleep.endsAt) && state.sleep.endsAt > state.sleep.startedAt)) ||
+      (state.lastCompletedSleepAt !== undefined && state.lastCompletedSleepAt !== null && !Number.isFinite(state.lastCompletedSleepAt)) ||
+      (state.lastRestMealAt !== undefined && state.lastRestMealAt !== null && !Number.isFinite(state.lastRestMealAt)) ||
+      (state.meals !== undefined && (!state.meals || Object.keys(state.meals).length !== Object.keys(MEALS).length ||
+        !Object.keys(MEALS).every((id) => Number.isInteger(state.meals[id]) && state.meals[id] >= 0 && state.meals[id] <= 1000000))) ||
+      (state.mealBuff !== undefined && state.mealBuff !== null && !(state.mealBuff && typeof state.mealBuff === "object" &&
+        ["attack", "defense", "dodge"].includes(state.mealBuff.stat) &&
+        Number.isFinite(state.mealBuff.startedAt) && Number.isFinite(state.mealBuff.expiresAt) &&
+        state.mealBuff.expiresAt > state.mealBuff.startedAt)) ||
+      (state.pages !== undefined && (!Number.isInteger(state.pages) || state.pages < 0 || state.pages > 1000000000)) ||
+      (state.books !== undefined && (!Array.isArray(state.books) || state.books.length > 10000 ||
+        !state.books.every((book) => isValidBook(book)))) ||
+      (state.equippedBook !== undefined && state.equippedBook !== null && !isValidBook(state.equippedBook)) ||
+      (state.mailReceipts !== undefined && (!Array.isArray(state.mailReceipts) || state.mailReceipts.length > 100000 ||
+        !state.mailReceipts.every((receipt) => receipt && typeof receipt.mailId === "string" &&
+        receipt.mailId.length > 0 && receipt.mailId.length <= 100 &&
+        typeof receipt.gearId === "string" && /^gear-\d+$/.test(receipt.gearId)) ||
+        new Set(state.mailReceipts.map((receipt) => receipt.mailId)).size !== state.mailReceipts.length)) ||
+      (state.clinicAt !== undefined && state.clinicAt !== null && !Number.isFinite(state.clinicAt)) ||
+      (state.basementPurchased !== undefined && typeof state.basementPurchased !== "boolean") ||
+      (state.dummyHp !== undefined && (!Number.isInteger(state.dummyHp) || state.dummyHp < 0 || state.dummyHp > 100000)) ||
+      (state.dummyArmor !== undefined && !Object.hasOwn(DUMMY_ARMOR, state.dummyArmor)) ||
+      (state.dummyAchievement !== undefined && typeof state.dummyAchievement !== "boolean") ||
+      (state.camouflage !== undefined && (!Number.isInteger(state.camouflage) || state.camouflage < 0 || state.camouflage > 1)) ||
       !state.altars || typeof state.altars !== "object" ||
       Object.keys(state.altars).length !== Object.keys(ALTARS).length ||
       !Object.keys(ALTARS).every((id) => Number.isInteger(state.altars[id]) &&
         state.altars[id] >= 0 && state.altars[id] <= ALTARS[id].maxLevel) ||
-      (state.clinicDate !== null && !/^\d{4}-\d{2}-\d{2}$/.test(state.clinicDate))
+      (state.clinicDate !== null && !/^\d{4}-\d{2}-\d{2}$/.test(state.clinicDate)) ||
+      (state.dummyHp === 0 && !state.dummyAchievement)
     ) return false;
     if (state.plots.some((plot, index) => !isValidPlot(plot, index))) return false;
     return resourceTotal(state) <= getStorageCapacity(state) &&
@@ -142,6 +213,11 @@
     const state = { ...base, ...copy(value) };
     state.resources = { ...base.resources, ...(value.resources || {}) };
     state.altars = { ...base.altars, ...(value.altars || {}) };
+    state.meals = { ...base.meals, ...(value.meals || {}) };
+    if (value.clinicAt === undefined && value.clinicDate) {
+      const today = new Date(now).toISOString().slice(0, 10);
+      state.clinicAt = value.clinicDate === today ? now : null;
+    }
     if (!isValidState(state)) return base;
     return state;
   }
@@ -492,6 +568,7 @@
     if (!current.homes.some((home) => home.id === current.sleep.homeId)) return fail(current, "Дом сна больше не принадлежит путнику.");
     const state = copy(current);
     state.sleep = null;
+    state.lastCompletedSleepAt = now;
     return { ok: true, state: stamp(state, now), healed: true };
   }
 
@@ -499,12 +576,156 @@
     if (!current.atHome || getBestHome(current)?.tier !== "mansion") {
       return fail(current, "Лечебница доступна только в собственном особняке.");
     }
-    if (injuries <= 0) return fail(current, "Лечить травмы не требуется.");
-    const today = new Date(now).toISOString().slice(0, 10);
-    if (current.clinicDate === today) return fail(current, "Лечебница принимает раз в календарный день.");
+    if (current.clinicAt !== null && now - current.clinicAt < 20 * HOUR) {
+      return fail(current, "Лечебница доступна раз в 20 часов.", {
+        availableAt: current.clinicAt + 20 * HOUR,
+      });
+    }
     const state = copy(current);
-    state.clinicDate = today;
-    return { ok: true, state: stamp(state, now), healed: injuries };
+    state.clinicAt = now;
+    state.clinicDate = null;
+    return { ok: true, state: stamp(state, now), healed: Math.max(0, injuries), availableAt: now + 20 * HOUR };
+  }
+
+  function craftGear(current, recipeId, gearId, now = Date.now()) {
+    if (!hasRoom(current, "cabin")) return fail(current, "Ремесленный стол доступен только дома.");
+    const recipe = CRAFT_RECIPES[recipeId];
+    if (!recipe) return fail(current, "Рецепт не найден.");
+    if (HOME_TYPES[getBestHome(current).tier].tier < recipe.tier) {
+      return fail(current, "Для этого рецепта нужен добротный дом или особняк.");
+    }
+    if (typeof gearId !== "string" || !/^gear-\d+$/.test(gearId)) return fail(current, "Не удалось создать номер предмета.");
+    const missing = Object.entries(recipe.recipe).find(([key, amount]) => current.resources[key] < amount);
+    if (missing) return fail(current, `Недостаточно материалов: ${missing[1]} ${missing[0]}.`);
+    const state = copy(current);
+    for (const [key, amount] of Object.entries(recipe.recipe)) state.resources[key] -= amount;
+    const gear = { id: gearId, type: recipe.type, name: recipe.name, bonus: recipe.bonus };
+    return { ok: true, state: stamp(state, now), gear, recipe };
+  }
+
+  function cookMeal(current, mealId, now = Date.now()) {
+    if (!hasRoom(current, "cabin")) return fail(current, "Кухня доступна только дома.");
+    const meal = MEALS[mealId];
+    if (!meal) return fail(current, "Рецепт блюда не найден.");
+    if (meal.afterRest && (current.lastCompletedSleepAt === null ||
+      current.lastRestMealAt === current.lastCompletedSleepAt)) {
+      return fail(current, "Блюда после отдыха можно приготовить один раз после завершённого сна.");
+    }
+    const missing = Object.entries(meal.recipe).find(([key, amount]) => current.resources[key] < amount);
+    if (missing) return fail(current, `Недостаточно ресурсов: нужно ${missing[1]} ед. ресурса «${missing[0]}».`);
+    const state = copy(current);
+    for (const [key, amount] of Object.entries(meal.recipe)) state.resources[key] -= amount;
+    state.meals[mealId] += 1;
+    if (meal.afterRest) state.lastRestMealAt = current.lastCompletedSleepAt;
+    return { ok: true, state: stamp(state, now), meal };
+  }
+
+  function eatMeal(current, tavern, mealId, now = Date.now(), random = Math.random, inCombat = false) {
+    if (!hasRoom(current, "cabin")) return fail(current, "Еду можно использовать только на кухне дома.");
+    if (inCombat) return fail(current, "Во время боя еду использовать нельзя.");
+    const meal = MEALS[mealId];
+    if (!meal || current.meals[mealId] < 1) return fail(current, "Такого блюда нет в запасе.");
+    if (!tavern || !Number.isInteger(tavern.satiety) || !Number.isFinite(tavern.satietyAt)) {
+      return fail(current, "Не удалось проверить сытость таверны.");
+    }
+    const state = copy(current);
+    const nextTavern = copy(tavern);
+    state.meals[mealId] -= 1;
+    nextTavern.satiety = meal.satiety;
+    nextTavern.satietyAt = now;
+    nextTavern.revision += 1;
+    nextTavern.updatedAt = now;
+    const buffTriggered = Boolean(meal.stat && random() < 0.5);
+    if (buffTriggered) state.mealBuff = { stat: meal.stat, startedAt: now, expiresAt: now + 2 * HOUR };
+    return {
+      ok: true,
+      state: stamp(state, now),
+      tavern: nextTavern,
+      meal,
+      buffTriggered,
+      buff: buffTriggered ? state.mealBuff : null,
+    };
+  }
+
+  function buyPages(current, count, gold, receiptId, now = Date.now()) {
+    if (!hasRoom(current, "sturdy")) return fail(current, "Библиотека доступна только в добротном доме или особняке.");
+    if (![100, 1000].includes(count)) return fail(current, "Можно купить 100 или 1 000 пустых страниц.");
+    const cost = count === 100 ? 300 : 3000;
+    if (current.receipts.some((receipt) => receipt.id === receiptId)) return fail(current, "Эта покупка уже учтена.");
+    if (gold < cost) return fail(current, `Нужно ${cost} золотых.`);
+    const state = copy(current);
+    state.pages += count;
+    transact(state, { id: receiptId, kind: "pages", goldCost: cost, pageCount: count, at: now });
+    return { ok: true, state: stamp(state, now), gold: gold - cost, count, cost };
+  }
+
+  function unequipBook(current, now = Date.now()) {
+    if (!hasRoom(current, "sturdy")) return fail(current, "Библиотека доступна только в добротном доме или особняке.");
+    if (!current.equippedBook) return fail(current, "Сейчас нет надетой книги.");
+    if (current.books.length >= 10000) return fail(current, "Инвентарь книг полон.");
+    const state = copy(current);
+    state.books.push(state.equippedBook);
+    const book = state.equippedBook;
+    state.equippedBook = null;
+    return { ok: true, state: stamp(state, now), book };
+  }
+
+  function purchaseBasement(current, gold, receiptId, now = Date.now()) {
+    if (!hasRoom(current, "mansion")) return fail(current, "Подвал можно купить только для особняка.");
+    if (current.basementPurchased) return fail(current, "Подвал уже куплен.");
+    if (current.receipts.some((receipt) => receipt.id === receiptId)) return fail(current, "Эта покупка уже учтена.");
+    if (gold < BASEMENT_GOLD_COST) return fail(current, `Нужно ${BASEMENT_GOLD_COST} золотых.`);
+    const state = copy(current);
+    state.basementPurchased = true;
+    transact(state, { id: receiptId, kind: "basement", goldCost: BASEMENT_GOLD_COST, at: now });
+    return { ok: true, state: stamp(state, now), gold: gold - BASEMENT_GOLD_COST };
+  }
+
+  function buyCamouflage(current, gold, receiptId, now = Date.now()) {
+    if (!hasRoom(current, "mansion") || !current.basementPurchased) {
+      return fail(current, "Маскировку можно купить только в подвале особняка.");
+    }
+    if (current.camouflage > 0) return fail(current, "Маскировка уже есть в инвентаре.");
+    if (current.receipts.some((receipt) => receipt.id === receiptId)) return fail(current, "Эта покупка уже учтена.");
+    if (gold < CAMOUFLAGE_GOLD_COST) return fail(current, `Нужно ${CAMOUFLAGE_GOLD_COST} золотых.`);
+    const state = copy(current);
+    state.camouflage = 1;
+    transact(state, { id: receiptId, kind: "camouflage", goldCost: CAMOUFLAGE_GOLD_COST, at: now });
+    return { ok: true, state: stamp(state, now), gold: gold - CAMOUFLAGE_GOLD_COST };
+  }
+
+  function consumeCamouflage(current, now = Date.now()) {
+    if (current.camouflage < 1) return fail(current, "Маскировки в инвентаре нет.");
+    const state = copy(current);
+    state.camouflage -= 1;
+    return { ok: true, state: stamp(state, now) };
+  }
+
+  function setDummyArmor(current, armorId, now = Date.now()) {
+    if (!hasRoom(current, "mansion") || !current.basementPurchased) return fail(current, "Тренировочный зал доступен в купленном подвале особняка.");
+    if (!Object.hasOwn(DUMMY_ARMOR, armorId)) return fail(current, "Такого типа брони у манекена нет.");
+    const state = copy(current);
+    state.dummyArmor = armorId;
+    return { ok: true, state: stamp(state, now) };
+  }
+
+  function strikeDummy(current, attack, now = Date.now()) {
+    if (!hasRoom(current, "mansion") || !current.basementPurchased) return fail(current, "Тренировочный зал доступен в купленном подвале особняка.");
+    if (!Number.isInteger(attack) || attack < 1 || attack > 1000000) return fail(current, "Сила удара недопустима.");
+    if (current.dummyHp === 0) return fail(current, "Манекен повержен; восстанови его для новой тренировки.");
+    const state = copy(current);
+    const damage = Math.min(state.dummyHp, Math.max(1, attack - DUMMY_ARMOR[state.dummyArmor].reduction));
+    state.dummyHp -= damage;
+    const achievementAwarded = state.dummyHp === 0 && !state.dummyAchievement;
+    if (achievementAwarded) state.dummyAchievement = true;
+    return { ok: true, state: stamp(state, now), damage, achievementAwarded };
+  }
+
+  function resetDummy(current, now = Date.now()) {
+    if (!hasRoom(current, "mansion") || !current.basementPurchased) return fail(current, "Тренировочный зал доступен в купленном подвале особняка.");
+    const state = copy(current);
+    state.dummyHp = 100000;
+    return { ok: true, state: stamp(state, now) };
   }
 
   function upgradeAltar(current, altarType, essence, receiptId, now = Date.now()) {
@@ -552,7 +773,19 @@
       .map((receipt) => [receipt.id, receipt])).values()];
     for (const id of Object.keys(ALTARS)) result.altars[id] = Math.max(first.altars[id], second.altars[id]);
     result.gatheredAt = Math.max(first.gatheredAt || 0, second.gatheredAt || 0) || null;
-    result.clinicDate = [first.clinicDate, second.clinicDate].filter(Boolean).sort().slice(-1)[0] || null;
+    result.clinicDate = null;
+    result.clinicAt = Math.max(first.clinicAt || 0, second.clinicAt || 0) || null;
+    result.lastCompletedSleepAt = Math.max(first.lastCompletedSleepAt || 0, second.lastCompletedSleepAt || 0) || null;
+    result.lastRestMealAt = Math.max(first.lastRestMealAt || 0, second.lastRestMealAt || 0) || null;
+    result.mailReceipts = [...new Map([...first.mailReceipts, ...second.mailReceipts]
+      .map((receipt) => [receipt.mailId, receipt])).values()];
+    result.pages = result.receipts.filter((receipt) => receipt.kind === "pages")
+      .reduce((total, receipt) => total + (receipt.pageCount || 0), 0);
+    result.basementPurchased = first.basementPurchased || second.basementPurchased;
+    result.dummyAchievement = first.dummyAchievement || second.dummyAchievement;
+    result.dummyHp = latest.dummyHp;
+    result.mealBuff = [first.mealBuff, second.mealBuff]
+      .filter(Boolean).sort((left, right) => right.expiresAt - left.expiresAt)[0] || null;
     return isValidState(result) ? result : copy(latest);
   }
 
@@ -560,18 +793,30 @@
     ALTARS,
     ALTAR_EFFECTS,
     BUILDINGS,
+    BASEMENT_GOLD_COST,
+    CAMOUFLAGE_GOLD_COST,
+    CRAFT_RECIPES,
+    DUMMY_ARMOR,
+    MAILBOX_TIER,
+    MEALS,
     canReplaceBuilding,
     DAY,
     HOUR,
     HOME_TYPES,
     RESOURCE_KEYS,
     buyPlot,
+    buyCamouflage,
+    buyPages,
     buildOrUpgrade,
+    consumeCamouflage,
     completeSleep,
+    cookMeal,
     createState,
+    craftGear,
     discardCrop,
     drawWater,
     enterHome,
+    eatMeal,
     fail,
     fish,
     gather,
@@ -587,7 +832,12 @@
     purchaseHome,
     resourceTotal,
     startSleep,
+    strikeDummy,
+    setDummyArmor,
+    purchaseBasement,
+    resetDummy,
     upgradeAltar,
+    unequipBook,
     useClinic,
     waterGarden,
     withDefaults,

@@ -49,6 +49,8 @@ declare
   v_updates jsonb;
   v_ack jsonb;
   v_message text;
+  v_mail_id uuid;
+  v_mail jsonb;
 begin
   if has_function_privilege('anon', 'public.create_player_group(text,integer)', 'execute') then
     raise exception 'anon must not execute group RPCs';
@@ -317,6 +319,193 @@ begin
   v_result := public.leave_player_group_battle(v_battle_id);
   if v_result ->> 'status' <> 'abandoned' then
     raise exception 'Leaving a live battle should mark it abandoned';
+  end if;
+
+  if has_function_privilege('anon', 'public.player_mailbox_send(uuid,uuid,jsonb)', 'execute') or
+    has_function_privilege('anon', 'public.player_mailbox_list()', 'execute') or
+    not has_function_privilege('authenticated', 'public.player_mailbox_send(uuid,uuid,jsonb)', 'execute') or
+    not has_function_privilege('authenticated', 'public.player_mailbox_claim(uuid)', 'execute') or
+    has_table_privilege('authenticated', 'public.player_mailbox_escrow', 'select') or
+    has_table_privilege('authenticated', 'public.player_mailbox_escrow', 'insert') or
+    exists (
+      select 1 from pg_proc
+      where pronamespace = 'public'::regnamespace and proname like 'player_mailbox_%'
+        and not prosecdef
+    ) then
+    raise exception 'Mailbox data must be inaccessible directly and mailbox RPCs must be security definer';
+  end if;
+
+  perform set_config('request.jwt.claim.sub', '11111111-1111-4111-8111-111111111111', true);
+  insert into public.game_saves (user_id, save_data)
+  values (
+    '11111111-1111-4111-8111-111111111111',
+    '{"version":1,"bestFloor":0,"run":null,"meta":{"homestead":{"homes":[{"id":"owner-mansion","tier":"mansion"}]}}}'::jsonb
+  ) on conflict (user_id) do update set save_data = excluded.save_data;
+  perform set_config('request.jwt.claim.sub', '22222222-2222-4222-8222-222222222222', true);
+  insert into public.game_saves (user_id, save_data)
+  values (
+    '22222222-2222-4222-8222-222222222222',
+    '{"version":1,"bestFloor":0,"run":null,"meta":{"homestead":{"homes":[{"id":"partner-mansion","tier":"mansion"}]}}}'::jsonb
+  ) on conflict (user_id) do update set save_data = excluded.save_data;
+
+  perform set_config('request.jwt.claim.sub', '11111111-1111-4111-8111-111111111111', true);
+  v_mail := public.player_mailbox_send(
+    '22222222-2222-4222-8222-222222222222',
+    'aaaaaaaa-1111-4111-8111-111111111111',
+    '{"id":"gear-88","type":"weapon","name":"Test blade","bonus":4}'::jsonb
+  );
+  v_mail_id := (v_mail ->> 'id')::uuid;
+  if v_mail ->> 'status' <> 'sender_pending' then
+    raise exception 'New gear must enter sender-pending server escrow before local removal';
+  end if;
+  if public.player_mailbox_send(
+    '22222222-2222-4222-8222-222222222222',
+    'aaaaaaaa-1111-4111-8111-111111111111',
+    '{"id":"gear-88","type":"weapon","name":"Test blade","bonus":4}'::jsonb
+  ) ->> 'id' <> v_mail_id::text then
+    raise exception 'Retrying the same item send must return its original escrow receipt';
+  end if;
+  v_result := public.player_mailbox_send(
+    '22222222-2222-4222-8222-222222222222',
+    'abababab-abab-4bab-8bab-abababababab',
+    '{"id":"gear-88","type":"weapon","name":"Test blade","bonus":4}'::jsonb
+  );
+  if v_result ->> 'id' <> v_mail_id::text then
+    raise exception 'A sender who lost their local outbox must recover the original escrow by gear id';
+  end if;
+  v_message := null;
+  begin
+    perform public.player_mailbox_send(
+      '22222222-2222-4222-8222-222222222222',
+      'aaaaaaaa-1111-4111-8111-111111111111',
+      '{"id":"gear-89","type":"weapon","name":"Different blade","bonus":4}'::jsonb
+    );
+  exception when others then
+    get stacked diagnostics v_message = message_text;
+  end;
+  if v_message is null then
+    raise exception 'A request-id retry with a different gear payload must be rejected';
+  end if;
+  v_message := null;
+  begin
+    perform public.player_mailbox_send(
+      '33333333-3333-4333-8333-333333333333',
+      'bbbbbbbb-1111-4111-8111-111111111111',
+      '{"id":"gear-89","type":"armor","name":"Untrusted armor","bonus":3}'::jsonb
+    );
+  exception when others then
+    get stacked diagnostics v_message = message_text;
+  end;
+  if v_message is null then
+    raise exception 'A recipient outside the authenticated player group must be rejected';
+  end if;
+  if public.player_mailbox_list() <> '[]'::jsonb then
+    raise exception 'Sender inbox lookup must not reveal recipient mailbox contents';
+  end if;
+  perform set_config('request.jwt.claim.sub', '22222222-2222-4222-8222-222222222222', true);
+  if public.player_mailbox_list() <> '[]'::jsonb then
+    raise exception 'Recipient must not see sender-pending gear before sender cloud removal is saved';
+  end if;
+  perform set_config('request.jwt.claim.sub', '11111111-1111-4111-8111-111111111111', true);
+  v_mail := public.player_mailbox_sender_removed(v_mail_id);
+  if v_mail ->> 'status' <> 'ready' or
+    public.player_mailbox_sender_removed(v_mail_id) ->> 'status' <> 'ready' then
+    raise exception 'Sender-removal acknowledgement must be idempotent and open escrow exactly once';
+  end if;
+
+  perform set_config('request.jwt.claim.sub', '22222222-2222-4222-8222-222222222222', true);
+  v_mail := public.player_mailbox_list();
+  if jsonb_array_length(v_mail) <> 1 or v_mail -> 0 ->> 'id' <> v_mail_id::text or
+    v_mail -> 0 -> 'gear' ->> 'id' <> 'gear-88' then
+    raise exception 'Only the intended partner should see the pending gear in their mailbox';
+  end if;
+  v_mail := public.player_mailbox_claim(v_mail_id);
+  if v_mail ->> 'status' <> 'claimed' or v_mail -> 'gear' ->> 'name' <> 'Test blade' or
+    public.player_mailbox_claim(v_mail_id) <> v_mail then
+    raise exception 'Claim retries must return the same immutable escrow gear until explicit acknowledgement';
+  end if;
+  v_mail := public.player_mailbox_ack_claim(v_mail_id);
+  if not coalesce((v_mail ->> 'acknowledged')::boolean, false) or
+    not coalesce((public.player_mailbox_ack_claim(v_mail_id) ->> 'acknowledged')::boolean, false) then
+    raise exception 'Claim acknowledgement must explicitly succeed and be retry-safe';
+  end if;
+  if public.player_mailbox_list() -> 0 ->> 'status' <> 'delivered' then
+    raise exception 'Acknowledged gear must remain durably recorded as delivered';
+  end if;
+
+  perform set_config('request.jwt.claim.sub', '33333333-3333-4333-8333-333333333333', true);
+  if public.player_mailbox_list() <> '[]'::jsonb then
+    raise exception 'Non-members must not discover another account mailbox';
+  end if;
+  v_message := null;
+  begin
+    perform count(*) from public.player_mailbox_escrow;
+    raise exception using errcode = 'ZX002', message = 'direct escrow read unexpectedly succeeded';
+  exception
+    when insufficient_privilege then null;
+    when sqlstate 'ZX002' then raise;
+  end;
+  v_message := null;
+  begin
+    perform public.player_mailbox_claim(v_mail_id);
+  exception when others then
+    get stacked diagnostics v_message = message_text;
+  end;
+  if v_message is null then
+    raise exception 'A non-recipient must not claim escrow gear';
+  end if;
+
+  reset role;
+  update public.player_group_members
+  set heartbeat_at = now() - interval '76 seconds'
+  where user_id = '22222222-2222-4222-8222-222222222222';
+  set local role authenticated;
+  perform set_config('request.jwt.claim.sub', '11111111-1111-4111-8111-111111111111', true);
+  v_message := null;
+  begin
+    perform public.player_mailbox_send(
+      '22222222-2222-4222-8222-222222222222',
+      'cccccccc-1111-4111-8111-111111111111',
+      '{"id":"gear-90","type":"armor","name":"Stale target","bonus":2}'::jsonb
+    );
+  exception when others then
+    get stacked diagnostics v_message = message_text;
+  end;
+  if v_message is null then
+    raise exception 'Mailbox sending must reject recipients without a heartbeat newer than 75 seconds';
+  end if;
+  reset role;
+  update public.player_group_members
+  set heartbeat_at = now()
+  where user_id = '22222222-2222-4222-8222-222222222222';
+  update public.game_saves
+  set save_data = '{"version":1,"meta":{"homestead":{"homes":[{"id":"partner-sturdy","tier":"sturdy"}]}}}'::jsonb
+  where user_id = '22222222-2222-4222-8222-222222222222';
+  set local role authenticated;
+  perform set_config('request.jwt.claim.sub', '11111111-1111-4111-8111-111111111111', true);
+  v_message := null;
+  begin
+    perform public.player_mailbox_send(
+      '22222222-2222-4222-8222-222222222222',
+      'dddddddd-1111-4111-8111-111111111111',
+      '{"id":"gear-91","type":"weapon","name":"Non-mansion delivery","bonus":1}'::jsonb
+    );
+  exception when others then
+    get stacked diagnostics v_message = message_text;
+  end;
+  if v_message is null then
+    raise exception 'Both mailbox partners must have a saved mansion-tier home';
+  end if;
+  reset role;
+  set local role authenticated;
+  perform set_config('request.jwt.claim.sub', '11111111-1111-4111-8111-111111111111', true);
+  perform public.dissolve_player_group();
+  reset role;
+  if not exists (
+    select 1 from public.player_mailbox_escrow
+    where id = v_mail_id and status = 'delivered' and group_id = v_group_id
+  ) then
+    raise exception 'Dissolving a player group must not delete or mutate accepted mailbox escrow';
   end if;
 end
 $tests$;

@@ -26,6 +26,58 @@ const SECRET_LORE = [
 const CLASS_UNLOCK_LEVELS = { advanced: 3, mastery: 9 };
 const LEGACY_SUBCLASS_LEVELS = [3, 6, 9];
 const MERCHANT_PRICES = { potion: 12, weapon: 18, armor: 24, healing: 8 };
+const CITY_DISTRICTS = {
+  main: {
+    title: "Основной район",
+    kicker: "СЕРДЦЕ ГОРОДА",
+    description: "Здесь путники готовятся к спуску и выбирают свой дальнейший путь.",
+    services: [
+      { icon: "◉", name: "Колодец", description: "Спуск в подземелья. Продолжи сохранённый забег или начни новый.", status: "ready", statusLabel: "ДОСТУПНО", action: "well" },
+      { icon: "⌑", name: "Ворота", description: "Путь за город и путешествия по окрестностям.", status: "soon", statusLabel: "СКОРО" },
+      {
+        icon: "⚔",
+        name: "Гильдия охотников",
+        description: "Ежедневные задания, обмен трофеев на золото и репутацию, лавка за репутацию и расширение мешка. Сейчас здесь доступны только постоянные улучшения за осколки — в панели путника.",
+        status: "partial",
+        statusLabel: "ЧАСТИЧНО",
+        action: "upgrades",
+        actionLabel: "К улучшениям за осколки",
+      },
+      { icon: "✦", name: "Башня магов", description: "Временные зачарования, перераспределение характеристик и дополнительные ячейки пассивных умений.", status: "soon", statusLabel: "СКОРО" },
+      {
+        icon: "ᛟ",
+        name: "Орден глубин",
+        description: "Классы, развитие владения оружием и доспехами и мастера за репутацию. Выбор классов уже действует: первый продвинутый класс на 3-м уровне открывает Верхний квартал.",
+        status: "partial",
+        statusLabel: "КЛАССЫ ДОСТУПНЫ",
+        action: "classes",
+        actionLabel: "Выбрать путь для нового спуска",
+      },
+    ],
+  },
+  port: {
+    title: "Портовый квартал",
+    kicker: "ОТКРЫТ ВСЕМ ПУТНИКАМ",
+    description: "Пристанище у воды открыто сразу; услуги, которых ещё нет в игре, отмечены отдельно.",
+    services: [
+      { icon: "♨", name: "Таверна", description: "Еда для утоления голода, временная работа, игровой стол и слухи от информатора.", status: "soon", statusLabel: "СКОРО" },
+      { icon: "⚓", name: "Пристань", description: "Одноразовые сюжетные экспедиции по воде.", status: "soon", statusLabel: "СКОРО" },
+      { icon: "⚒", name: "Мастерская", description: "Место для творческих заказов и работ.", status: "soon", statusLabel: "СКОРО" },
+      { icon: "◈", name: "Гильдия убийц", description: "Заказы на PvP-схватки с другими игроками.", status: "soon", statusLabel: "СКОРО" },
+    ],
+  },
+  upper: {
+    title: "Верхний квартал",
+    kicker: "РАЙОН ДЛЯ ОПЫТНЫХ ИСКАТЕЛЕЙ",
+    description: "Элитная часть города с ареной, домами и местами для самых известных героев.",
+    services: [
+      { icon: "⚔", name: "Арена", description: "PvP и элитные монстры для героев высокого уровня.", status: "soon", statusLabel: "СКОРО" },
+      { icon: "⌂", name: "Свой дом", description: "Интерьер, строительство и личные владения. Покупка дома пока не реализована.", status: "soon", statusLabel: "СКОРО" },
+      { icon: "▤", name: "Ратуша", description: "Гильдии, купоны и городские события.", status: "soon", statusLabel: "СКОРО" },
+      { icon: "✧", name: "Аллея славы", description: "Статуи великих игроков и их истории.", status: "soon", statusLabel: "СКОРО" },
+    ],
+  },
+};
 const BASE_CLASSES = [
   {
     id: "knight", name: "Рыцарь", icon: "⚔", role: "Защитник",
@@ -406,6 +458,16 @@ function getGearArtId(gear) {
 }
 
 const ui = {
+  cityHub: $("city-hub"),
+  citySummary: $("city-summary"),
+  districtTabs: document.querySelector(".district-nav"),
+  districtTitle: $("district-title"),
+  districtKicker: $("district-kicker"),
+  districtDescription: $("district-description"),
+  districtLockNote: $("district-lock-note"),
+  districtBackButton: $("district-back-button"),
+  cityServices: $("city-services"),
+  dungeonContent: $("dungeon-content"),
   level: $("level-badge"),
   health: $("health-value"),
   healthBar: $("health-bar"),
@@ -486,6 +548,8 @@ let bestFloor = readBestFloor();
 let savedRun = readSavedRun();
 let metaProgress = readMetaProgress();
 let selectedClassId = "knight";
+let selectedDistrict = "main";
+let previousTownVisibility = false;
 let audioContext = null;
 let soundEnabled = readSoundPreference();
 
@@ -2272,6 +2336,87 @@ function renderRunQuests() {
   }
 }
 
+function createCityServiceCard(service, locked = false) {
+  const card = document.createElement("article");
+  const status = locked ? "locked" : service.status;
+  card.className = `service-card service-${status}`;
+
+  const heading = document.createElement("div");
+  heading.className = "service-heading";
+  const icon = document.createElement("span");
+  icon.className = "service-icon";
+  icon.setAttribute("aria-hidden", "true");
+  icon.textContent = service.icon;
+  const badge = document.createElement("span");
+  badge.className = "service-status";
+  badge.textContent = locked ? "ЗАКРЫТО" : service.statusLabel;
+  heading.append(icon, badge);
+
+  const title = document.createElement("h4");
+  title.textContent = service.name;
+  const description = document.createElement("p");
+  description.textContent = service.description;
+  card.append(heading, title, description);
+
+  if (service.action && !locked) {
+    const actions = document.createElement("div");
+    actions.className = "service-actions";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = service.action === "well" ? "primary-button" : "service-button";
+    button.dataset.cityAction = service.action;
+    button.textContent = service.actionLabel || (
+      savedRun ? "Продолжить сохранённый спуск" : "Выбрать класс и начать спуск"
+    );
+    actions.append(button);
+    if (service.action === "well" && savedRun) {
+      const newRunButton = document.createElement("button");
+      newRunButton.type = "button";
+      newRunButton.className = "service-button";
+      newRunButton.dataset.cityAction = "new-run";
+      newRunButton.textContent = "Начать новый спуск";
+      actions.append(newRunButton);
+    }
+    card.append(actions);
+  }
+  return card;
+}
+
+function renderCity() {
+  const townVisible = !state.started || state.gameOver;
+  if (townVisible && !previousTownVisibility) selectedDistrict = "main";
+  previousTownVisibility = townVisible;
+  ui.cityHub.hidden = !townVisible;
+  ui.dungeonContent.hidden = townVisible;
+  if (!townVisible) return;
+
+  const characterProgress = state.started ? state : savedRun;
+  const upperUnlocked = Boolean(characterProgress?.advancedClassId || characterProgress?.masteryClassId);
+  const district = CITY_DISTRICTS[selectedDistrict];
+  ui.citySummary.textContent = savedRun
+    ? `Сохранённый спуск: этаж ${savedRun.floor}, уровень ${savedRun.level}. Его можно продолжить из Колодца.`
+    : state.gameOver
+      ? `Последний спуск завершён на ${state.floor}-м этаже. Отдохни и выбери следующий путь.`
+      : "Выбери, куда направиться перед следующим путешествием.";
+  ui.districtKicker.textContent = district.kicker;
+  ui.districtTitle.textContent = district.title;
+  ui.districtDescription.textContent = district.description;
+  ui.districtBackButton.hidden = selectedDistrict === "main";
+  ui.districtLockNote.hidden = selectedDistrict !== "upper" || upperUnlocked;
+  ui.districtLockNote.textContent = "Верхний квартал откроется после выбора первого продвинутого класса на 3-м уровне в Ордене глубин. Купить дом пока нельзя: такой системы в игре ещё нет.";
+  for (const tab of ui.districtTabs.querySelectorAll("[data-district]")) {
+    const active = tab.dataset.district === selectedDistrict;
+    tab.setAttribute("aria-pressed", String(active));
+    if (tab.dataset.district === "upper") {
+      tab.setAttribute("aria-label", upperUnlocked ? "Верхний квартал" : "Верхний квартал, закрыто до выбора первого продвинутого класса");
+      tab.querySelector("span").textContent = upperUnlocked ? "" : " · закрыт";
+    }
+  }
+  ui.cityServices.className = `city-services district-services-${selectedDistrict}`;
+  ui.cityServices.replaceChildren(...district.services.map((service) =>
+    createCityServiceCard(service, selectedDistrict === "upper" && !upperUnlocked)));
+}
+
 function render() {
   const theme = getFloorTheme();
   const characterClass = state.classId ? getSelectedClassNodes().slice(-1)[0] : null;
@@ -2407,6 +2552,7 @@ function render() {
   renderClassProgression();
   renderMetaProgress();
   renderRunQuests();
+  renderCity();
   saveActiveRun();
   if (window.WellPlayerGroups) {
     window.WellPlayerGroups.setPlayerState(state.level, state.started && !state.gameOver);
@@ -2534,6 +2680,28 @@ $("sound-toggle").addEventListener("click", (event) => {
 
 renderSoundToggle();
 render();
+ui.districtTabs.addEventListener("click", (event) => {
+  const tab = event.target.closest("button[data-district]");
+  if (!tab || !Object.prototype.hasOwnProperty.call(CITY_DISTRICTS, tab.dataset.district)) return;
+  selectedDistrict = tab.dataset.district;
+  renderCity();
+});
+ui.districtBackButton.addEventListener("click", () => {
+  selectedDistrict = "main";
+  renderCity();
+});
+ui.cityServices.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-city-action]");
+  if (!button) return;
+  if (button.dataset.cityAction === "well") {
+    if (savedRun) resumeGame();
+    else openClassDialog();
+  } else if (button.dataset.cityAction === "new-run" || button.dataset.cityAction === "classes") {
+    openClassDialog();
+  } else if (button.dataset.cityAction === "upgrades") {
+    $("meta-panel").scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+});
 window.WellCloudSave.initialize({
   readLocal: readLocalCloudSave,
   validateRun: isValidRun,

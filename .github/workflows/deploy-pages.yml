@@ -32,6 +32,11 @@ jobs:
         run: |
           mkdir -p dist
           cp index.html styles.css game.js dist/
+      - name: Refresh cached assets for this release
+        env:
+          DEPLOY_SHA: ${{ github.sha }}
+        run: |
+          sed -i "s|href=\"styles.css\"|href=\"styles.css?v=${DEPLOY_SHA}\"|; s|src=\"game.js\"|src=\"game.js?v=${DEPLOY_SHA}\"|" dist/index.html
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:

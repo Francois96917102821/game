@@ -195,6 +195,7 @@
       version: 1,
       bestFloor: snapshot.bestFloor,
       run: snapshot.run || null,
+      meta: snapshot.meta || callbacks.defaultMeta(),
     };
   }
 
@@ -202,7 +203,15 @@
     return Boolean(
       snapshot && snapshot.version === 1 &&
       Number.isInteger(snapshot.bestFloor) && snapshot.bestFloor >= 0 &&
-      (snapshot.run === null || callbacks.validateRun(snapshot.run)),
+      (snapshot.run === null || callbacks.validateRun(snapshot.run)) &&
+      (snapshot.meta === undefined || callbacks.validateMeta(snapshot.meta)),
+    );
+  }
+
+  function mergedMeta(left, right) {
+    return callbacks.mergeMeta(
+      left || callbacks.defaultMeta(),
+      right || callbacks.defaultMeta(),
     );
   }
 
@@ -220,11 +229,15 @@
 
   async function writeLatest(snapshot) {
     if (!isValidSnapshot(snapshot)) throw new Error("Не удалось сохранить: формат игрового состояния недопустим.");
+    const normalized = {
+      ...snapshot,
+      meta: snapshot.meta || callbacks.defaultMeta(),
+    };
     await authenticatedRequest(`${SAVE_TABLE}?on_conflict=user_id`, {
       method: "POST",
-      body: { user_id: currentUserId(), save_data: snapshot },
+      body: { user_id: currentUserId(), save_data: normalized },
     });
-    latestRemote = snapshot;
+    latestRemote = normalized;
   }
 
   function showConflict(local, remoteRow) {
@@ -243,7 +256,9 @@
     const userId = currentUserId();
     const wasLinked = linkedUsers().includes(userId);
     if (!remoteRow) {
-      if (local.run || local.bestFloor > 0) await writeLatest(local);
+      if (local.run || local.bestFloor > 0 || !sameSnapshot(local.meta, callbacks.defaultMeta())) {
+        await writeLatest(local);
+      }
       latestRemote = local;
       rememberLinkedUser(userId);
       callbacks.refresh();
@@ -270,6 +285,7 @@
       version: 1,
       bestFloor: Math.max(local.bestFloor, remote.bestFloor),
       run: local.run || remote.run,
+      meta: mergedMeta(local.meta, remote.meta),
     };
     if (!sameSnapshot(merged, remote)) await writeLatest(merged);
     latestRemote = merged;
@@ -409,15 +425,22 @@
     const conflict = pendingConflict;
     setBusy(true);
     try {
+      const remote = conflict.remoteRow.save_data;
+      const meta = mergedMeta(conflict.local.meta, remote.meta);
       if (useLocal) {
-        await writeLatest(conflict.local);
-        latestRemote = conflict.local;
+        const withBestFloor = {
+          ...conflict.local,
+          bestFloor: Math.max(remote.bestFloor, conflict.local.bestFloor),
+          meta,
+        };
+        await writeLatest(withBestFloor);
+        latestRemote = withBestFloor;
       } else {
-        const remote = conflict.remoteRow.save_data;
         const withBestFloor = {
           version: 1,
           bestFloor: Math.max(remote.bestFloor, conflict.local.bestFloor),
           run: remote.run,
+          meta,
         };
         await authenticatedRequest(HISTORY_TABLE, {
           method: "POST",
@@ -480,9 +503,15 @@
       const snapshot = rows[0]?.save_data;
       if (!isValidSnapshot(snapshot)) throw new Error("Резервная копия недоступна или несовместима.");
       if (!window.confirm("Заменить текущий облачный забег этой копией? Текущий вариант сначала попадёт в историю.")) return;
-      await writeLatest(snapshot);
-      callbacks.restore(snapshot);
-      latestRemote = snapshot;
+      const current = localSnapshot();
+      const restored = {
+        ...snapshot,
+        bestFloor: Math.max(snapshot.bestFloor, current.bestFloor),
+        meta: mergedMeta(snapshot.meta, current.meta),
+      };
+      await writeLatest(restored);
+      callbacks.restore(restored);
+      latestRemote = restored;
       ready = true;
       try {
         await loadHistory();

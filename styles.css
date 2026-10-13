@@ -109,6 +109,22 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--gold-light); ou
 .panel-divider { margin: 22px 0 15px; height: 1px; background: var(--border); }
 .best-run { display: flex; justify-content: space-between; align-items: center; color: var(--muted); font-size: 9px; }
 .best-run strong { color: var(--gold-light); font: 500 12px "DM Mono", monospace; }
+.meta-panel { display: grid; gap: 8px; margin-top: 13px; padding: 11px; border: 1px solid #45402d; border-radius: 7px; background: linear-gradient(145deg, rgba(179, 146, 76, .07), transparent), #1b1e18; }
+.meta-heading { display: flex; align-items: center; justify-content: space-between; gap: 7px; color: #b8b9a9; font: 8px "DM Mono", monospace; letter-spacing: .08em; }
+.meta-heading strong { color: var(--gold-light); font-size: 10px; white-space: nowrap; }
+.meta-panel > p { margin: 0; color: #888e81; font-size: 8px; line-height: 1.45; }
+.meta-upgrades { display: grid; gap: 7px; }
+.meta-upgrade { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 6px; }
+.meta-upgrade > div { min-width: 0; }
+.meta-upgrade strong, .meta-upgrade span { display: block; }
+.meta-upgrade strong { color: #d1d2c5; font-size: 8px; }
+.meta-upgrade span { margin-top: 2px; color: #858b7d; font-size: 7px; line-height: 1.35; }
+.meta-buy-button { min-height: 27px; border: 1px solid #625237; border-radius: 4px; padding: 4px 6px; background: #29261c; color: var(--gold-light); font-size: 7px; white-space: nowrap; cursor: pointer; }
+.meta-buy-button:hover:not(:disabled) { border-color: #b08e54; background: #393222; }
+.meta-buy-button:disabled { opacity: .42; cursor: not-allowed; }
+.meta-secrets { display: grid; gap: 3px; padding-top: 7px; border-top: 1px solid #30342d; }
+.meta-secrets strong { color: #b8b9a9; font-size: 8px; }
+.meta-secrets span { color: #888e81; font-size: 7px; line-height: 1.45; }
 .save-note { margin-top: auto; padding-top: 15px; color: #777d70; font-size: 9px; }
 .save-note span { color: #93a77a; margin-right: 5px; font-size: 8px; }
 
@@ -154,6 +170,9 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--gold-light); ou
 .scene-enemy.enemy-shade, .scene-enemy.enemy-wraith { color: #b4a0df; text-shadow: 0 0 23px rgba(166, 117, 235, .66); }
 .scene-enemy.enemy-drowned, .scene-enemy.enemy-eel { color: #7acdd3; text-shadow: 0 0 22px rgba(77, 194, 211, .63); }
 .scene-enemy.enemy-ember { color: #f39d68; text-shadow: 0 0 24px rgba(251, 110, 53, .75); }
+.scene-enemy.enemy-elite-stone, .scene-enemy.enemy-elite-forge { color: #e4a975; text-shadow: 0 0 25px rgba(241, 129, 75, .72); }
+.scene-enemy.enemy-elite-tide { color: #82d6d5; text-shadow: 0 0 25px rgba(77, 194, 211, .75); }
+.scene-enemy.enemy-elite-root { color: #c9dc7d; text-shadow: 0 0 25px rgba(167, 196, 86, .78); }
 .scene-enemy.enemy-guardian { font-size: 67px; }
 .well-scene.in-combat .scene-character { left: 39%; }
 .well-scene.in-combat .scene-enemy { display: block; left: 65%; }
@@ -337,6 +356,7 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--gold-light); ou
   .equipment-panel { grid-column: 1 / -1; margin-top: 10px; }
   .character-panel .panel-divider { display: none; }
   .character-panel .best-run { grid-column: 1 / -1; margin-top: 10px; }
+  .character-panel .meta-panel { grid-column: 1 / -1; }
   .character-panel .save-note { grid-column: 1 / -1; padding-top: 8px; margin: 0; }
   .journal-panel { order: 3; display: flex; min-height: auto; padding: 15px; gap: 0; }
   .journal-panel .panel-heading { width: 100%; }

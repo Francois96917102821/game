@@ -1242,7 +1242,8 @@ function isValidRun(run) {
     typeof saved.waitingToDescend !== "boolean" ||
     (saved.merchantAvailable !== undefined && typeof saved.merchantAvailable !== "boolean") ||
     (saved.merchantSoulAvailable !== undefined && typeof saved.merchantSoulAvailable !== "boolean") ||
-    (saved.merchantSoulAvailable === true && (!saved.merchantAvailable || saved.level < 30)) ||
+    (saved.merchantSoulAvailable === true &&
+      (!saved.merchantAvailable || saved.level < window.WellSoulCraftingModel.DROP_LEVEL)) ||
     !Array.isArray(saved.journal) || saved.journal.length > 7 ||
     !saved.event || typeof saved.event !== "object" ||
     typeof saved.caption !== "string" || saved.caption.length > 100 ||

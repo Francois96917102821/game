@@ -1,7 +1,7 @@
 "use strict";
 
 (function attachSoulCraftingModel(root) {
-  const DROP_LEVEL = 30;
+  const DROP_LEVEL = 1;
   const CRAFT_LEVEL = 150;
   const TRANSFER_LEVEL = 250;
   const SOULS = Object.freeze({

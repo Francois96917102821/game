@@ -39,10 +39,10 @@
       });
 
       check("drop, craft, and transfer thresholds are exact", () => {
-        assert(!model.grant(model.createState(), 29, "time", "drop-low", "combat").ok,
-          "level 29 cannot receive soul drops");
-        const dropped = model.grant(model.createState(), 30, "time", "drop-level-30", "combat");
-        assert(dropped.ok && dropped.state.balances.time === 1, "level 30 may receive souls");
+        assert(!model.grant(model.createState(), 0, "time", "drop-level-0", "combat").ok,
+          "level 0 cannot receive soul drops");
+        const dropped = model.grant(model.createState(), 1, "time", "drop-level-1", "combat");
+        assert(dropped.ok && dropped.state.balances.time === 1, "level 1 may receive souls");
         assert(!model.craft(dropped.state, 149, "time-weapon", "gear-1", "craft-low").ok,
           "level 149 cannot craft");
         assert(!model.transferOut(dropped.state, 250, 249, "time", "transfer-low").ok,
@@ -141,7 +141,7 @@
       async function testCraftingUiGateAndAtomicOutput() {
         let souls = model.createState();
         for (let index = 0; index < 8; index += 1) {
-          souls = model.grant(souls, 30, "time", `ui-stock-${index}`, "test").state;
+          souls = model.grant(souls, 1, "time", `ui-stock-${index}`, "test").state;
         }
         const tavern = window.WellTavernModel.createState();
         tavern.characterLevel = 149;

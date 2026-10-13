@@ -1,0 +1,42 @@
+name: Publish web game
+
+on:
+  push:
+    branches:
+      - main
+      - francois96917102821-well-dungeon-web-game
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: github-pages-${{ github.repository_id }}
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out game
+        uses: actions/checkout@v4
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+      - name: Prepare static game files
+        run: |
+          mkdir -p dist
+          cp index.html styles.css game.js dist/
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#11130f">
+    <meta name="description" content="Спуститесь в древний колодец, сразитесь с его обитателями и найдите путь глубже.">
+    <title>Колодец шёпота — приключение в глубине</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <main class="game-shell">
+      <header class="topbar">
+        <a class="brand" href="#" aria-label="Колодец шёпота — на главную">
+          <span class="brand-mark" aria-hidden="true">◉</span>
+          <span><strong>Колодец</strong><small>ШЁПОТА</small></span>
+        </a>
+        <div class="top-note"><span class="live-dot"></span> ОДИНОЧНОЕ ПРИКЛЮЧЕНИЕ</div>
+        <button class="icon-button" id="sound-toggle" type="button" aria-label="Звук выключен" title="Звук выключен">♫</button>
+      </header>
+
+      <section class="game-layout" aria-label="Игровое поле">
+        <aside class="side-panel character-panel">
+          <div class="panel-heading"><span>ПУТНИК</span><span class="level-badge" id="level-badge">УР. 1</span></div>
+          <div class="portrait" aria-hidden="true">
+            <div class="portrait-glow"></div>
+            <span class="portrait-figure">♙</span>
+            <span class="portrait-rune rune-one">✦</span>
+            <span class="portrait-rune rune-two">ᛟ</span>
+          </div>
+          <h1 class="player-name">Искатель</h1>
+          <p class="player-subtitle">Последний из наземных</p>
+
+          <div class="stat-block">
+            <div class="stat-label"><span>ЗДОРОВЬЕ</span><span id="health-value">30 / 30</span></div>
+            <div class="meter health-meter"><span id="health-bar"></span></div>
+          </div>
+          <div class="stat-block">
+            <div class="stat-label"><span>ОПЫТ</span><span id="xp-value">0 / 20</span></div>
+            <div class="meter xp-meter"><span id="xp-bar"></span></div>
+          </div>
+
+          <div class="quick-stats">
+            <div><span class="stat-icon">⚔</span><span><strong id="attack-value">5–8</strong><small>УРОН</small></span></div>
+            <div><span class="stat-icon">✦</span><span><strong id="gold-value">0</strong><small>МОНЕТЫ</small></span></div>
+            <div><span class="stat-icon">⚗</span><span><strong id="potion-value">2</strong><small>ЗЕЛЬЯ</small></span></div>
+          </div>
+          <div class="panel-divider"></div>
+          <div class="best-run"><span>ЛУЧШИЙ СПУСК</span><strong id="best-floor">—</strong></div>
+          <p class="save-note"><span aria-hidden="true">●</span> Рекорд сохраняется на устройстве</p>
+        </aside>
+
+        <section class="adventure-panel">
+          <div class="dungeon-heading">
+            <div>
+              <span class="eyebrow">ЗАБЫТОЕ МЕСТО</span>
+              <h2 id="floor-title">Зов из глубины</h2>
+            </div>
+            <div class="floor-chip"><span>ГЛУБИНА</span><strong id="floor-value">—</strong></div>
+          </div>
+
+          <div class="well-scene" id="well-scene" aria-label="Подземелье колодца">
+            <div class="scene-shaft shaft-one"></div>
+            <div class="scene-shaft shaft-two"></div>
+            <div class="scene-light"></div>
+            <div class="scene-stone stone-one"></div>
+            <div class="scene-stone stone-two"></div>
+            <div class="scene-stone stone-three"></div>
+            <div class="scene-stone stone-four"></div>
+            <div class="scene-stone stone-five"></div>
+            <div class="scene-stone stone-six"></div>
+            <div class="scene-rune">ᛟ</div>
+            <div class="scene-character" id="scene-character" aria-hidden="true">♙</div>
+            <div class="scene-enemy" id="scene-enemy" aria-hidden="true"></div>
+            <div class="scene-caption"><span class="live-dot"></span><span id="scene-caption">Внизу кто-то ждёт</span></div>
+            <div class="start-card" id="start-card">
+              <span class="start-emblem" aria-hidden="true">ᛟ</span>
+              <p class="eyebrow">ЛЕГЕНДА НАЧИНАЕТСЯ</p>
+              <h3>Не каждый колодец<br>ведёт к воде.</h3>
+              <p>Спускайся по забытым залам, собирай добычу и выясни, кто зовёт со дна.</p>
+              <button class="primary-button" id="start-button" type="button">Начать спуск <span aria-hidden="true">↓</span></button>
+            </div>
+          </div>
+
+          <div class="room-track-wrap">
+            <div class="track-heading"><span>ПУТЬ ЭТАЖА</span><span id="room-count">Начни своё путешествие</span></div>
+            <div class="room-track" id="room-track" aria-label="Комнаты этажа"></div>
+          </div>
+
+          <div class="event-panel">
+            <div class="event-icon" id="event-icon" aria-hidden="true">☼</div>
+            <div class="event-copy">
+              <span class="eyebrow" id="event-kicker">ПЕРЕД СПУСКОМ</span>
+              <p id="event-text" aria-live="polite">Старый колодец давно молчит. Но сегодня из темноты донёсся зов.</p>
+            </div>
+            <div class="event-tag" id="event-tag">ЭТАЖ 1</div>
+          </div>
+
+          <div class="action-area" id="action-area">
+            <button class="action-button" id="explore-button" type="button" disabled><span aria-hidden="true">⌕</span> Исследовать зал</button>
+            <button class="action-button secondary-action" id="potion-button" type="button" disabled><span aria-hidden="true">⚗</span> Выпить зелье</button>
+          </div>
+          <div class="combat-actions" id="combat-actions" hidden>
+            <button class="action-button attack-action" id="attack-button" type="button"><span aria-hidden="true">⚔</span> Ударить</button>
+            <button class="action-button heavy-action" id="heavy-button" type="button"><span aria-hidden="true">✦</span> Сильный удар</button>
+            <button class="action-button secondary-action" id="combat-potion-button" type="button"><span aria-hidden="true">⚗</span> Зелье <span id="combat-potion-count">2</span></button>
+            <button class="action-button guard-action" id="guard-button" type="button"><span aria-hidden="true">⬡</span> Защищаться</button>
+          </div>
+          <button class="primary-button descend-button" id="descend-button" type="button" hidden>Спуститься глубже <span aria-hidden="true">↓</span></button>
+          <button class="primary-button restart-button" id="restart-button" type="button" hidden>Начать заново <span aria-hidden="true">↻</span></button>
+        </section>
+
+        <aside class="side-panel journal-panel">
+          <div class="panel-heading"><span>ПОЛЕВОЙ ЖУРНАЛ</span><span class="journal-mark" aria-hidden="true">✎</span></div>
+          <p class="journal-intro">Записи о том, что скрывает колодец.</p>
+          <div class="journal-list" id="journal-list" aria-live="polite">
+            <p class="journal-empty">Здесь появятся заметки о твоём путешествии.</p>
+          </div>
+          <div class="objective-card">
+            <span class="eyebrow">ТВОЯ ЦЕЛЬ</span>
+            <strong id="objective-title">Найти источник зова</strong>
+            <p id="objective-text">Исследуй 5 залов и одолей стража этажа, чтобы открыть путь дальше.</p>
+            <div class="objective-progress"><span id="objective-progress"></span></div>
+          </div>
+          <div class="journal-foot"><span class="live-dot"></span> <span id="journal-status">Твой путь ждёт начала</span></div>
+        </aside>
+      </section>
+      <footer class="footer-note"><span>КОЛОДЕЦ ШЁПОТА</span><span>Каждый спуск — новая история</span><span>✧</span></footer>
+    </main>
+    <script src="game.js"></script>
+  </body>
+</html>

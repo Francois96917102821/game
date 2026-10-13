@@ -135,6 +135,42 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--gold-light); ou
 .save-note span { color: #93a77a; margin-right: 5px; font-size: 8px; }
 
 .adventure-panel { padding: 22px; min-width: 0; }
+.city-hub[hidden], .dungeon-content[hidden] { display: none; }
+.city-hub { display: grid; gap: 18px; }
+.city-hero { min-height: 190px; position: relative; isolation: isolate; overflow: hidden; display: flex; align-items: center; justify-content: space-between; gap: 20px; border: 1px solid #514934; border-radius: 9px; padding: 24px 28px; background: radial-gradient(ellipse at 18% 105%, rgba(187, 145, 73, .25), transparent 42%), linear-gradient(135deg, #23271e, #171b16 68%, #24231b); }
+.city-hero:after { content: ""; position: absolute; z-index: -1; inset: auto 0 0; height: 42%; opacity: .36; background: linear-gradient(180deg, transparent, rgba(8, 10, 8, .55)), linear-gradient(90deg, transparent 8%, #34372a 8% 13%, transparent 13% 18%, #2b3025 18% 24%, transparent 24% 31%, #373629 31% 36%, transparent 36% 47%, #2a3027 47% 54%, transparent 54% 61%, #393629 61% 67%, transparent 67% 76%, #2a3027 76% 83%, transparent 83%); }
+.city-hero-copy { max-width: 570px; }
+.city-hero h2 { max-width: 500px; margin: 9px 0; font-size: clamp(24px, 3vw, 36px); letter-spacing: -.045em; line-height: 1.1; }
+.city-hero p { max-width: 490px; margin: 0; color: #b7baac; font-size: 12px; line-height: 1.6; }
+.city-crest { display: grid; place-items: center; width: 94px; height: 94px; flex: 0 0 94px; border: 1px solid rgba(214, 180, 113, .45); border-radius: 50%; color: #e1bd78; font-size: 53px; text-shadow: 0 0 24px rgba(215, 174, 95, .5); box-shadow: 0 0 38px rgba(176, 139, 70, .1), inset 0 0 28px rgba(176, 139, 70, .11); }
+.district-nav { display: flex; gap: 8px; padding-bottom: 13px; border-bottom: 1px solid var(--border); }
+.district-tab { min-height: 39px; border: 1px solid #353a30; border-radius: 20px; padding: 8px 14px; background: #1a1e18; color: #aeb2a5; font-size: 10px; cursor: pointer; transition: border-color .18s, background .18s, color .18s; }
+.district-tab:hover { border-color: #77704f; color: var(--text); }
+.district-tab[aria-pressed="true"] { border-color: #8c7145; background: #2a281e; color: var(--gold-light); }
+.district-tab[data-district="upper"]:not([aria-pressed="true"]) { color: #858b7d; }
+.district-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 2px; }
+.district-heading h3 { margin: 5px 0 0; font-size: 21px; letter-spacing: -.03em; }
+.district-description { margin: -12px 0 0; color: #a5aa9c; font-size: 11px; line-height: 1.5; }
+.district-back-button, .service-button { border: 1px solid #464b3b; border-radius: 5px; padding: 8px 11px; background: #20241c; color: #c9cbbd; font-size: 10px; cursor: pointer; }
+.district-back-button:hover, .service-button:hover { border-color: #87734b; color: var(--gold-light); }
+.district-lock-note { border: 1px solid #66543a; border-radius: 6px; padding: 11px 13px; background: #252218; color: #dfc990; font-size: 10px; line-height: 1.5; }
+.city-services { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 11px; }
+.service-card { min-width: 0; display: flex; flex-direction: column; align-items: flex-start; border: 1px solid #34392f; border-radius: 8px; padding: 14px; background: linear-gradient(145deg, rgba(255,255,255,.018), transparent 55%), #1a1e18; }
+.district-services-main .service-card:first-child { grid-column: 1 / -1; }
+.service-heading { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 9px; }
+.service-icon { display: grid; place-items: center; width: 36px; height: 36px; border: 1px solid #514731; border-radius: 7px; background: #25251c; color: var(--gold-light); font-size: 19px; }
+.service-status { border: 1px solid #394333; border-radius: 10px; padding: 4px 7px; color: #a9bb91; font: 7px "DM Mono", monospace; letter-spacing: .06em; }
+.service-soon .service-status { border-color: #414239; color: #989c8e; }
+.service-partial .service-status { border-color: #685839; color: var(--gold-light); }
+.service-locked { border-color: #45402f; background: #1c1d18; }
+.service-locked .service-status { border-color: #554b35; color: #b29a68; }
+.service-card h4 { margin: 12px 0 5px; color: #e1e1d5; font-size: 13px; }
+.service-card > p { margin: 0; color: #999e90; font-size: 10px; line-height: 1.6; }
+.service-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: auto; padding-top: 13px; }
+.service-actions .primary-button { padding: 8px 11px; font-size: 9px; }
+.service-actions .service-button { font-size: 9px; }
+.district-services-main .service-card:first-child .service-actions { padding-top: 10px; }
+.dungeon-content { min-width: 0; }
 .dungeon-heading { display: flex; justify-content: space-between; align-items: center; margin-bottom: 17px; }
 .eyebrow { display: block; color: #a38e63; font-size: 9px; letter-spacing: .18em; }
 .dungeon-heading h2 { margin: 4px 0 0; font-size: 20px; letter-spacing: -.03em; }
@@ -395,6 +431,19 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--gold-light); ou
   .brand strong { font-size: 13px; }
   .game-layout { display: flex; flex-direction: column; gap: 12px; padding-top: 15px; }
   .adventure-panel { order: 1; padding: 15px 13px; }
+  .city-hub { gap: 14px; }
+  .city-hero { min-height: 160px; padding: 19px 17px; }
+  .city-hero h2 { font-size: 25px; }
+  .city-hero p { font-size: 10px; }
+  .city-crest { width: 62px; height: 62px; flex-basis: 62px; font-size: 36px; }
+  .district-nav { gap: 6px; overflow-x: auto; padding-bottom: 10px; }
+  .district-tab { flex: 0 0 auto; padding: 8px 11px; font-size: 9px; }
+  .district-heading h3 { font-size: 18px; }
+  .district-description { margin-top: -8px; }
+  .city-services { grid-template-columns: minmax(0, 1fr); }
+  .district-services-main .service-card:first-child { grid-column: auto; }
+  .service-card { padding: 12px; }
+  .district-back-button { padding: 7px 8px; font-size: 9px; }
   .character-panel { order: 2; min-height: auto; display: grid; grid-template-columns: 72px 1fr; column-gap: 13px; padding: 13px; }
   .character-panel .panel-heading { grid-column: 1 / -1; }
   .portrait { grid-column: 1; grid-row: 2 / 5; width: 72px; height: 81px; margin: 12px 0 0; }
@@ -446,6 +495,10 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--gold-light); ou
   .cloud-status-button > span:last-child { max-width: 55px; }
   .sound-toggle { width: 36px; padding-inline: 0; }
   #sound-toggle-label { display: none; }
+  .city-hero { min-height: 150px; padding: 16px 12px; }
+  .city-crest { width: 48px; height: 48px; flex-basis: 48px; font-size: 28px; }
+  .city-hero h2 { font-size: 22px; }
+  .district-back-button { max-width: 130px; }
   .well-scene { height: 245px; }
   .combat-actions { gap: 7px; }
   .coop-battle-panel { padding: 9px; }

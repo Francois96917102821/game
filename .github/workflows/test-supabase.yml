@@ -52,6 +52,14 @@ jobs:
           PGPASSWORD: local-test-only
           PGDATABASE: game_groups_test
         run: bash supabase/tests/player_groups_concurrency.sh
+      - name: Test authoritative wallet RPCs
+        env:
+          PGHOST: localhost
+          PGPORT: "5432"
+          PGUSER: postgres
+          PGPASSWORD: local-test-only
+          PGDATABASE: game_groups_test
+        run: psql -X -v ON_ERROR_STOP=1 -f supabase/tests/wallet.sql
       - name: Test authoritative PvP RPCs
         env:
           PGHOST: localhost

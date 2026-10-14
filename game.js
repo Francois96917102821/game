@@ -761,6 +761,7 @@ function createMetaProgress(now = Date.now()) {
     guildSupplyTransactions: [],
     guildWalletTransactions: [],
     guildTrophyTransactions: [],
+    trophySales: [],
     guildLuck: { bonus: 0, expiresAt: 0 },
     guildReceipts: [],
     runeDrops: [],
@@ -804,6 +805,7 @@ function isValidMetaProgress(progress) {
     progress.secretsFound.every((id) => SECRET_LORE.some((secret) => secret.id === id)) &&
     new Set(progress.secretsFound).size === progress.secretsFound.length &&
     isValidInboxReceipts(progress.groupInboxReceipts) &&
+    window.WellGoldEconomyModel.isValidTrophySales(progress.trophySales) &&
     (progress.souls === undefined || window.WellSoulCraftingModel.isValidState(progress.souls)) &&
     (progress.orderReputation === undefined || isIntegerBetween(progress.orderReputation, 0, 1000000000)) &&
     (progress.dungeonTrophies === undefined || (
@@ -896,6 +898,7 @@ function normalizeMetaProgress(progress) {
   normalized.guildSupplyTransactions = [...(progress?.guildSupplyTransactions || [])].map((transaction) => ({ ...transaction }));
   normalized.guildWalletTransactions = [...(progress?.guildWalletTransactions || [])].map((transaction) => ({ ...transaction }));
   normalized.guildTrophyTransactions = [...(progress?.guildTrophyTransactions || [])].map((transaction) => ({ ...transaction }));
+  normalized.trophySales = (progress?.trophySales || []).map((receipt) => ({ ...receipt }));
   normalized.guildLuck = {
     bonus: progress?.guildLuck?.bonus ?? 0,
     expiresAt: progress?.guildLuck?.expiresAt ?? 0,
@@ -993,13 +996,17 @@ function mergeMetaProgress(left, right) {
   };
   const guildWalletTransactions = mergeTransactions("guildWalletTransactions");
   const guildTrophyTransactions = mergeTransactions("guildTrophyTransactions");
+  const trophySales = window.WellGoldEconomyModel.mergeTrophySales(first.trophySales, second.trophySales);
+  const firstSales = window.WellGoldEconomyModel.trophySaleCounts(first.trophySales);
+  const secondSales = window.WellGoldEconomyModel.trophySaleCounts(second.trophySales);
+  const mergedSales = window.WellGoldEconomyModel.trophySaleCounts(trophySales);
   const dungeonTrophies = Object.fromEntries(Object.keys(DUNGEON_TROPHIES).map((key) => [
     key, Math.min(1000000000, Math.max(
-      0, (first.dungeonTrophies[key] || 0) - trophySum(first.dungeonVictories, key) -
+      0, (first.dungeonTrophies[key] || 0) + (firstSales[key] || 0) - trophySum(first.dungeonVictories, key) -
         (key === "elite" ? first.guildTrophyTransactions.reduce((sum, transaction) => sum + transaction.elite, 0) : 0),
-      (second.dungeonTrophies[key] || 0) - trophySum(second.dungeonVictories, key) -
+      (second.dungeonTrophies[key] || 0) + (secondSales[key] || 0) - trophySum(second.dungeonVictories, key) -
         (key === "elite" ? second.guildTrophyTransactions.reduce((sum, transaction) => sum + transaction.elite, 0) : 0),
-    ) + trophySum(dungeonVictories, key) +
+    ) + trophySum(dungeonVictories, key) - (mergedSales[key] || 0) +
       (key === "elite" ? guildTrophyTransactions.reduce((sum, transaction) => sum + transaction.elite, 0) : 0)),
   ]));
   const supplyTransactionsById = new Map();
@@ -1074,10 +1081,24 @@ function mergeMetaProgress(left, right) {
   const tavernSourceWalletTransactions = useSecondTavern
     ? second.guildWalletTransactions : first.guildWalletTransactions;
   const otherHomestead = useSecondTavern ? first.homestead : second.homestead;
-  tavern.gold = Math.max(0, Math.min(window.WellTavernModel.MAX_GOLD,
-    tavern.gold - missingHomesteadDebits(tavernSourceReceipts, otherHomestead, "gold") -
+  // Food reconciliation clamps legacy wallets; a sale merge must validate the raw total.
+  const sourceFoodIds = new Set(tavernSource.tavern.foodReceipts.map((receipt) => receipt.id));
+  const foodGold = trophySales.length
+    ? tavernSource.tavern.gold + tavern.foodReceipts
+      .filter((receipt) => !sourceFoodIds.has(receipt.id))
+      .reduce((sum, receipt) => sum + receipt.goldDelta, 0)
+    : tavern.gold;
+  const walletGold =
+    foodGold - missingHomesteadDebits(tavernSourceReceipts, otherHomestead, "gold") -
       walletDelta(tavernSourceWalletTransactions, "gold") +
-      walletDelta(guildWalletTransactions, "gold")));
+      walletDelta(guildWalletTransactions, "gold");
+  const saleTotal = (counts) => Object.values(counts).reduce((sum, count) => sum + count, 0);
+  const saleGold = walletGold - saleTotal(useSecondTavern ? secondSales : firstSales) + saleTotal(mergedSales);
+  if ((trophySales.length && !isIntegerBetween(saleGold, 0, window.WellTavernModel.MAX_GOLD)) ||
+    Object.values(dungeonTrophies).some((count) => count < 0)) {
+    throw new Error("Слияние выкупа превышает допустимый баланс.");
+  }
+  tavern.gold = Math.max(0, Math.min(window.WellTavernModel.MAX_GOLD, saleGold));
   const mergedSoulGearTavern = mergeSoulCraftedGear(tavern, souls);
   const essenceAfterWalletTransactions = (source) =>
     source.essence - walletDelta(source.guildWalletTransactions, "essence") +
@@ -1104,6 +1125,7 @@ function mergeMetaProgress(left, right) {
     guildSupplyTransactions,
     guildWalletTransactions,
     guildTrophyTransactions,
+    trophySales,
     guildLuck: first.guildLuck.expiresAt >= second.guildLuck.expiresAt ? first.guildLuck : second.guildLuck,
     guildReceipts: [...new Set([...first.guildReceipts, ...second.guildReceipts])].slice(-100000),
     runeDrops,
@@ -1140,6 +1162,7 @@ function persistMetaProgress() {
         guildSupplyTransactions: dungeonMerged.guildSupplyTransactions,
         guildWalletTransactions: dungeonMerged.guildWalletTransactions,
         guildTrophyTransactions: dungeonMerged.guildTrophyTransactions,
+        trophySales: dungeonMerged.trophySales,
         guildLuck: dungeonMerged.guildLuck,
         guildReceipts: dungeonMerged.guildReceipts,
         runeDrops: dungeonMerged.runeDrops,
@@ -1158,6 +1181,29 @@ function persistMetaProgress() {
   });
   if (persisted && window.WellCloudSave) window.WellCloudSave.scheduleSave(getCloudSaveSnapshot());
   return persisted;
+}
+
+async function sellGuildTrophy(key, receiptId) {
+  if (!navigator.locks) throw new Error("Браузер не поддерживает безопасный выкуп. Ничего не списано.");
+  if (!tavernStorageReady || tavernStorageError) throw new Error("Хранилище наград пока недоступно.");
+  return navigator.locks.request("well-food", async () => {
+    const stored = JSON.parse(window.localStorage.getItem(META_SAVE_KEY) || "null");
+    if (stored !== null && !isValidMetaProgress(stored)) throw new Error("Локальное сохранение повреждено.");
+    const current = stored === null ? metaProgress : mergeMetaProgress(metaProgress, stored);
+    const next = window.WellGoldEconomyModel.sellTrophy(current, key, receiptId);
+    if (!isValidMetaProgress(next)) throw new Error("Выкуп не прошёл проверку сохранения.");
+    // The full meta snapshot is the transaction: never fall back to a wallet-only backup.
+    window.localStorage.setItem(META_SAVE_KEY, JSON.stringify(next));
+    metaProgress = next;
+    try {
+      await persistTavernToIndexedDb(next.tavern);
+    } catch (error) {
+      console.warn("Выкуп сохранён, но резерв таверны не обновился.", error);
+    }
+    if (window.WellCloudSave) window.WellCloudSave.scheduleSave(getCloudSaveSnapshot());
+    render();
+    return true;
+  });
 }
 
 function updateGuildSupplies(receiptId, change) {
@@ -6380,6 +6426,11 @@ async function initializeGameServices() {
     onGhost: startGhostDuel,
   });
   window.WellGuild.initialize({
+    getTrophyOffers: () => window.WellGoldEconomyModel.TROPHY_KEYS.map((key) => ({
+      key, name: DUNGEON_TROPHIES[key], count: metaProgress.dungeonTrophies[key] || 0,
+      price: window.WellGoldEconomyModel.trophySalePrice(key),
+    })),
+    buyTrophy: sellGuildTrophy,
     getNickname: () => {
       const user = window.WellCloudSave.getCurrentUser();
       return user?.user_metadata?.nickname || user?.user_metadata?.display_name ||

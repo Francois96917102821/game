@@ -4,6 +4,10 @@ on:
   pull_request:
     paths:
       - "supabase/**"
+      - "gold-economy-model.js"
+      - "guild-client.js"
+      - "game.js"
+      - "tests/trophy-buyback.test.html"
       - ".github/workflows/test-supabase.yml"
   workflow_dispatch:
 

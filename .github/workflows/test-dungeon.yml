@@ -12,6 +12,7 @@ on:
       - "attribute-model.js"
       - "soul-crafting-model.js"
       - "gold-economy-model.js"
+      - "tests/trophy-buyback.test.html"
       - "tavern-model.js"
       - "game.js"
       - "pvp-client.js"

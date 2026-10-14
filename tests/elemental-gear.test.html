@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8">
+    <title>Тесты стихийного снаряжения</title>
+  </head>
+  <body>
+    <h1 id="result">RUNNING</h1>
+    <pre id="log"></pre>
+    <script src="../elemental-gear-model.js"></script>
+    <script src="../tavern-model.js"></script>
+    <script src="../expeditions-model.js"></script>
+    <script src="../homestead-model.js"></script>
+    <script src="../soul-crafting-model.js"></script>
+    <script>
+      "use strict";
+
+      const output = document.getElementById("log");
+      const failures = [];
+      const model = window.WellElementalGearModel;
+      function assert(condition, message) {
+        if (!condition) throw new Error(message);
+      }
+      function check(name, action) {
+        try {
+          action();
+          output.textContent += `PASS ${name}\n`;
+        } catch (error) {
+          failures.push(`${name}: ${error.message}`);
+          output.textContent += `FAIL ${name}: ${error.message}\n`;
+        }
+      }
+      function grant(state, resourceId, source, index) {
+        const result = model.grant(state, 30, resourceId, `drop-${index}`, source, index);
+        assert(result.ok, `${resourceId} grant`);
+        return result.state;
+      }
+
+      check("level-30 gates, exact event sources and legacy defaults", () => {
+        assert(!model.grant(model.createState(), 29, "emberglass", "locked", "ore-careful").ok,
+          "level 29 cannot receive materials");
+        assert(!model.createEssence(model.createState(), 29, "emberglass", "locked-essence").ok,
+          "level 29 cannot craft essence");
+        assert(!model.grant(model.createState(), 30, "emberglass", "wrong-source", "fish-shiny").ok,
+          "a material cannot be minted from an unrelated event");
+        const oldState = model.withDefaults(undefined);
+        assert(model.isValidState(oldState) && oldState.balances.emberglass === 0,
+          "old saves gain an empty valid crafting ledger");
+      });
+
+      check("all six original recipes have exactly one +100% and one -50% tradeoff", () => {
+        assert(Object.keys(model.RECIPES).length === 6, "six gear variants exist");
+        for (const recipe of Object.values(model.RECIPES)) {
+          const attributes = {
+            strength: recipe.advantage === "strength" ? 100 : recipe.drawback === "strength" ? -50 : 0,
+            agility: recipe.advantage === "agility" ? 100 : recipe.drawback === "agility" ? -50 : 0,
+            endurance: recipe.advantage === "endurance" ? 100 : recipe.drawback === "endurance" ? -50 : 0,
+          };
+          assert(model.isValidAttributes(attributes, recipe), `${recipe.id} modifier shape`);
+          assert(["weapon", "armor"].includes(recipe.type), `${recipe.id} uses an existing slot`);
+        }
+      });
+
+      check("essence consumes one material and water; critical results double output", () => {
+        let state = model.createState();
+        state = grant(state, "emberglass", "ore-careful", 1);
+        state = grant(state, "primalWater", "grove-drink", 2);
+        const critical = model.createEssence(state, 30, "emberglass", "essence-crit", () => 0.079, 3);
+        assert(critical.ok && critical.critical && critical.state.balances.emberEssence === 2,
+          "a roll below the critical threshold yields two essence");
+        assert(critical.state.balances.emberglass === 0 && critical.state.balances.primalWater === 0,
+          "both inputs are consumed atomically");
+        state = grant(state, "emberglass", "ore-careful", 4);
+        state = grant(state, "primalWater", "grove-drink", 5);
+        const ordinary = model.createEssence(state, 30, "emberglass", "essence-normal", () => 0.08, 6);
+        assert(ordinary.ok && !ordinary.critical && ordinary.state.balances.emberEssence === 1,
+          "a roll at the threshold produces one essence");
+        const dry = grant(model.createState(), "emberglass", "ore-careful", 7);
+        const failed = model.createEssence(dry, 30, "emberglass", "essence-no-water", () => 0.5, 8);
+        assert(!failed.ok && model.isValidState(dry) &&
+          dry.balances.emberglass === 1 && dry.balances.primalWater === 0,
+          "missing water leaves every balance unchanged");
+      });
+
+      check("gear recipes stay gated without a real growth system", () => {
+        let state = model.createState();
+        state = grant(state, "emberglass", "ore-careful", 10);
+        state = grant(state, "primalWater", "grove-drink", 11);
+        state = model.createEssence(state, 30, "emberglass", "essence-for-craft", () => 0.5, 12).state;
+        state = grant(state, "heartFragment", "keeper-defeat", 13);
+        state = grant(state, "recipeBook", "book-study", 14);
+        const before = JSON.stringify(state);
+        const blocked = model.craft(30, "ember-edge");
+        const forged = model.apply(state, {
+          id: "forged-craft", kind: "craft", recipeId: "ember-edge", createdAt: 15,
+        });
+        assert(!blocked.ok && blocked.reason === model.GEAR_CRAFTING_BLOCKED_REASON &&
+          !forged.ok && JSON.stringify(state) === before && model.isValidState(state),
+        "neither the API nor a forged transaction can create gear or spend resources");
+      });
+
+      async function testCraftingUiAndWalletReconciliation() {
+        let elemental = model.createState();
+        elemental = grant(elemental, "emberglass", "ore-careful", 30);
+        elemental = grant(elemental, "primalWater", "grove-drink", 31);
+        elemental = grant(elemental, "heartFragment", "keeper-defeat", 32);
+        elemental = grant(elemental, "recipeBook", "book-study", 33);
+        const tavern = window.WellTavernModel.createState();
+        tavern.characterLevel = 29;
+        tavern.gold = 150;
+        const meta = {
+          essence: 15,
+          upgrades: { vitality: 0, power: 0, supplies: 0 },
+          bossesDefeated: 0,
+          secretsFound: [],
+          groupInboxReceipts: [],
+          souls: window.WellSoulCraftingModel.createState(),
+          elemental,
+          tavern,
+          harbor: window.WellExpeditionsModel.createState(),
+          homestead: window.WellHomesteadModel.createState(),
+        };
+        localStorage.setItem("well-of-whispers-camp-progress", JSON.stringify(meta));
+        const frame = document.createElement("iframe");
+        frame.title = "Elemental crafting UI test";
+        frame.src = "../index.html?elemental-crafting-test=locked";
+        document.body.append(frame);
+        await new Promise((resolve, reject) => {
+          frame.addEventListener("load", resolve, { once: true });
+          frame.addEventListener("error", reject, { once: true });
+        });
+        let game = frame.contentWindow;
+        let doc = game.document;
+        game.confirm = () => true;
+        doc.getElementById("profile-soul-crafting-button").click();
+        let essenceButton = doc.querySelector('[data-homestead-action="make-elemental-essence"][data-material-id="emberglass"]');
+        let craftButton = doc.querySelector('[data-homestead-action="craft-elemental-gear"][data-recipe-id="ember-edge"]');
+        assert(essenceButton?.disabled && craftButton?.disabled,
+          "essence is level gated and recipes remain unavailable below level 30");
+
+        const unlocked = JSON.parse(game.localStorage.getItem("well-of-whispers-camp-progress"));
+        unlocked.tavern.characterLevel = 30;
+        game.localStorage.setItem("well-of-whispers-camp-progress", JSON.stringify(unlocked));
+        const reloaded = new Promise((resolve, reject) => {
+          frame.addEventListener("load", resolve, { once: true });
+          frame.addEventListener("error", reject, { once: true });
+        });
+        frame.src = "../index.html?elemental-crafting-test=unlocked";
+        await reloaded;
+        game = frame.contentWindow;
+        doc = game.document;
+        game.confirm = () => true;
+        doc.getElementById("profile-soul-crafting-button").click();
+        essenceButton = doc.querySelector('[data-homestead-action="make-elemental-essence"][data-material-id="emberglass"]');
+        craftButton = doc.querySelector('[data-homestead-action="craft-elemental-gear"][data-recipe-id="ember-edge"]');
+        assert(essenceButton && !essenceButton.disabled && craftButton?.disabled,
+          "level 30 enables essence but does not unlock gear recipes");
+        const stale = JSON.parse(game.localStorage.getItem("well-of-whispers-camp-progress"));
+        essenceButton.click();
+        let saved = JSON.parse(game.localStorage.getItem("well-of-whispers-camp-progress"));
+        assert(saved.elemental.balances.emberEssence >= 1 && saved.elemental.balances.emberglass === 0 &&
+          saved.elemental.balances.primalWater === 0, "UI persists essence inputs and output together");
+        const blocked = model.craft(30, "ember-edge");
+        assert(!blocked.ok && craftButton.disabled &&
+          saved.tavern.gold === 150 && saved.essence === 15 &&
+          saved.tavern.stash.length === stale.tavern.stash.length &&
+          saved.elemental.balances.heartFragment === 1 && saved.elemental.balances.recipeBook === 1,
+        "blocked recipes leave gold, shards, stash and recipe inputs untouched");
+        const merged = game.mergeMetaProgress(saved, stale);
+        assert(merged.elemental.balances.emberEssence === saved.elemental.balances.emberEssence &&
+          merged.elemental.balances.emberglass === 0 &&
+          merged.elemental.balances.primalWater === 0 && game.isValidMetaProgress(merged),
+        "stale merge cannot restore materials already converted to essence");
+        frame.remove();
+        output.textContent += "PASS UI level gate, safe essence conversion and unavailable recipes\n";
+      }
+
+      testCraftingUiAndWalletReconciliation().catch((error) => {
+        failures.push(`crafting UI: ${error.message}`);
+        output.textContent += `FAIL crafting UI: ${error.message}\n`;
+      }).finally(() => {
+        document.getElementById("result").dataset.result = failures.length ? "fail" : "pass";
+        document.getElementById("result").textContent = failures.length
+          ? `${failures.length} FAILURES`
+          : "PASS";
+      });
+    </script>
+  </body>
+</html>

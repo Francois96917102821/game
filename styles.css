@@ -695,3 +695,70 @@ body[data-high-contrast="true"] .journal-intro {
   .gang-form > *, .dungeon-kit > * { flex: 1 1 100%; }
   .pvp-panel .coop-actions, .ghost-panel .coop-actions { grid-template-columns: 1fr; }
 }
+.guild-dialog {
+  width: min(760px, calc(100% - 24px));
+  max-height: min(88vh, 900px);
+  overflow: auto;
+}
+.guild-dialog-heading, .guild-inline-form, .guild-invite-box, .guild-roster-row, .guild-item-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 9px;
+}
+.guild-dialog-heading { justify-content: space-between; }
+.guild-dialog-heading h2 { margin: 3px 0 12px; }
+.guild-dialog input, .guild-dialog select {
+  min-width: 0;
+  max-width: 100%;
+  padding: 9px 10px;
+  color: #eee9d8;
+  background: #18201d;
+  border: 1px solid #647059;
+  border-radius: 6px;
+}
+.guild-empty, .guild-management, .guild-invite-box, .guild-building, .guild-roster,
+.guild-chat-messages, .guild-chat-form {
+  padding: 12px;
+  margin: 10px 0;
+  border: 1px solid #464b3b;
+  border-radius: 8px;
+  background: rgba(25, 31, 27, .76);
+}
+.guild-empty label, .guild-management label { flex: 0 0 100%; }
+.guild-empty > input { width: 100%; margin-bottom: 9px; }
+.guild-summary, .guild-status, .guild-building p, .guild-warehouse-balances { line-height: 1.5; overflow-wrap: anywhere; }
+.guild-status:empty { display: none; }
+.guild-error, .guild-unavailable { color: #f0a095; }
+.guild-invite-box { justify-content: space-between; }
+.guild-invite-box > div { display: grid; gap: 4px; }
+.guild-invite-box span { font-size: 20px; letter-spacing: .14em; color: var(--gold-light); }
+.guild-invite-box small { color: #aaa997; }
+.guild-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0; }
+.guild-tabs [aria-pressed="true"] { border-color: var(--gold-light); color: var(--gold-light); }
+.guild-content { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
+.guild-building { margin: 0; }
+.guild-building p { margin: 7px 0; }
+.guild-chat-pane { display: grid; gap: 9px; }
+.guild-roster { display: grid; gap: 8px; }
+.guild-roster-row { justify-content: space-between; }
+.guild-chat-messages { max-height: 300px; overflow: auto; }
+.guild-message { padding: 8px 2px; border-bottom: 1px solid #3b4035; overflow-wrap: anywhere; }
+.guild-message:last-child { border-bottom: 0; }
+.guild-message strong { margin-right: 8px; color: var(--gold-light); }
+.guild-message small { color: #aaa997; }
+.guild-message p { margin: 5px 0; }
+.guild-chat-form input { flex: 1 1 180px; }
+.guild-management { display: grid; gap: 9px; }
+.guild-management .guild-inline-form { justify-content: flex-start; }
+.guild-management .guild-inline-form > * { flex: 1 1 140px; }
+.guild-disband-button { color: #f0a095; }
+.guild-retry-button { margin: 10px 0; }
+.guild-dialog [hidden] { display: none !important; }
+@media (max-width: 520px) {
+  .guild-content { grid-template-columns: minmax(0, 1fr); }
+  .guild-dialog { padding: 16px 12px; }
+  .guild-invite-box > * { flex: 1 1 100%; }
+  .guild-inline-form > * { flex: 1 1 100%; }
+  .guild-roster-row { align-items: flex-start; }
+}

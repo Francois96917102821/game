@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="ru">
+<meta charset="utf-8">
+<title>Guild integration</title>
+<h1 id="result">RUNNING</h1>
+<pre id="log"></pre>
+<script>
+"use strict";
+(async () => {
+  const output = document.getElementById("log");
+  const failures = [];
+  function assert(condition, message) {
+    if (!condition) throw new Error(message);
+  }
+  function check(name, work) {
+    try { work(); output.textContent += `PASS ${name}\n`; }
+    catch (error) { failures.push(`${name}: ${error.stack}`); }
+  }
+  localStorage.clear();
+  const frame = document.createElement("iframe");
+  frame.style.width = "390px";
+  frame.style.height = "800px";
+  frame.src = "../index.html?guild-integration=1";
+  document.body.append(frame);
+  await new Promise((resolve) => frame.addEventListener("load", resolve, { once: true }));
+  const app = frame.contentWindow;
+  await app.eval("gameServicesReady");
+  assert(app.WellPvp?.isReady(), "PvP service did not initialize its callbacks");
+  output.textContent += "PASS game services and PvP callbacks are ready\n";
+
+  check("old meta saves initialize guild transaction ledgers", () => {
+    const old = app.createMetaProgress();
+    delete old.guildSupplies;
+    delete old.guildSupplyTransactions;
+    delete old.guildWalletTransactions;
+    delete old.guildTrophyTransactions;
+    delete old.guildLuck;
+    delete old.guildReceipts;
+    assert(app.isValidMetaProgress(old), "old save rejected");
+    const normalized = app.normalizeMetaProgress(old);
+    assert(normalized.guildSupplies.healthPotions === 0 &&
+      normalized.guildWalletTransactions.length === 0 &&
+      normalized.guildTrophyTransactions.length === 0, "missing fields not initialized");
+  });
+  check("concurrent wallet spending merges without restoring spent currency", () => {
+    const base = app.normalizeMetaProgress(app.createMetaProgress());
+    base.essence = 100;
+    base.tavern.gold = 100;
+    const first = {
+      ...base,
+      essence: 90,
+      guildWalletTransactions: [{ id: "11111111-1111-4111-8111-111111111111", gold: 0, essence: -10 }],
+    };
+    const second = {
+      ...base,
+      essence: 85,
+      guildWalletTransactions: [{ id: "22222222-2222-4222-8222-222222222222", gold: 0, essence: -15 }],
+    };
+    const merged = app.mergeMetaProgress(first, second);
+    assert(merged.essence === 75, `expected 75 essence, got ${merged.essence}`);
+    assert(app.mergeMetaProgress(merged, merged).essence === 75, "repeated merge duplicated or restored spending");
+  });
+  check("concurrent elite-trophy contributions stay spent after save merge", () => {
+    const base = app.normalizeMetaProgress(app.createMetaProgress());
+    base.dungeonTrophies.elite = 10;
+    const first = {
+      ...base,
+      dungeonTrophies: { elite: 9 },
+      guildTrophyTransactions: [{ id: "33333333-3333-4333-8333-333333333333", elite: -1 }],
+    };
+    const second = {
+      ...base,
+      dungeonTrophies: { elite: 8 },
+      guildTrophyTransactions: [{ id: "44444444-4444-4444-8444-444444444444", elite: -2 }],
+    };
+    const merged = app.mergeMetaProgress(first, second);
+    assert(merged.dungeonTrophies.elite === 7, `expected 7 elite trophies, got ${merged.dungeonTrophies.elite}`);
+  });
+  check("wallet receipts and supply spending are idempotent", () => {
+    app.eval("metaProgress = createMetaProgress(); metaProgress.tavern.gold = 100; metaProgress.essence = 100;");
+    const receipt = "55555555-5555-4555-8555-555555555555";
+    app.applyGuildWalletChange({ kind: "gold", amount: 10 }, receipt);
+    app.applyGuildWalletChange({ kind: "gold", amount: 10 }, receipt);
+    let snapshot = app.getCloudSaveSnapshot();
+    assert(snapshot.meta.tavern.gold === 90, "duplicate wallet receipt spent twice");
+    const supplyReceipt = "66666666-6666-4666-8666-666666666666";
+    app.applyGuildHallReward({ health_potions: 10, regeneration_potions: 1, guild_mask: 1 }, supplyReceipt);
+    app.updateGuildSupplies("77777777-7777-4777-8777-777777777777", { healthPotions: -1 });
+    app.persistMetaProgress();
+    snapshot = app.getCloudSaveSnapshot();
+    assert(snapshot.meta.guildSupplies.healthPotions === 9 &&
+      snapshot.meta.guildSupplies.regenerationPotions === 1 && snapshot.meta.guildSupplies.masks === 1,
+    "supply reward or debit missing");
+    const merged = app.mergeMetaProgress(snapshot.meta, app.normalizeMetaProgress(app.createMetaProgress()));
+    assert(merged.guildSupplies.healthPotions === 9, "stale cloud merge restored a consumed potion");
+  });
+  check("guild hall service rewards apply once and clear injuries", () => {
+    app.eval("metaProgress = createMetaProgress(); metaProgress.tavern.injuries = 2;");
+    const id = "88888888-8888-4888-8888-888888888888";
+    app.applyGuildHallReward({
+      heal_all_injuries: true,
+      luck: 10,
+      luck_expires_at: new Date(Date.now() + 600000).toISOString(),
+    }, id);
+    app.applyGuildHallReward({ heal_all_injuries: true, luck: 10 }, id);
+    const snapshot = app.getCloudSaveSnapshot();
+    assert(snapshot.meta.tavern.injuries === 0 && snapshot.meta.guildLuck.bonus === 10,
+      "healer or statue reward missing");
+  });
+  check("gear moves between personal and guild storage", () => {
+    app.eval(`metaProgress = createMetaProgress();
+      metaProgress.tavern.stash = [{id:"gear-1",type:"weapon",name:"Клинок",bonus:2}];
+      metaProgress.tavern.nextGearSequence = 1;`);
+    const item = app.availableGuildGear()[0];
+    assert(item?.id === "gear-1", "personal stash item not available");
+    app.applyGuildWalletChange({ kind: "item_deposit", itemId: item.id },
+      "99999999-9999-4999-8999-999999999999");
+    assert(app.getCloudSaveSnapshot().meta.tavern.stash.length === 0, "deposit did not remove personal item");
+    app.applyGuildWalletChange({ kind: "item_take", item: item },
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+    assert(app.getCloudSaveSnapshot().meta.tavern.stash.length === 1, "withdrawal did not restore personal item");
+  });
+  if (failures.length) {
+    output.textContent += failures.join("\n");
+    document.getElementById("result").dataset.result = "fail";
+    document.getElementById("result").textContent = "FAIL";
+  } else {
+    document.getElementById("result").dataset.result = "pass";
+    document.getElementById("result").textContent = "PASS";
+  }
+})().catch((error) => {
+  document.getElementById("result").dataset.result = "fail";
+  document.getElementById("log").textContent += error.stack;
+});
+</script>
+</html>

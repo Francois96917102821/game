@@ -81,6 +81,7 @@
               <div id="food-inventory" class="tavern-recipe-list"></div>
             </details>
             <button class="service-button profile-crafting-button" id="profile-crafting-button" type="button">Ремесленный стол · открыть в доме</button>
+            <button class="service-button guild-open-button" id="guild-open-button" type="button" aria-haspopup="dialog" aria-controls="guild-dialog">Гильдия · открыть холл</button>
             <button class="service-button profile-crafting-button" id="profile-soul-crafting-button" type="button">Души и R-ремесло</button>
           </section>
           <div class="panel-divider"></div>
@@ -193,6 +194,7 @@
             <button class="action-button attack-action" id="attack-button" type="button"><span aria-hidden="true">⚔</span> Ударить</button>
             <button class="action-button heavy-action" id="heavy-button" type="button" disabled><span aria-hidden="true">✦</span> Сокрушительный · 2 ✦</button>
             <button class="action-button secondary-action" id="combat-potion-button" type="button"><span aria-hidden="true">⚗</span> Зелье <span id="combat-potion-count">2</span></button>
+            <button class="action-button secondary-action" id="guild-regeneration-button" type="button" hidden>Зелье регенерации</button>
             <button class="action-button guard-action" id="guard-button" type="button"><span aria-hidden="true">⬡</span> Сменить стойку</button>
             <button class="action-button ability-action" id="class-ability-button" type="button"><span id="class-ability-icon" aria-hidden="true">✦</span><span id="class-ability-label">Способность</span></button>
             <button class="action-button secondary-action" id="offhand-button" type="button">Особенность доп. предмета</button>
@@ -546,6 +548,82 @@
       <span id="group-notice-text"></span>
       <button class="primary-button group-battle-invite-button" id="group-battle-invite-button" type="button" hidden>Вступить в бой со стражем!</button>
     </div>
+    <dialog class="game-dialog guild-dialog" id="guild-dialog" aria-labelledby="guild-dialog-title">
+      <div class="guild-dialog-heading">
+        <div>
+          <p class="eyebrow">РАТУША · ГИЛЬДЕЙСКИЙ ХОЛЛ</p>
+          <h2 id="guild-dialog-title">Гильдия</h2>
+        </div>
+        <button class="action-button secondary-action" id="guild-close-button" type="button">Закрыть</button>
+      </div>
+      <p class="guild-status" id="guild-status" role="status" aria-live="polite"></p>
+      <section class="guild-empty" id="guild-empty">
+        <p>Гильдии доступны в облачном аккаунте. Создай гильдию или вступи по коду-приглашению.</p>
+        <label for="guild-create-name">Название гильдии</label>
+        <input id="guild-create-name" maxlength="32" autocomplete="organization" placeholder="3–32 символа">
+        <button class="action-button" id="guild-create-button" type="button">Создать гильдию</button>
+        <label for="guild-join-code">Код приглашения</label>
+        <div class="guild-inline-form">
+          <input id="guild-join-code" maxlength="8" autocomplete="off" placeholder="8 символов">
+          <button class="action-button" id="guild-join-button" type="button">Вступить</button>
+        </div>
+      </section>
+      <section id="guild-membership" hidden>
+        <h3 id="guild-title"></h3>
+        <p class="guild-summary" id="guild-summary"></p>
+        <div class="guild-invite-box">
+          <div><strong>Код приглашения</strong><span id="guild-invite-code">—</span><small id="guild-invite-expiry"></small></div>
+          <button class="action-button" id="guild-invite-button" type="button">Выпустить код на 7 дней</button>
+          <button class="action-button secondary-action" id="guild-invite-copy" type="button">Копировать</button>
+        </div>
+        <button class="action-button guild-retry-button" id="guild-pending-retry" type="button" hidden>Повторить сохранённое действие</button>
+        <nav class="guild-tabs" aria-label="Разделы гильдии">
+          <button class="action-button" data-guild-tab="hall" type="button" aria-pressed="true">Ратуша</button>
+          <button class="action-button" data-guild-tab="storage" type="button" aria-pressed="false">Казна и склад</button>
+          <button class="action-button" data-guild-tab="chat" type="button" aria-pressed="false">Чат</button>
+        </nav>
+        <section class="guild-content" id="guild-hall-content"></section>
+        <section class="guild-content" id="guild-storage-content" hidden></section>
+        <section class="guild-chat-pane" id="guild-chat-pane" hidden>
+          <div class="guild-roster" id="guild-roster" aria-label="Состав гильдии"></div>
+          <div class="guild-chat-messages" id="guild-chat-messages" aria-live="polite"></div>
+          <form class="guild-chat-form" id="guild-chat-form">
+            <label class="visually-hidden" for="guild-chat-input">Сообщение гильдии</label>
+            <input id="guild-chat-input" maxlength="500" autocomplete="off" placeholder="Написать в чат">
+            <button class="action-button" type="submit">Отправить</button>
+          </form>
+        </section>
+        <div class="guild-management">
+          <div class="guild-inline-form">
+            <label for="guild-contribution-kind">Внести в казну или склад</label>
+            <select id="guild-contribution-kind"></select>
+            <input id="guild-contribution-amount" type="number" min="1" step="1" value="1" aria-label="Количество">
+            <select id="guild-contribution-item" aria-label="Предмет для вклада" hidden></select>
+            <button class="action-button" id="guild-contribution-button" type="button">Внести</button>
+          </div>
+          <div class="guild-inline-form">
+            <label for="guild-withdraw-kind">Изъять из казны</label>
+            <select id="guild-withdraw-kind">
+              <option value="gold">Золото · без комиссии</option>
+              <option value="essence">Осколки · без комиссии</option>
+            </select>
+            <input id="guild-withdraw-amount" type="number" min="1" step="1" value="1" aria-label="Количество для изъятия">
+            <button class="action-button" id="guild-withdraw-button" type="button">Изъять</button>
+          </div>
+          <div class="guild-inline-form">
+            <label for="guild-withdrawal">Изъятие со склада</label>
+            <select id="guild-withdrawal">
+              <option value="leader">Только глава</option>
+              <option value="officer">Глава и офицеры</option>
+            </select>
+            <button class="action-button" id="guild-withdrawal-save" type="button">Сохранить право</button>
+          </div>
+          <button class="action-button" id="guild-level-button" type="button">Повысить уровень гильдии</button>
+          <button class="action-button" id="guild-leave-button" type="button">Покинуть гильдию</button>
+          <button class="action-button guild-disband-button" id="guild-disband-button" type="button">Распустить гильдию</button>
+        </div>
+      </section>
+    </dialog>
     <script src="cloud-config.js"></script>
     <script src="cloud-save.js"></script>
     <script src="player-groups.js"></script>
@@ -557,6 +635,7 @@
     <script src="rune-model.js"></script>
     <script src="dungeon-model.js"></script>
     <script src="pvp-client.js"></script>
+    <script src="guild-client.js"></script>
     <script src="game.js"></script>
   </body>
 </html>

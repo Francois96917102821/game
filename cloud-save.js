@@ -95,11 +95,17 @@
     if (service === "rest" && !path.startsWith("rpc/")) {
       headers.Prefer = "resolution=merge-duplicates,return=minimal";
     }
-    const response = await fetch(`${root}/${service === "auth" ? "auth/v1" : "rest/v1"}/${path}`, {
-      method,
-      headers,
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
+    let response;
+    try {
+      response = await fetch(`${root}/${service === "auth" ? "auth/v1" : "rest/v1"}/${path}`, {
+        method,
+        headers,
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+    } catch (cause) {
+      // The request may or may not have reached the server; callers decide whether to retry.
+      throw Object.assign(new Error("Нет связи с сервером."), { network: true, cause });
+    }
     const text = await response.text();
     let payload = null;
     if (text) {
@@ -109,7 +115,12 @@
         payload = { message: text };
       }
     }
-    if (!response.ok) throw new Error(parseError(payload, response.status));
+    if (!response.ok) {
+      throw Object.assign(new Error(parseError(payload, response.status)), {
+        status: response.status,
+        code: typeof payload?.code === "string" ? payload.code : undefined,
+      });
+    }
     return payload;
   }
 

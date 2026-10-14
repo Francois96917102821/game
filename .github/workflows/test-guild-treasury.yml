@@ -1,0 +1,54 @@
+name: Test guild treasury UI
+
+on:
+  pull_request:
+    paths:
+      - "guild-treasury.js"
+      - "cloud-save.js"
+      - "game.js"
+      - "index.html"
+      - "styles.css"
+      - "tests/guild-treasury.test.html"
+      - "tests/run-browser-tests.mjs"
+      - ".github/workflows/deploy-pages.yml"
+      - ".github/workflows/test-guild-treasury.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  browser:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out game
+        uses: actions/checkout@v4
+      - name: Check Pages packaging lists every page script
+        run: |
+          set -euo pipefail
+          cp_line=$(grep -E '^\s+cp index\.html ' .github/workflows/deploy-pages.yml)
+          for script in $(grep -o 'src="[^"?]*' index.html | sed 's/^src="//'); do
+            grep -qw -- "$script" <<< "$cp_line" || { echo "$script is not copied to the Pages artifact"; exit 1; }
+            grep -qF "s|src=\\\"$script\\\"|src=\\\"$script?v=" .github/workflows/deploy-pages.yml || { echo "$script is not cache-busted"; exit 1; }
+          done
+      - name: Set up Chrome
+        uses: browser-actions/setup-chrome@v1
+      - name: Set up browser test runtime
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Run guild treasury browser tests
+        run: |
+          set -euo pipefail
+          node --check guild-treasury.js
+          mkdir -p .treasury-ci
+          python3 -m http.server 8765 --bind 127.0.0.1 > .treasury-ci/server.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid"; rm -rf .treasury-ci' EXIT
+          for attempt in {1..30}; do
+            if curl --silent --fail http://127.0.0.1:8765/tests/guild-treasury.test.html > /dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          node tests/run-browser-tests.mjs guild-treasury

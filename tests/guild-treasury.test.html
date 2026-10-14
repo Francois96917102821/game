@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="ru">
+<meta charset="utf-8">
+<title>Guild treasury</title>
+<h1 id="result">RUNNING</h1>
+<pre id="log"></pre>
+<script>
+"use strict";
+(async () => {
+  const assert = (value, message) => { if (!value) throw new Error(message); };
+  const log = (text) => { document.getElementById("log").textContent += `PASS ${text}\n`; };
+  const waitFor = async (check, message) => {
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      if (check()) return;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    throw new Error(`Timed out: ${message}`);
+  };
+  localStorage.clear();
+  const frame = document.createElement("iframe");
+  frame.src = "../index.html?guild-treasury-test=1";
+  document.body.append(frame);
+  await new Promise((resolve) => frame.addEventListener("load", resolve, { once: true }));
+  const app = frame.contentWindow;
+  const doc = app.document;
+  const $ = (id) => doc.getElementById(id);
+  const text = (id) => $(id).textContent;
+  await waitFor(() => app.WellGuildTreasury?.isReady(), "treasury initialized");
+  const treasury = app.WellGuildTreasury;
+
+  const own = "11111111-1111-4111-8111-111111111111";
+  const other = "22222222-2222-4222-8222-222222222222";
+  const expeditionId = "33333333-3333-4333-8333-333333333333";
+  const startKey = `well-of-whispers-guild-expedition-start:${own}`;
+  const transferKey = `well-of-whispers-guild-transfer:${own}`;
+  const networkError = () => Object.assign(new Error("Нет связи с сервером."), { network: true });
+  const rejected = (message) => Object.assign(new Error(message), { status: 400, code: "P0001" });
+  const copy = (value) => JSON.parse(JSON.stringify(value));
+
+  app.eval("metaProgress.tavern.gold = 350");
+  const localGold = () => app.getCloudSaveSnapshot().meta.tavern.gold;
+  assert(localGold() === 350, "local gold seed");
+
+  // Client clock is a week ahead and the monotonic clock is fully controlled by the test.
+  const realDateNow = app.Date.now.bind(app.Date);
+  app.Date.now = () => realDateNow() + 7 * 86_400_000;
+  let monotonicNow = 1_000_000;
+  app.performance.now = () => monotonicNow;
+
+  let configured = false;
+  let currentUser = null;
+  app.WellCloudSave.isConfigured = () => configured;
+  app.WellCloudSave.getCurrentUser = () => currentUser;
+  const requests = [];
+  let handler = async () => { throw new Error("RPC must not be called"); };
+  app.WellCloudSave.groupRpc = async (rpc, args) => {
+    requests.push({ rpc, args: copy(args) });
+    return copy(await handler(rpc, args));
+  };
+
+  const cityCard = [...doc.querySelectorAll("[data-city-action]")]
+    .find((button) => button.dataset.cityAction === "treasury");
+  assert(cityCard, "guild treasury card missing in city");
+  cityCard.click();
+  await waitFor(() => treasury.isOpen(), "dialog opened from city");
+  assert(/не настроено/.test(text("treasury-status")), "unconfigured state");
+  assert($("treasury-start-button").disabled && $("treasury-server-gold").textContent === "—", "unconfigured controls");
+  assert(/350/.test(text("treasury-local-gold")), "local gold shown separately");
+  assert(/не переводится/.test(text("treasury-local-detail")), "local gold conversion warning");
+  assert(requests.length === 0, "no RPC without configuration");
+  log("unconfigured cloud: clear state, local gold shown, no RPC");
+
+  configured = true;
+  await treasury.open();
+  assert(/Войди/.test(text("treasury-status")) && !$("treasury-auth-actions").hidden, "signed-out state");
+  assert($("treasury-start-button").disabled && requests.length === 0, "signed-out controls");
+  log("signed-out: sign-in prompt, actions disabled");
+
+  currentUser = { id: own };
+  handler = async () => { throw Object.assign(new Error("Could not find the function public.guild_expedition_get_owned"), { status: 404, code: "PGRST202" }); };
+  await treasury.open();
+  assert(/схема/.test(text("treasury-status")) && $("treasury-start-button").disabled, "missing schema state");
+  log("server without schema: explains missing SQL, actions disabled");
+
+  Object.defineProperty(app.navigator, "onLine", { get: () => false, configurable: true });
+  handler = async () => { throw networkError(); };
+  await treasury.open();
+  assert(/Нет связи|Нет сети/.test(text("treasury-status")) && $("treasury-start-button").disabled, "offline state");
+  assert(localGold() === 350, "offline changed local gold");
+  delete app.navigator.onLine;
+  assert(app.navigator.onLine !== false, "online restored");
+  log("offline: clear state, local game untouched");
+
+  let serverNow = Date.parse("2030-01-01T10:00:00.000Z");
+  let gold = 500;
+  let expedition = null;
+  let dailyLimit = false;
+  let startCalls = [];
+  let dropStartResponse = true;
+  handler = async (rpc, args) => {
+    if (rpc === "guild_expedition_get_owned") {
+      return { server_now: new Date(serverNow + (monotonicNow - 1_000_000)).toISOString(), balances: { gold, shard: 0 }, expeditions: expedition ? [expedition] : [] };
+    }
+    if (rpc === "guild_expedition_start") {
+      startCalls.push(args.p_request_id);
+      assert(args.p_route === "guild_patrol", "route");
+      if (dailyLimit) throw rejected("Daily expedition limit reached.");
+      if (!expedition) {
+        const started = serverNow + (monotonicNow - 1_000_000);
+        expedition = { id: expeditionId, route: "guild_patrol", status: "running",
+          started_at: new Date(started).toISOString(), ready_at: new Date(started + 3_600_000).toISOString() };
+      }
+      if (dropStartResponse) { dropStartResponse = false; throw networkError(); }
+      return expedition;
+    }
+    if (rpc === "guild_expedition_claim") {
+      assert(args.p_expedition_id === expeditionId, "claim id");
+      gold += 120;
+      expedition = { id: expeditionId, status: "claimed", claimed_at: new Date(serverNow).toISOString(),
+        reward_id: "44444444-4444-4444-8444-444444444444", gold: 120, receipt_id: "55555555-5555-4555-8555-555555555555",
+        balances: { gold, shard: 0 }, item: { item_id: "66666666-6666-4666-8666-666666666666", owner_id: own,
+          custody_state: "owned", gear: { name: "Клинок патруля", bonus: 2 } } };
+      return expedition;
+    }
+    if (rpc === "wallet_transfer") return transferHandler(args);
+    throw new Error(`Unknown mock RPC ${rpc}`);
+  };
+  await treasury.open();
+  assert(/500/.test(text("treasury-server-gold")) && /350/.test(text("treasury-local-gold")), "separate balances");
+  assert(!$("treasury-start-button").disabled, "start available");
+  log("signed-in snapshot: server gold 500 separate from local 350");
+
+  $("treasury-start-button").click();
+  await waitFor(() => /Повторить/.test(text("treasury-start-button")), "retry label after network loss");
+  const pending = JSON.parse(localStorage.getItem(startKey));
+  assert(pending && pending.requestId === startCalls[0], "request UUID persisted before confirmation");
+  assert(/Нет связи/.test(text("treasury-status")), "network error message");
+  await treasury.startExpedition();
+  assert(startCalls.length === 2 && startCalls[1] === startCalls[0], "retry reused request UUID");
+  assert(localStorage.getItem(startKey) === null, "confirmed request cleared");
+  log("start: UUID stored, network loss retried with the same UUID, cleared after confirmation");
+
+  assert(/1 ч 0 мин 0 с/.test(text("treasury-timer")), `server-time timer: ${text("treasury-timer")}`);
+  assert($("treasury-claim-button").disabled, "claim locked while running");
+  monotonicNow += 1_800_000;
+  treasury.render();
+  assert(/30 мин 0 с/.test(text("treasury-timer")), `timer after 30 min: ${text("treasury-timer")}`);
+  monotonicNow += 1_800_000;
+  treasury.render();
+  assert(/вернулась/.test(text("treasury-timer")) && !$("treasury-claim-button").disabled, "ready by server time");
+  log("timer follows server_now/ready_at with a skewed client clock");
+
+  await treasury.claimExpedition();
+  assert(/120/.test(text("treasury-reward")) && /Клинок патруля/.test(text("treasury-reward")), `reward shown: ${text("treasury-reward")}`);
+  assert(/620/.test(text("treasury-server-gold")), "server gold after claim");
+  assert(localGold() === 350 && /350/.test(text("treasury-local-gold")), "claim changed local gold");
+  log("claim: server reward (gold + optional item) shown, local gold unchanged");
+
+  dailyLimit = true;
+  await treasury.startExpedition();
+  assert(/Дневной лимит/.test(text("treasury-status")), `limit message: ${text("treasury-status")}`);
+  assert(localStorage.getItem(startKey) === null, "definitive rejection keeps stale UUID");
+  assert(/Отправить экспедицию/.test(text("treasury-start-button")), "start label reset after rejection");
+  log("daily limit: Russian message, request key discarded");
+
+  dailyLimit = false;
+  expedition = null;
+  await treasury.startExpedition();
+  assert(startCalls.at(-1) !== startCalls[0], "new expedition must use a new UUID");
+  monotonicNow += 3_600_000;
+  const claimWithItem = handler;
+  handler = async (rpc, args) => {
+    const result = await claimWithItem(rpc, args);
+    if (rpc === "guild_expedition_claim") delete result.item;
+    return result;
+  };
+  await treasury.claimExpedition();
+  assert(/740/.test(text("treasury-server-gold")) && /120/.test(text("treasury-reward")) && !/предмет/.test(text("treasury-reward")), `legacy claim: ${text("treasury-reward")}`);
+  handler = claimWithItem;
+  log("legacy claim response without item: gold reward only");
+
+  let transferCalls = [];
+  let dropTransferResponse = true;
+  const transferHandler = (args) => {
+    transferCalls.push(copy(args));
+    assert(args.p_currency === "gold" && args.p_recipient_id === other && args.p_amount === 200, "transfer payload");
+    if (dropTransferResponse) { dropTransferResponse = false; throw networkError(); }
+    gold -= 200;
+    return { transaction_id: "77777777-7777-4777-8777-777777777777", currency: "gold", amount: 200, fee: 20, received: 180, balance: gold };
+  };
+  $("treasury-recipient").value = own;
+  $("treasury-amount").value = "200";
+  $("treasury-review-button").click();
+  assert(/самому себе/.test(text("treasury-transfer-result")) && $("treasury-confirm").hidden, "self transfer blocked");
+  $("treasury-recipient").value = other;
+  $("treasury-review-button").click();
+  assert(!$("treasury-confirm").hidden && /20 золота/.test(text("treasury-confirm-text")) && /180/.test(text("treasury-confirm-text")), "confirmation with fee");
+  assert(transferCalls.length === 0, "transfer sent before confirmation");
+  $("treasury-send-button").click();
+  await waitFor(() => !$("treasury-pending-transfer").hidden && !$("treasury-retry-transfer-button").disabled, "pending transfer after network loss");
+  const pendingTransfer = JSON.parse(localStorage.getItem(transferKey));
+  assert(pendingTransfer.requestId === transferCalls[0].p_request_id, "transfer UUID persisted");
+  assert($("treasury-review-button").disabled, "new transfer blocked while pending");
+  $("treasury-retry-transfer-button").click();
+  await waitFor(() => localStorage.getItem(transferKey) === null && /подтверждён сервером/.test(text("treasury-transfer-result")), "transfer confirmed");
+  await waitFor(() => /540/.test(text("treasury-server-gold")), "server gold after transfer");
+  assert(transferCalls.length === 2 && transferCalls[1].p_request_id === transferCalls[0].p_request_id, "transfer retry reused UUID");
+  assert(localStorage.getItem(transferKey) === null && $("treasury-pending-transfer").hidden, "pending transfer cleared");
+  assert(localGold() === 350, "transfer changed local gold");
+  log("transfer: confirmation with fee, retry with the same UUID, local gold unchanged");
+
+  $("treasury-return-button").click();
+  await waitFor(() => !treasury.isOpen(), "dialog closed");
+  assert(localGold() === 350, "local gold changed after closing");
+  log("dialog closes back to the city");
+
+  frame.style.width = "390px";
+  frame.style.height = "844px";
+  await treasury.open();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const dialog = $("treasury-dialog");
+  assert(dialog.getBoundingClientRect().width <= 390 && dialog.scrollWidth <= dialog.clientWidth + 1, "dialog overflows 390px viewport");
+  assert(app.getComputedStyle(doc.querySelector(".treasury-wallet")).gridTemplateColumns.split(" ").length === 1, "balances stack on phone");
+  treasury.close();
+  log("phone 390px: no horizontal overflow, balances stacked");
+
+  document.getElementById("result").textContent = "PASS";
+  document.getElementById("result").dataset.result = "pass";
+})().catch((error) => {
+  document.getElementById("log").textContent += `FAIL ${error.message}\n`;
+  document.getElementById("result").textContent = "FAIL";
+  document.getElementById("result").dataset.result = "fail";
+});
+</script>

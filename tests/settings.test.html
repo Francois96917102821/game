@@ -40,6 +40,10 @@
   check("settings entry is labeled and sound stays opt-in", () => {
     assert(element("settings-open-button").getAttribute("aria-haspopup") === "dialog", "settings entry opens a dialog");
     assert(element("sound-toggle").getAttribute("aria-pressed") === "false", "sound starts disabled");
+    assert(app().getComputedStyle(element("sound-toggle").querySelector(".sound-icon-wave")).display === "none",
+      "disabled sound icon hides its waves");
+    assert(app().getComputedStyle(element("sound-toggle").querySelector(".sound-icon-muted")).display !== "none",
+      "disabled sound icon shows its mute mark");
     assert(element("settings-sound").checked === false, "sound setting starts disabled");
     element("settings-open-button").click();
     assert(element("settings-dialog").open, "settings dialog opens");
@@ -77,9 +81,15 @@
     sound.checked = true;
     sound.dispatchEvent(changeEvent());
     assert(element("sound-toggle").getAttribute("aria-pressed") === "true", "top-level control reflects sound");
+    assert(app().getComputedStyle(element("sound-toggle").querySelector(".sound-icon-wave")).display !== "none",
+      "enabled sound icon shows its waves");
+    assert(app().getComputedStyle(element("sound-toggle").querySelector(".sound-icon-muted")).display === "none",
+      "enabled sound icon hides its mute mark");
     assert(app().localStorage.getItem("well-of-whispers-sound-enabled") === "true", "sound opt-in is persisted");
     element("sound-toggle").click();
     assert(sound.checked === false, "existing sound button remains synchronized");
+    assert(app().getComputedStyle(element("sound-toggle").querySelector(".sound-icon-wave")).display === "none",
+      "button opt-out updates the sound icon");
     assert(app().localStorage.getItem("well-of-whispers-sound-enabled") === "false", "sound opt-out is persisted");
   });
 

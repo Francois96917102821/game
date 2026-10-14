@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Combined system compatibility</title>
+<h1 id="result">RUNNING</h1>
+<pre id="log"></pre>
+<script>
+"use strict";
+(async () => {
+  const output = document.getElementById("log");
+  function assert(condition, message) {
+    if (!condition) throw new Error(message);
+  }
+  localStorage.clear();
+  const frame = document.createElement("iframe");
+  const loaded = new Promise((resolve) => frame.addEventListener("load", resolve, { once: true }));
+  frame.src = "../index.html?system-compatibility=1";
+  document.body.append(frame);
+  await loaded;
+  const app = frame.contentWindow;
+  await app.gameServicesReady;
+  app.startGameWithClass("knight");
+  const userId = "11111111-1111-4111-8111-111111111111";
+  const partnerId = "22222222-2222-4222-8222-222222222222";
+  const battle = {
+    id: "33333333-3333-4333-8333-333333333333",
+    status: "victory", floor: 1, xp: 0, gold: 10,
+    boss: { name: "Test guardian", icon: "G", skin: "guardian", hp: 0, max_hp: 10, damage: 1 },
+    players: [{ user_id: userId, hp: 20, potions: 1, focus: 0 }],
+  };
+  app.applyGroupBattleUpdate(battle, userId);
+  const first = app.getCloudSaveSnapshot();
+  const stats = JSON.parse(localStorage.getItem("well-of-whispers-player-progress"));
+  assert(stats.guardiansDefeated === 1, "cooperative victory must count as one guardian");
+  assert(first.run.state.coopBattleReceipts.includes(battle.id), "cooperative receipt missing");
+  app.applyGroupBattleUpdate(battle, userId);
+  const replay = app.getCloudSaveSnapshot();
+  assert(JSON.parse(localStorage.getItem("well-of-whispers-player-progress")).guardiansDefeated === 1 &&
+    replay.run.state.gold === first.run.state.gold &&
+    replay.meta.bossesDefeated === first.meta.bossesDefeated &&
+    replay.meta.runeDrops.length === first.meta.runeDrops.length,
+    "duplicate cooperative delivery changed counters or rewards");
+  app.restoreCloudSave(first);
+  app.resumeGame();
+  app.applyGroupBattleUpdate(battle, userId);
+  assert(JSON.parse(localStorage.getItem("well-of-whispers-player-progress")).guardiansDefeated === 1,
+    "restored cooperative receipt must suppress a repeated achievement");
+  output.textContent += "PASS cooperative receipts suppress reward and achievement replay, including cloud restore\n";
+
+  app.eval("state.enemy=null;state.liveDuelId=null;state.ghostDuel=null;state.waitingToDescend=false;");
+  const requests = [];
+  app.WellPlayerGroups.getPvpContext = () => ({
+    userId, active: true, members: [{ user_id: userId }, { user_id: partnerId }],
+  });
+  app.WellGuild.isReady = () => true;
+  app.WellGuild.refresh = async () => {};
+  app.WellGuild.isGuildmate = (id) => id === partnerId;
+  app.WellCloudSave.groupRpc = async (rpc) => {
+    requests.push(rpc);
+    throw new Error(`Unexpected RPC against a guildmate: ${rpc}`);
+  };
+  await app.WellPvp.start(false);
+  assert(!requests.includes("pvp_start") &&
+    app.document.getElementById("pvp-status").textContent.includes("согильдийца"),
+    "manual guildmate challenge was not blocked before submitting a snapshot");
+  await app.WellPvp.start(true);
+  assert(app.eval("Boolean(state.ghostDuel)") && !requests.includes("pvp_start"),
+    "random guildmate encounter must use the ghost path instead of a real duel");
+  assert(!app.document.getElementById("pvp-join-button") &&
+    !app.document.getElementById("pvp-leave-button"),
+    "combined guild/PvP UI reintroduced decline controls");
+  output.textContent += "PASS guildmate manual guard and random ghost path preserve forced-PvP UI\n";
+  document.getElementById("result").dataset.result = "pass";
+  document.getElementById("result").textContent = "PASS";
+})().catch((error) => {
+  document.getElementById("result").dataset.result = "fail";
+  document.getElementById("result").textContent = "FAIL";
+  document.getElementById("log").textContent += error.stack;
+});
+</script>
+</html>

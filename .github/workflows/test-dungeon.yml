@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - "dungeon-model.js"
+      - "player-progress-model.js"
       - "rune-model.js"
       - "attribute-model.js"
       - "soul-crafting-model.js"

@@ -30,6 +30,9 @@
         <aside class="side-panel character-panel">
           <div class="panel-heading">
             <span>ПУТНИК</span>
+            <button class="settings-open-button" id="player-progress-open-button" type="button" aria-haspopup="dialog" aria-controls="player-progress-dialog">
+              Достижения
+            </button>
             <button class="settings-open-button" id="settings-open-button" type="button" aria-haspopup="dialog" aria-controls="settings-dialog">
               Настройки
             </button>
@@ -465,6 +468,22 @@
       </fieldset>
       <p class="settings-status" id="settings-status" role="status" aria-live="polite"></p>
     </dialog>
+    <dialog class="game-dialog player-progress-dialog" id="player-progress-dialog" aria-labelledby="player-progress-title">
+      <form method="dialog" class="dialog-close-form">
+        <button class="dialog-close" aria-label="Закрыть достижения и статистику">×</button>
+      </form>
+      <span class="eyebrow">ПУТНИК · ЭТОТ БРАУЗЕР</span>
+      <h2 id="player-progress-title">Достижения и статистика</h2>
+      <p class="dialog-intro">Счётчики учитывают события с момента появления этой функции. Данные хранятся только на этом устройстве и не входят в облачное сохранение.</p>
+      <section class="player-progress-stats" aria-label="Личная статистика">
+        <div><strong id="player-progress-descents">0</strong><span>начатых спусков</span></div>
+        <div><strong id="player-progress-guardians">0</strong><span>побеждённых стражей</span></div>
+        <div><strong id="player-progress-floor">—</strong><span>самый глубокий этаж</span></div>
+      </section>
+      <h3 class="player-progress-heading">Достижения</h3>
+      <ul class="player-progress-achievements" id="player-progress-achievements" aria-label="Список достижений"></ul>
+      <p class="settings-status" id="player-progress-status" role="status" aria-live="polite"></p>
+    </dialog>
     <dialog class="game-dialog subclass-dialog" id="subclass-dialog" aria-labelledby="subclass-dialog-title">
       <span class="eyebrow" id="subclass-level">УРОВЕНЬ 3</span>
       <h2 id="subclass-dialog-title">Новый класс</h2>
@@ -639,6 +658,7 @@
     <script src="soul-crafting-model.js"></script>
     <script src="rune-model.js"></script>
     <script src="attribute-model.js"></script>
+    <script src="player-progress-model.js"></script>
     <script src="dungeon-model.js"></script>
     <script src="pvp-client.js"></script>
     <script src="guild-client.js"></script>

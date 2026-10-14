@@ -48,12 +48,36 @@
       assert(food.buyMeal(reloaded, "lunch", level, fed.foodAvailableAt).gold === 0, "exact boundary opens");
       rejects(() => food.buyMeal(reloaded, "lunch", level, fed.foodAvailableAt, `lunch-${level}`), "duplicate receipt cannot debit");
     }
-    for (const id of ["meat", "snack", "drink"]) {
-      const state = { ...food.createState(1000), gold: 100 };
+    for (const [id, stat] of [["meat", "endurance"], ["snack", "agility"], ["drink", "strength"]]) {
+      const level = 7;
+      const state = { ...food.createState(1000), gold: level * 12 };
       assert(food.MEALS[id].pricePerLevel === 12, "stat meal intended price");
-      rejects(() => food.buyMeal(state, id, 1, 1000), "stat system missing; no proxy");
-      assert(state.gold === 100 && state.foodAvailableAt === 0, "blocked meal cannot debit or start cooldown");
+      const bought = food.buyMeal(state, id, level, 1000, `buff-${id}`);
+      const buff = bought.attributeFoodBuffs[stat];
+      assert(bought.gold === 0 && bought.satiety === 100 &&
+        bought.foodAvailableAt === 1000 + 4 * hour, "stat food charges and cooldown are atomic");
+      assert(buff.receiptId === `buff-${id}` && buff.expiresAt === 1000 + hour,
+        "stat food records exact one-hour expiry");
+      assert(food.isValidState(bought) && food.isValidState(clone(bought)), "buff save validates after reload");
+      const invalid = clone(bought);
+      invalid.attributeFoodBuffs[stat].expiresAt += 1;
+      assert(!food.isValidState(invalid), "unreceipted expiry accepted");
     }
+    const first = food.buyMeal({ ...food.createState(1000), gold: 1000 }, "drink", 1, 1000, "same-stat-old");
+    const refreshed = food.buyMeal(first, "drink", 1, 1000 + 4 * hour, "same-stat-new");
+    assert(refreshed.attributeFoodBuffs.strength.receiptId === "same-stat-new" &&
+      refreshed.attributeFoodBuffs.strength.expiresAt === 1000 + 5 * hour,
+    "reusing a stat meal replaces its single receipt and expiry");
+    const base = { ...food.createState(1000), gold: 1000 };
+    const strength = food.buyMeal(base, "drink", 1, 1000, "concurrent-strength");
+    const endurance = food.buyMeal(base, "meat", 1, 1000, "concurrent-endurance");
+    const together = food.reconcileFood(strength, endurance);
+    const reversed = food.reconcileFood(endurance, strength);
+    assert(together.attributeFoodBuffs.strength?.receiptId === "concurrent-strength" &&
+      together.attributeFoodBuffs.endurance?.receiptId === "concurrent-endurance",
+      "different active stats coexist after offline merge");
+    assert(JSON.stringify(reversed.attributeFoodBuffs) === JSON.stringify(together.attributeFoodBuffs),
+      "buff merge is deterministic regardless of selected snapshot");
     for (const level of [0, -1, 1.5, 10001, NaN]) {
       rejects(() => food.buyMeal(food.createState(1000), "lunch", level, 1000), "bad level rejected");
     }
@@ -228,8 +252,8 @@
     doc.querySelector('[data-city-action="tavern"]').click();
     const lunch = doc.querySelector('[data-meal-id="lunch"]');
     assert(doc.querySelector("#tavern-menu").textContent.includes("4 × 7 = 28"), "exact price in UI");
-    assert(["meat", "snack", "drink"].every((id) => doc.querySelector(`[data-meal-id="${id}"]`).disabled),
-      "unsupported stat meals visible and disabled");
+    assert(["meat", "snack", "drink"].every((id) => !doc.querySelector(`[data-meal-id="${id}"]`).disabled),
+      "supported stat meals are available at their displayed prices");
     lunch.click();
     await waitFor(() => app.getCloudSaveSnapshot().meta.tavern.gold === 72, "lunch not committed");
     const paid = app.getCloudSaveSnapshot().meta.tavern;
@@ -251,8 +275,17 @@
     app.spawnSpecificEnemy("keeper");
     const beforeRecipe = app.getCloudSaveSnapshot().meta.tavern.recipes["fish-fillet"];
     doc.querySelector('#food-inventory [data-recipe-id="fish-fillet"]').click();
+    assert(doc.querySelector('#food-inventory [data-recipe-id="fish-fillet"]').disabled,
+      "recipe UI disabled during solo PvE");
+    await app.handleTavernAction("eat", { recipeId: "fish-fillet" });
+    assert(app.getCloudSaveSnapshot().meta.tavern.recipes["fish-fillet"] === beforeRecipe &&
+      doc.querySelector("#food-status").textContent.includes("боя"),
+      "solo PvE action cannot consume food");
+    app.eval("state.enemy = null;");
+    app.render();
+    doc.querySelector('#food-inventory [data-recipe-id="fish-fillet"]').click();
     await waitFor(() => app.getCloudSaveSnapshot().meta.tavern.recipes["fish-fillet"] === beforeRecipe - 1,
-      "recipe not available in dungeon/PvE");
+      "food did not become usable after combat");
     app.eval('state.liveDuelId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";');
     const beforeDuel = app.getCloudSaveSnapshot().meta.tavern.recipes["fish-fillet"];
     await app.handleTavernAction("eat", { recipeId: "fish-fillet" });
@@ -270,6 +303,12 @@
     const pendingId = app.eval("pendingTavernState.foodReceipts.at(-1).id");
     app.commitTavernToIndexedDb = commit;
     app.Storage.prototype.setItem = setItem;
+    app.spawnSpecificEnemy("keeper");
+    await app.handleTavernAction("retry");
+    assert(app.getCloudSaveSnapshot().meta.tavern.recipes["fish-fillet"] === beforeDuel &&
+      doc.querySelector("#food-status").textContent.includes("боя"),
+      "pending food retry cannot bypass solo PvE lock");
+    app.eval("state.enemy = null;");
     app.eval('state.liveDuelId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";');
     await app.handleTavernAction("retry");
     assert(app.getCloudSaveSnapshot().meta.tavern.recipes["fish-fillet"] === beforeDuel,
@@ -308,18 +347,104 @@
       persistMetaProgress();
     `);
     const withRune = app.getAttackPower();
-    assert(withRune === 6 && app.getDungeonFighter().attack === 6, "permanent rune applied once in fighter");
+    const attributeAttack = app.getAttributeEffects().attack;
+    assert(withRune === 6 + attributeAttack && app.getDungeonFighter().attack === withRune,
+      "permanent rune applied once alongside explicit attribute attack");
     await app.handleTavernAction("eat", { recipeId: "fish-fillet" });
     assert(app.getAttackPower() === withRune &&
       app.getCloudSaveSnapshot().meta.runeUses.length === 1, "food transaction preserves rune ledger without extra combat multiplier");
     const legacyExpires = Date.now() + hour;
     app.eval(`metaProgress.homestead.mealBuff = { stat: "attack", startedAt: Date.now(), expiresAt: ${legacyExpires} };`);
-    assert(app.getAttackPower() === 9 && app.getDungeonFighter().attack === 9,
+    assert(app.getAttackPower() === Math.floor(withRune * 1.5) &&
+      app.getDungeonFighter().attack === Math.floor(withRune * 1.5),
       "legacy temporary multiplier and permanent rune compose exactly once");
     app.eval(`metaProgress.homestead.mealBuff.expiresAt = Date.now() - 1;`);
-    assert(app.getAttackPower() === 6, "temporary expiry retains permanent rune");
+    assert(app.getAttackPower() === withRune, "temporary expiry retains permanent rune and attributes");
+    const foodCooldownAt = app.getCloudSaveSnapshot().meta.tavern.foodAvailableAt;
+    const purchaseNow = Math.max(Date.now(), foodCooldownAt + 1);
+    app.eval(`
+      Date.now = () => ${purchaseNow};
+      state.started = false;
+      state.gameOver = true;
+      metaProgress.tavern.gold = 1000;
+      metaProgress.tavern.updatedAt = Date.now();
+      metaProgress.tavern.revision += 1;
+      persistMetaProgress();
+    `);
+    await app.handleTavernAction("buy-meal", { mealId: "meat" });
+    const boughtMeta = app.getCloudSaveSnapshot().meta;
+    const enduranceBuff = boughtMeta.tavern.attributeFoodBuffs.endurance;
+    const enduranceReceipt = boughtMeta.tavern.foodReceipts.find((receipt) =>
+      receipt.id === enduranceBuff?.receiptId);
+    assert(enduranceBuff && enduranceBuff.expiresAt > Date.now() &&
+      enduranceReceipt?.goldDelta === -12 * enduranceReceipt.level &&
+      enduranceReceipt.attributeFoodBuff.stat === "endurance",
+      "browser purchase persists a matching price and expiry receipt");
+    loaded = load();
+    frame.src = "../index.html?food-test=buff-reload";
+    await loaded;
+    app = frame.contentWindow;
+    doc = app.document;
+    await waitFor(() => app.getCloudSaveSnapshot().meta.tavern.attributeFoodBuffs.endurance !== null,
+      "food effect not restored on reload");
+    const reloadedBuff = app.getCloudSaveSnapshot().meta.tavern.attributeFoodBuffs.endurance;
+    const effectiveAttributeHp = app.getAttributeEffects().maxHp;
+    const permanentAttributeHp = app.WellAttributeModel.effects(
+      app.getCloudSaveSnapshot().meta.attributes).maxHp;
+    const foodHpDelta = effectiveAttributeHp - permanentAttributeHp;
+    assert(reloadedBuff.expiresAt === enduranceBuff.expiresAt &&
+      effectiveAttributeHp > permanentAttributeHp,
+      "reload preserves absolute expiry and effective attribute output");
+    const purchaseAt = app.getCloudSaveSnapshot().meta.tavern.foodReceipts
+      .find((receipt) => receipt.id === reloadedBuff.receiptId).at;
+    app.startGameWithClass("knight");
+    assert(app.getCloudSaveSnapshot().run.state.attributeFoodHpBonus === foodHpDelta,
+      "endurance food adds its max-HP delta once at run start");
+    app.startGhostDuel();
+    const ghostSnapshot = clone(app.eval("state.ghostDuel.player"));
+    app.eval(`Date.now = () => ${purchaseAt + hour}; render();`);
+    assert(app.getCloudSaveSnapshot().run.state.attributeFoodHpBonus === foodHpDelta &&
+      app.eval("state.ghostDuel.player.maxHp") === ghostSnapshot.maxHp &&
+      app.eval("state.ghostDuel.player.attack") === ghostSnapshot.attack,
+      "expired food cannot change an existing PvP fighter snapshot or HP ceiling");
+    app.eval("state.ghostDuel = null; render();");
+    let expiredRun = app.getCloudSaveSnapshot().run.state;
+    assert(expiredRun.attributeFoodHpBonus === 0 &&
+      expiredRun.maxHp === ghostSnapshot.maxHp - foodHpDelta &&
+      expiredRun.hp <= expiredRun.maxHp && expiredRun.hp > 0,
+      "expiry removes only its HP delta without healing or killing");
+    app.eval(`
+      state.attributeFoodHpBonus = ${foodHpDelta};
+      state.maxHp += ${foodHpDelta};
+      state.liveDuelId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+      applyAttributeFoodHealth();
+    `);
+    assert(app.getCloudSaveSnapshot().run.state.attributeFoodHpBonus === foodHpDelta,
+      "online duel defers food HP expiry");
+    app.eval("state.liveDuelId = null; render();");
+    assert(app.getCloudSaveSnapshot().run.state.attributeFoodHpBonus === 0,
+      "online duel cleanup applies the pending expiry");
+    app.eval(`
+      Date.now = () => ${purchaseAt + hour - 1};
+      state.attributeFoodHpBonus = ${foodHpDelta};
+      state.maxHp += ${foodHpDelta};
+      window.WellPlayerGroups.getBattle = () => ({ status: "active" });
+      window.attributeFoodGroupSnapshot = getGroupBattlePlayer();
+    `);
+    const groupSnapshot = clone(app.eval("window.attributeFoodGroupSnapshot"));
+    app.eval(`Date.now = () => ${purchaseAt + hour}; render();`);
+    assert(app.getCloudSaveSnapshot().run.state.attributeFoodHpBonus === foodHpDelta &&
+      JSON.stringify(app.getGroupBattlePlayer()) === JSON.stringify(groupSnapshot),
+      "active group battle preserves its fighter snapshot through expiry");
+    app.eval(`
+      window.WellPlayerGroups.getBattle = () => null;
+      render();
+    `);
+    assert(app.getCloudSaveSnapshot().run.state.attributeFoodHpBonus === 0 &&
+      app.getCloudSaveSnapshot().run.state.maxHp === groupSnapshot.max_hp - foodHpDelta,
+      "group battle cleanup applies the pending expiry");
     frame.remove();
-    log.textContent += "PASS browser menu, purchase/reload, stable render, dungeon food, PvP gate, World Eater, cloud merge, legacy expiry, rune coexistence\n";
+    log.textContent += "PASS browser menu, purchase/reload, stable render, solo PvE lock, post-combat eating, PvP gate, World Eater, cloud merge, expiry HP delta, duel/group snapshot invariance, legacy expiry, rune coexistence\n";
   } catch (error) { failures.push(`browser integration: ${error.stack}`); }
   log.textContent += failures.join("\n");
   const result = document.getElementById("result");

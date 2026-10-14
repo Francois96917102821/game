@@ -8,11 +8,13 @@
   const HOUR = 60 * 60 * 1000;
   const SATIETY_PER_HOUR = 5;
   const FOOD_COOLDOWN = 4 * HOUR;
+  const ATTRIBUTE_FOOD_DURATION = HOUR;
+  const ATTRIBUTE_KEYS = Object.freeze(["strength", "agility", "endurance"]);
   const MEALS = Object.freeze({
     lunch: Object.freeze({ name: "Недорогой обед", pricePerLevel: 4, stat: null }),
-    meat: Object.freeze({ name: "Мясо", pricePerLevel: 12, stat: "выносливость" }),
-    snack: Object.freeze({ name: "Закуска", pricePerLevel: 12, stat: "ловкость" }),
-    drink: Object.freeze({ name: "Напиток", pricePerLevel: 12, stat: "сила" }),
+    meat: Object.freeze({ name: "Мясо", pricePerLevel: 12, stat: "endurance" }),
+    snack: Object.freeze({ name: "Закуска", pricePerLevel: 12, stat: "agility" }),
+    drink: Object.freeze({ name: "Напиток", pricePerLevel: 12, stat: "strength" }),
   });
   const RECIPE_LIST = [
     { id: "root-biscuit", name: "Корневое печенье", description: "+20 сытости", satiety: 20, ingredients: "Корни из нижних гротов и чистая вода." },
@@ -71,6 +73,7 @@
       characterLevel: 1,
       recipes: Object.fromEntries(RECIPE_LIST.map((recipe) => [recipe.id, 0])),
       foodReceipts: [],
+      attributeFoodBuffs: Object.fromEntries(ATTRIBUTE_KEYS.map((key) => [key, null])),
       foodAvailableAt: 0,
       activeJob: null,
       jobReceipts: [],
@@ -137,6 +140,8 @@
       (state.foodReceipts === undefined || Array.isArray(state.foodReceipts) &&
         state.foodReceipts.length <= 100000 && state.foodReceipts.every(validFoodReceipt) &&
         new Set(state.foodReceipts.map((receipt) => receipt.id)).size === state.foodReceipts.length) &&
+      (state.attributeFoodBuffs === undefined ||
+        isValidAttributeFoodBuffs(state.attributeFoodBuffs, state.foodReceipts || [])) &&
       (state.activeJob === null || (
         state.activeJob && typeof state.activeJob === "object" &&
         typeof state.activeJob.id === "string" && Object.hasOwn(JOBS, state.activeJob.kind) &&
@@ -169,6 +174,7 @@
     if (!value || typeof value !== "object") return createState(now);
     const state = { ...createState(now), ...copy(value) };
     state.recipes = { ...createState(now).recipes, ...(value.recipes || {}) };
+    state.attributeFoodBuffs = { ...createState(now).attributeFoodBuffs, ...(value.attributeFoodBuffs || {}) };
     state.bonuses = { ...createState(now).bonuses, ...(value.bonuses || {}) };
     if (value.satietyChangedAt === undefined) state.satietyChangedAt = value.satietyAt;
     if (!isValidState(state)) return createState(now);
@@ -176,13 +182,62 @@
   }
 
   function validFoodReceipt(receipt) {
+    const validMeal = receipt && (receipt.mealId === undefined && receipt.level === undefined ||
+      Object.hasOwn(MEALS, receipt.mealId) && Number.isInteger(receipt.level) &&
+      receipt.level >= 1 && receipt.level <= 10000 && receipt.recipeId === null &&
+      receipt.recipeDelta === 0 && receipt.injuryDelta === 0 &&
+      receipt.goldDelta === -MEALS[receipt.mealId].pricePerLevel * receipt.level);
+    const validAttributeBuff = receipt && (receipt.attributeFoodBuff === undefined
+      ? receipt.mealId === undefined || MEALS[receipt.mealId]?.stat === null
+      : receipt.attributeFoodBuff && typeof receipt.attributeFoodBuff === "object" &&
+        !Array.isArray(receipt.attributeFoodBuff) &&
+        Object.keys(receipt.attributeFoodBuff).length === 2 &&
+        Object.hasOwn(receipt.attributeFoodBuff, "stat") &&
+        Object.hasOwn(receipt.attributeFoodBuff, "expiresAt") &&
+        ATTRIBUTE_KEYS.includes(receipt.attributeFoodBuff.stat) &&
+        MEALS[receipt.mealId]?.stat === receipt.attributeFoodBuff.stat &&
+        receipt.attributeFoodBuff.expiresAt === receipt.at + ATTRIBUTE_FOOD_DURATION);
     return Boolean(receipt && typeof receipt.id === "string" && receipt.id.length > 0 &&
       receipt.id.length <= 160 && Number.isFinite(receipt.at) &&
       Number.isInteger(receipt.goldDelta) && Math.abs(receipt.goldDelta) <= MAX_GOLD &&
       (receipt.recipeId === null || Object.hasOwn(RECIPES, receipt.recipeId)) &&
       [-1, 0, 1].includes(receipt.recipeDelta) &&
       (receipt.recipeDelta === 0 || receipt.recipeId !== null) &&
-      Number.isInteger(receipt.injuryDelta) && Math.abs(receipt.injuryDelta) <= MAX_INJURIES);
+      Number.isInteger(receipt.injuryDelta) && Math.abs(receipt.injuryDelta) <= MAX_INJURIES &&
+      validMeal && validAttributeBuff);
+  }
+
+  function isValidAttributeFoodBuffs(buffs, receipts) {
+    if (!buffs || typeof buffs !== "object" || Array.isArray(buffs) ||
+      Object.keys(buffs).length !== ATTRIBUTE_KEYS.length ||
+      !ATTRIBUTE_KEYS.every((key) => Object.hasOwn(buffs, key))) return false;
+    return ATTRIBUTE_KEYS.every((key) => {
+      const buff = buffs[key];
+      if (buff === null) return true;
+      if (!buff || typeof buff !== "object" || Array.isArray(buff) ||
+        Object.keys(buff).length !== 2 || typeof buff.receiptId !== "string" ||
+        buff.receiptId.length < 1 || buff.receiptId.length > 160 ||
+        !Number.isFinite(buff.expiresAt) || buff.expiresAt < 0) return false;
+      const receipt = receipts.find((item) => item.id === buff.receiptId);
+      return Boolean(receipt && receipt.attributeFoodBuff?.stat === key &&
+        receipt.attributeFoodBuff.expiresAt === buff.expiresAt);
+    });
+  }
+
+  function newestAttributeFoodBuffs(receipts) {
+    const newest = Object.fromEntries(ATTRIBUTE_KEYS.map((key) => [key, null]));
+    const newestReceipt = Object.fromEntries(ATTRIBUTE_KEYS.map((key) => [key, null]));
+    for (const receipt of receipts) {
+      const effect = receipt.attributeFoodBuff;
+      if (!effect) continue;
+      const previous = newestReceipt[effect.stat];
+      if (!previous || receipt.at > previous.at ||
+        receipt.at === previous.at && receipt.id.localeCompare(previous.id) > 0) {
+        newestReceipt[effect.stat] = receipt;
+        newest[effect.stat] = { receiptId: receipt.id, expiresAt: effect.expiresAt };
+      }
+    }
+    return newest;
   }
 
   function recordFood(state, receipt) {
@@ -196,18 +251,23 @@
   function buyMeal(current, mealId, level, now = Date.now(), id = `food-${createId(now, Math.random)}`) {
     const meal = MEALS[mealId];
     if (!meal) throw new Error("Блюдо не найдено.");
-    if (meal.stat) throw new Error("Нет системы силы, ловкости, выносливости: усиленная еда пока недоступна.");
     if (!Number.isInteger(level) || level < 1 || level > 10000) throw new Error("Не удалось проверить уровень.");
     const state = updateSatiety(withDefaults(current, now), now);
     if (now < state.foodAvailableAt) throw new Error("Общий перерыв между блюдами таверны — 4 часа.");
     const cost = level * meal.pricePerLevel;
     if (state.gold < cost) throw new Error(`Нужно ${cost} золотых.`);
-    recordFood(state, { id, at: now, goldDelta: -cost, recipeId: null, recipeDelta: 0, injuryDelta: 0 });
+    const expiresAt = meal.stat ? now + ATTRIBUTE_FOOD_DURATION : null;
+    recordFood(state, {
+      id, at: now, goldDelta: -cost, recipeId: null, recipeDelta: 0, injuryDelta: 0,
+      mealId, level,
+      ...(meal.stat ? { attributeFoodBuff: { stat: meal.stat, expiresAt } } : {}),
+    });
     state.gold -= cost;
     state.satiety = 100;
     state.satietyAt = now;
     state.satietyChangedAt = now;
     state.foodAvailableAt = now + FOOD_COOLDOWN;
+    if (meal.stat) state.attributeFoodBuffs[meal.stat] = { receiptId: id, expiresAt };
     state.updatedAt = now;
     state.revision = current.revision + 1;
     return state;
@@ -234,6 +294,7 @@
     for (const [id, delta] of Object.entries(recipeDeltas)) {
       state.recipes[id] = Math.max(0, Math.min(MAX_RECIPES, state.recipes[id] + delta));
     }
+    state.attributeFoodBuffs = newestAttributeFoodBuffs(state.foodReceipts);
     state.foodAvailableAt = Math.max(state.foodAvailableAt, incoming.foodAvailableAt);
     if (incoming.satietyChangedAt > state.satietyChangedAt ||
       incoming.satietyChangedAt === state.satietyChangedAt && incoming.satietyAt > state.satietyAt) {
@@ -256,6 +317,7 @@
       next.updatedAt = now;
       next.revision += 1;
     }
+
     return next;
   }
 
@@ -532,6 +594,7 @@
     MAX_RECIPES,
     HOUR,
     FOOD_COOLDOWN,
+    ATTRIBUTE_FOOD_DURATION,
     MEALS,
     RECIPE_LIST,
     RECIPES,

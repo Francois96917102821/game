@@ -59,6 +59,12 @@
             <div><span class="stat-icon">⚗</span><span><strong id="potion-value">2</strong><small>ЗЕЛЬЯ</small></span></div>
           </div>
           <section class="equipment-panel" aria-labelledby="equipment-heading">
+            <details>
+              <summary id="attribute-values">Сила 10 · Ловкость 10 · Выносливость 10</summary>
+              <p id="attribute-effects" class="inventory-empty"></p>
+              <p id="attribute-food-status" class="inventory-empty"></p>
+              <p class="inventory-empty">Характеристики сохраняются между спусками. Ловкость не меняет уклонение или запас силы. Еда таверны временно повышает выбранный атрибут; рост от отдыха пока заблокирован.</p>
+            </details>
             <div class="equipment-heading" id="equipment-heading">ЭКИПИРОВКА</div>
             <div class="class-profile">
               <strong id="equipped-class">Класс не выбран</strong>
@@ -633,6 +639,7 @@
     <script src="homestead-model.js"></script>
     <script src="soul-crafting-model.js"></script>
     <script src="rune-model.js"></script>
+    <script src="attribute-model.js"></script>
     <script src="dungeon-model.js"></script>
     <script src="pvp-client.js"></script>
     <script src="guild-client.js"></script>

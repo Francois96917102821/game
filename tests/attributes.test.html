@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="ru">
+<meta charset="utf-8">
+<title>Character attribute tests</title>
+<script src="../attribute-model.js"></script>
+<h1 id="result">RUNNING</h1>
+<pre id="log"></pre>
+<script>
+"use strict";
+(async () => {
+  const output = document.getElementById("log");
+  const failures = [];
+  const model = window.WellAttributeModel;
+  function assert(condition, message) {
+    if (!condition) throw new Error(message);
+  }
+  function rejects(work, message) {
+    let rejected = false;
+    try { work(); } catch { rejected = true; }
+    assert(rejected, message);
+  }
+  function equal(left, right, message) {
+    assert(JSON.stringify(left) === JSON.stringify(right), message);
+  }
+  function check(name, work) {
+    try { work(); output.textContent += `PASS ${name}\n`; }
+    catch (error) { failures.push(`${name}: ${error.stack}`); }
+  }
+  check("base values, deterministic levels and bounded effects", () => {
+    equal(model.atLevel(1), { version: 1, level: 1, strength: 10, agility: 10, endurance: 10 }, "base values");
+    equal(model.effects(model.atLevel(1)),
+      { attack: 0, defense: 0, maxHp: 0, accuracy: 0, concentration: 0 }, "base changed combat");
+    assert(model.atLevel(2).strength === 11 && model.atLevel(21).strength === 30, "growth schedule");
+    equal(model.effects(model.atLevel(10000)),
+      { attack: 4, defense: 2, maxHp: 40, accuracy: 0.04, concentration: 0.1 }, "unbounded effects");
+    equal(model.effects(model.atLevel(21)), model.effects(model.atLevel(10000)), "cap not enforced");
+    assert(!model.isValid({ ...model.atLevel(1), strength: 100 }) &&
+      !model.isValid({ ...model.atLevel(1), level: 0 }) &&
+      !model.isValid({ ...model.atLevel(1), endurance: "10" }), "malformed attributes accepted");
+  });
+  check("food overlays use rounded effective attributes and expire at the exact timestamp", () => {
+    const buffs = { strength: null, agility: null, endurance: null };
+    const permanent = model.atLevel(21);
+    const base = model.effects(permanent);
+    buffs.strength = { receiptId: "food-strength", expiresAt: 2000 };
+    buffs.agility = { receiptId: "food-agility", expiresAt: 2000 };
+    buffs.endurance = { receiptId: "food-endurance", expiresAt: 2000 };
+    equal(model.effectiveEffects(permanent, buffs, 1999),
+      { attack: 5, defense: 2, maxHp: 52, accuracy: 0.052, concentration: 0.13 },
+      "capped food-derived effects");
+    equal(model.effectiveEffects(permanent, buffs, 2000), base, "effect remained at expiry");
+    assert(model.effects(permanent).attack === 4 && model.isValid(permanent),
+      "food overlay mutated or invalidated canonical attributes");
+    const middle = model.atLevel(16);
+    buffs.strength.expiresAt = 3000;
+    assert(model.effectiveEffects(middle, buffs, 2999).attack === 4 &&
+      model.effectiveEffects(middle, buffs, 3000).attack === 3,
+      "strength uses floor(permanent × 1.2) before existing derivation");
+    rejects(() => model.effectiveEffects(permanent, { strength: buffs.strength }, 0),
+      "incomplete overlay keys accepted");
+  });
+  check("level growth is exactly once and cloud merge is commutative/associative", () => {
+    const old = model.atLevel(1);
+    const grown = model.advance(old, 6);
+    equal(model.advance(grown, 6), grown, "repeated award");
+    equal(model.advance(grown, 2), grown, "new run reset");
+    equal(model.merge(grown, old), grown, "stale merge");
+    equal(model.merge(old, grown), grown, "merge order");
+    equal(model.merge(grown, grown), grown, "merge replay");
+    equal(model.merge(model.merge(old, grown), model.atLevel(11)),
+      model.merge(old, model.merge(grown, model.atLevel(11))), "merge grouping");
+  });
+
+  localStorage.clear();
+  const frame = document.createElement("iframe");
+  frame.src = "../index.html?attribute-tests=1";
+  document.body.append(frame);
+  await new Promise((resolve, reject) => {
+    frame.addEventListener("load", resolve, { once: true });
+    frame.addEventListener("error", reject, { once: true });
+  });
+  const app = frame.contentWindow;
+  const freshMeta = () => app.createMetaProgress();
+  function resetMeta() {
+    localStorage.removeItem("well-of-whispers-camp-progress");
+    app.eval("metaProgress=createMetaProgress();");
+  }
+  check("legacy level 1 and high-level meta migrate deterministically", () => {
+    for (const level of [1, 10000]) {
+      const old = freshMeta();
+      delete old.attributes;
+      old.tavern.characterLevel = level;
+      assert(app.isValidMetaProgress(old), "old meta rejected");
+      const migrated = app.normalizeMetaProgress(old);
+      equal(migrated.attributes, model.atLevel(level), "wrong seed");
+      equal(app.normalizeMetaProgress(migrated).attributes, migrated.attributes, "migration repeated");
+      assert(app.isValidMetaProgress(migrated), "migrated meta invalid");
+    }
+    assert(!app.isValidMetaProgress({ ...freshMeta(), attributes: { strength: 10 } }), "corruption ignored");
+  });
+  check("fresh classes retain baseline attack health dodge and focus", () => {
+    for (const classId of ["knight", "mystic", "shadow"]) {
+      resetMeta();
+      app.startGameWithClass(classId);
+      const fighter = app.getDungeonFighter();
+      assert(fighter.maxHp === app.eval("getCharacterClass().maxHp"), "fresh HP changed");
+      assert(fighter.attack === app.eval("state.attack+getClassStat('attack')"), "fresh attack changed");
+      assert(fighter.accuracy === 0.9 && fighter.concentration === 0.35, "fresh chances changed");
+      assert(fighter.evasion === app.getDodgeChance() && fighter.focus === 0, "dodge/focus changed");
+      assert(app.isValidRun(app.getCloudSaveSnapshot().run), "fresh run invalid");
+    }
+  });
+  check("XP awards attribute growth once, persists, and does not farm repeated runs", () => {
+    resetMeta();
+    app.startGameWithClass("knight");
+    const before = app.getCloudSaveSnapshot().run.state;
+    app.gainXp(20);
+    let snapshot = app.getCloudSaveSnapshot();
+    assert(snapshot.meta.attributes.level === 2 && snapshot.meta.attributes.endurance === 11, "XP missed growth");
+    assert(snapshot.run.state.maxHp === before.maxHp + 8 && snapshot.run.state.attributeHpBonus === 2,
+      "HP did not combine old +6 with attribute +2");
+    app.gainXp(0);
+    assert(app.getCloudSaveSnapshot().run.state.maxHp === before.maxHp + 8, "XP awarded twice");
+    app.render();
+    const stored = JSON.parse(localStorage.getItem("well-of-whispers-camp-progress"));
+    assert(stored.attributes.level === 2, "attribute not saved in localStorage");
+    app.startGameWithClass("knight");
+    assert(app.getCloudSaveSnapshot().run.state.attributeHpBonus === 2, "new run lost permanent HP");
+    app.gainXp(20);
+    assert(app.getCloudSaveSnapshot().meta.attributes.level === 2, "new run farmed growth");
+  });
+  check("old run migration uses selected run level, adds health once without healing", () => {
+    resetMeta();
+    app.startGameWithClass("knight");
+    const old = app.getCloudSaveSnapshot();
+    delete old.meta.attributes;
+    delete old.run.state.attributeHpBonus;
+    old.meta.tavern.characterLevel = 1;
+    old.run.state.level = 10000;
+    old.run.state.pendingClassLevels = [3];
+    old.run.state.hp = 10;
+    const maxHp = old.run.state.maxHp;
+    assert(app.isValidRun(old.run), "old run rejected");
+    app.restoreCloudSave(old);
+    assert(app.getCloudSaveSnapshot().meta.attributes.level === 10000, "run high-level seed lost");
+    app.resumeGame();
+    const migrated = app.getCloudSaveSnapshot();
+    assert(migrated.run.state.maxHp === maxHp + 40 && migrated.run.state.hp === 10, "migration healed or wrong HP");
+    assert(app.isValidRun(migrated.run), "migrated run rejected");
+    app.restoreCloudSave(migrated);
+    app.resumeGame();
+    assert(app.getCloudSaveSnapshot().run.state.maxHp === maxHp + 40, "reload doubled health");
+    app.gainXp(999999);
+    assert(app.isValidRun(app.getCloudSaveSnapshot().run), "max-level XP produced invalid save");
+  });
+  check("meta stale merge and cloud restore retain progress without additive growth", () => {
+    const left = { ...freshMeta(), attributes: model.atLevel(6) };
+    const right = { ...freshMeta(), attributes: model.atLevel(11) };
+    const merged = app.mergeMetaProgress(left, right);
+    equal(merged.attributes, model.atLevel(11), "merge added levels");
+    equal(app.mergeMetaProgress(merged, left).attributes, merged.attributes, "stale replay");
+    equal(app.mergeMetaProgress(merged, merged).attributes, merged.attributes, "idempotency");
+    assert(app.isValidMetaProgress(merged), "merged meta invalid");
+    app.restoreCloudSave({ version: 1, bestFloor: 0, run: null, meta: left });
+    assert(app.getCloudSaveSnapshot().meta.attributes.level === 10000, "restore erased permanent progress");
+  });
+  check("every attribute effect reaches PvE/PvP fighter and group snapshots", () => {
+    resetMeta();
+    app.startGameWithClass("knight");
+    const baseline = app.getDungeonFighter();
+    const group = app.getGroupBattlePlayer();
+    app.eval("metaProgress.attributes=WellAttributeModel.atLevel(21);applyAttributeHealth();");
+    const fighter = app.getDungeonFighter();
+    assert(fighter.attack === baseline.attack + 4 &&
+      Math.abs(fighter.armor - baseline.armor - 0.12) < 1e-10, "attack/armor effect");
+    assert(fighter.maxHp === baseline.maxHp + 40 && fighter.hp === baseline.hp, "HP effect or free heal");
+    assert(Math.abs(fighter.accuracy - baseline.accuracy - 0.04) < 1e-10 &&
+      Math.abs(fighter.concentration - baseline.concentration - 0.1) < 1e-10, "chance effect");
+    assert(fighter.evasion === baseline.evasion && fighter.agility === baseline.agility &&
+      fighter.focus === baseline.focus, "agility silently substituted dodge/focus");
+    assert(app.DungeonModel.isValidFighter(fighter), "fighter incompatible");
+    const buffedGroup = app.getGroupBattlePlayer();
+    assert(buffedGroup.attack === group.attack + 4 && buffedGroup.defense === group.defense + 2 &&
+      buffedGroup.max_hp === group.max_hp + 40 && buffedGroup.focus === group.focus, "group snapshot mapping");
+    const target = app.DungeonModel.createFighter({ hp: 100, maxHp: 100, concentration: 0.35 });
+    assert(app.DungeonModel.hitChance(fighter, target) > app.DungeonModel.hitChance(baseline, target) &&
+      app.DungeonModel.skillChance(fighter, target) > app.DungeonModel.skillChance(baseline, target), "chances ineffective");
+    const baseRound = app.DungeonModel.pvpTurn(baseline, target, "attack", () => 0.5);
+    const grownRound = app.DungeonModel.pvpTurn(fighter, target, "attack", () => 0.5);
+    assert(grownRound.target.hp < baseRound.target.hp, "strength did not damage target");
+    const baseMiss = app.DungeonModel.pvpTurn(baseline, target, "attack", () => 0.92);
+    const grownHitChance = app.DungeonModel.pvpTurn(fighter, target, "attack", () => 0.92);
+    assert(baseMiss.target.hp === target.hp && grownHitChance.target.hp < target.hp,
+      "agility accuracy did not change hit result");
+    const baseSkill = app.DungeonModel.pvpTurn(baseline, target, "shield", () => 0.27);
+    const grownSkill = app.DungeonModel.pvpTurn(fighter, target, "shield", () => 0.27);
+    assert(!baseSkill.actor.guarded && grownSkill.actor.guarded,
+      "agility concentration did not change skill result");
+    const enemy = app.DungeonModel.createFighter({ attack: 20, accuracy: 1 });
+    const baseHit = app.DungeonModel.pvpTurn(enemy, baseline, "attack", () => 0.5);
+    const grownHit = app.DungeonModel.pvpTurn(enemy, fighter, "attack", () => 0.5);
+    assert(fighter.hp - grownHit.target.hp < baseline.hp - baseHit.target.hp, "endurance armor ineffective");
+    app.startGhostDuel();
+    const duel = app.eval("state.ghostDuel");
+    assert(duel.player.attack === fighter.attack && duel.ghost.maxHp === fighter.maxHp, "PvP snapshot missing effects");
+    app.eval("state.ghostDuel=null;");
+  });
+  check("legacy meals and runes remain separate, expiry and global caps work", () => {
+    const attack = app.getAttackPower();
+    app.eval("metaProgress.homestead.mealBuff={stat:'attack',expiresAt:Date.now()+60000};");
+    assert(app.getAttackPower() === Math.floor(attack * 1.5), "legacy attack meal changed");
+    app.eval("metaProgress.homestead.mealBuff.expiresAt=0;");
+    assert(app.getAttackPower() === attack, "meal expiry changed");
+    const defense = app.getArmorDefense();
+    app.eval("metaProgress.homestead.mealBuff={stat:'defense',expiresAt:Date.now()+60000};");
+    assert(app.getArmorDefense() === Math.floor(defense * 1.5), "legacy defense changed");
+    app.eval("metaProgress.homestead.mealBuff=null;");
+    const attributes = app.getCloudSaveSnapshot().meta.attributes;
+    app.eval("metaProgress.runeUses=[{id:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',type:'attack',cost:500}];");
+    assert(app.getAttackPower() === attack + 1, "rune stat not additive");
+    equal(app.getCloudSaveSnapshot().meta.attributes, attributes, "rune mutated attributes");
+    app.eval("state.stance='defensive'; state.equipment.armor={bonus:10};");
+    assert(app.getDungeonFighter().armor === 0.75, "global armor cap lost");
+    app.render();
+    assert(frame.contentDocument.getElementById("attribute-values").textContent.includes("Сила 30"), "UI values missing");
+  });
+
+  const backup = app.WellTavernModel.createState();
+  backup.characterLevel = 51;
+  backup.updatedAt = Date.now() + 10000;
+  backup.revision = app.getCloudSaveSnapshot().meta.tavern.revision + 100;
+  app.eval("metaProgress.attributes=WellAttributeModel.atLevel(1);");
+  await app.persistTavernToIndexedDb(backup);
+  await app.initializeTavernPersistence();
+  check("legacy IndexedDB tavern recovery seeds bounded attributes without a second ledger", () => {
+    const attributes = app.getCloudSaveSnapshot().meta.attributes;
+    equal(attributes, model.atLevel(51), "backup level not used");
+    assert(!("attributes" in backup), "attributes duplicated in tavern backup");
+    assert(JSON.parse(localStorage.getItem("well-of-whispers-camp-progress")).attributes.level === 51,
+      "recovered attributes not persisted");
+  });
+
+  frame.remove();
+  output.textContent += failures.join("\n");
+  const result = document.getElementById("result");
+  result.textContent = failures.length ? "FAIL" : "PASS";
+  result.dataset.result = failures.length ? "fail" : "pass";
+})().catch((error) => {
+  document.getElementById("log").textContent += error.stack;
+  document.getElementById("result").dataset.result = "fail";
+});
+</script>
+</html>

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
-const availableTests = ["dungeon", "dungeon-integration", "gold-economy", "runes", "pvp-client",
+const availableTests = ["dungeon", "dungeon-integration", "gold-economy", "runes", "pvp-client", "player-groups",
   "tavern", "expeditions", "homestead", "soul-crafting", "food", "settings"];
 const tests = process.argv.length > 2 ? process.argv.slice(2) : availableTests;
 if (tests.some((test) => !availableTests.includes(test))) throw new Error("Unknown browser test.");

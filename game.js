@@ -3868,6 +3868,11 @@ function renderGearValue(element, gear, type) {
     element.replaceChildren(document.createTextNode("Нет"));
     return;
   }
+  if (gear.type === "ring") {
+    // Ring bonus multiplies rune rewards only; it never adds combat power.
+    element.replaceChildren(document.createTextNode(`${gear.name} · ×2 руны (в пределах лимита)`));
+    return;
+  }
   element.replaceChildren(
     createArtIcon(getGearArtId(gear), `${gear.name}, ${type}`, "gear-icon"),
     document.createTextNode(`${gear.name} · +${gear.bonus}`),
@@ -3900,8 +3905,16 @@ function renderProfileSummary() {
   $("profile-summary-empty").textContent = run
     ? ""
     : "Героя ещё нет: текущий и сохранённый забег отсутствуют. Выбранный класс относится к новому спуску.";
-  equipment.hidden = !run;
-  if (!run) return;
+  equipment.dataset.profileEquipmentSource = run ? (run === savedRun ? "saved-run" : "run") : "camp";
+  if (!run) {
+    // Without a hero only the persistent camp ring is real equipment.
+    const campRing = metaProgress.tavern.stash.find((item) =>
+      item.id === metaProgress.tavern.equippedRingId && item.type === "ring");
+    equipment.hidden = !campRing;
+    if (campRing) renderGearValue(addValue(equipment, "Кольцо (лагерь)", "", "ring"), campRing, "Кольцо");
+    return;
+  }
+  equipment.hidden = false;
   const status = run.gameOver ? "Спуск завершён"
     : run.liveDuelId ? "Онлайн-дуэль"
     : run.ghostDuel ? "Бой с призраком"
@@ -3920,9 +3933,12 @@ function renderProfileSummary() {
     addValue(values, "Урон · защита", "Доступны после продолжения старого сохранения", "combat");
   }
   addValue(values, "Запас силы", run.focus === undefined ? "—" : `${run.focus} / ${MAX_FOCUS}`, "focus");
-  for (const [slot, gear] of Object.entries(run.equipment || {})) {
-    const label = { weapon: "Оружие", armor: "Броня" }[slot] || slot;
-    renderGearValue(addValue(equipment, label, "", slot), gear, label);
+  const slotLabels = { weapon: "Оружие", armor: "Броня", ring: "Кольцо" };
+  // Runs freeze their ring view; legacy runs without the slot show an empty ring.
+  const runEquipment = { weapon: null, armor: null, ring: null, ...(run.equipment || {}) };
+  for (const [slot, gear] of Object.entries(runEquipment)) {
+    const label = slotLabels[slot] || slot;
+    renderGearValue(addValue(equipment, label, "", slot), gear ?? null, label);
   }
   addValue(values, "Рюкзак", `${run.inventory?.length || 0} / ${MAX_GEAR}`, "inventory");
 }

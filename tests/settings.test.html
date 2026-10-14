@@ -338,6 +338,46 @@
     assert(profileValue("run").textContent === "Текущий · Спуск завершён", "completed state is explicit");
     assert(profileValue("health").textContent.startsWith("0 / "), "defeated health is not replaced by starting HP");
   });
+  check("profile ring separates camp, live and saved run sources without a combat +8", () => {
+    const souls = app().WellSoulCraftingModel;
+    const stock = souls.createState();
+    stock.base.time = stock.balances.time = 7;
+    const crafted = souls.craft(stock, 150, "time-ring", "gear-1", "settings-ring-craft", 1);
+    assert(crafted.ok && crafted.gear.type === "ring" && crafted.gear.bonus === 8, "ring fixture failed");
+    const ring = crafted.gear;
+    const ringText = `${ring.name} · ×2 руны (в пределах лимита)`;
+    app().eval(`state=createState();savedRun=null;metaProgress.souls=${JSON.stringify(crafted.state)};` +
+      `metaProgress.tavern.characterLevel=150;metaProgress.tavern.stash=[${JSON.stringify(ring)}];` +
+      `metaProgress.tavern.nextGearSequence=1;metaProgress.tavern.equippedRingId=null;render();`);
+    const equipment = element("profile-summary-equipment");
+    assert(equipment.hidden && !profileValue("ring"), "no-run profile without a camp ring stays empty");
+    app().eval("metaProgress.tavern.equippedRingId='gear-1';render();");
+    assert(!equipment.hidden && equipment.dataset.profileEquipmentSource === "camp", "camp ring source is explicit");
+    assert(profileValue("ring").textContent === ringText, "no-run profile shows the equipped camp ring");
+    assert(equipment.textContent.includes("Кольцо (лагерь)"), "camp ring row is localized and labeled as camp");
+    assert(!profileValue("weapon") && !profileValue("armor"), "no-run profile does not invent weapon or armor");
+    assert(!profileValue("ring").textContent.includes("+8"), "camp ring is not presented as combat +8");
+    app().startGameWithClass("knight");
+    app().render();
+    assert(equipment.dataset.profileEquipmentSource === "run", "live run source is explicit");
+    assert(profileValue("ring").textContent === ringText, "live run shows its frozen ring");
+    assert(equipment.querySelector('[data-profile-value="ring"]').previousElementSibling.textContent === "Кольцо",
+      "run ring label is localized");
+    assert(!equipment.textContent.includes("+8") && !/\bring\b/.test(equipment.textContent),
+      "ring row has no raw slot key or combat +8");
+    app().eval("metaProgress.tavern.equippedRingId=null;render();");
+    assert(profileValue("ring").textContent === ringText, "camp change does not rewrite the live run ring");
+    app().eval("savedRun=JSON.parse(JSON.stringify(state));state=createState();render();");
+    assert(equipment.dataset.profileEquipmentSource === "saved-run", "saved run source is explicit");
+    assert(profileValue("ring").textContent === ringText, "saved run keeps its frozen ring, not the camp slot");
+    app().eval("delete savedRun.equipment.ring;render();");
+    assert(profileValue("ring").textContent === "Нет", "legacy saved run without a ring slot is null-safe");
+    app().eval("savedRun.equipment.ring=null;render();");
+    assert(profileValue("ring").textContent === "Нет", "null run ring stays empty");
+    app().eval("savedRun=null;render();");
+    assert(equipment.hidden && equipment.dataset.profileEquipmentSource === "camp",
+      "no-run profile with an unequipped camp ring returns to the empty state");
+  });
 
   document.getElementById("result").dataset.result = failures.length ? "fail" : "pass";
   document.getElementById("result").textContent = failures.length ? "FAIL" : "PASS";

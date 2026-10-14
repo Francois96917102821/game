@@ -31,7 +31,7 @@ jobs:
       - name: Prepare static game files
         run: |
           mkdir -p dist
-          cp index.html styles.css game.js game-art.svg cloud-save.js player-groups.js cloud-config.js tavern-model.js gold-economy-model.js expeditions-model.js homestead-model.js soul-crafting-model.js rune-model.js dungeon-model.js pvp-client.js class-model.js dist/
+          cp index.html styles.css game.js game-art.svg cloud-save.js player-groups.js cloud-config.js tavern-model.js gold-economy-model.js expeditions-model.js homestead-model.js soul-crafting-model.js rune-model.js dungeon-model.js pvp-client.js class-model.js city-model.js dist/
       - name: Configure optional Supabase client
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -67,6 +67,7 @@ jobs:
           sed -i "s|const GAME_ART_URL = \"game-art.svg\";|const GAME_ART_URL = \"game-art.svg?v=${DEPLOY_SHA}\";|" dist/game.js
           sed -i "s|src=\"gold-economy-model.js\"|src=\"gold-economy-model.js?v=${DEPLOY_SHA}\"|" dist/index.html
           sed -i "s|src=\"class-model.js\"|src=\"class-model.js?v=${DEPLOY_SHA}\"|" dist/index.html
+          sed -i "s|src=\"city-model.js\"|src=\"city-model.js?v=${DEPLOY_SHA}\"|" dist/index.html
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:

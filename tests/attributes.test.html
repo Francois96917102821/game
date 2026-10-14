@@ -14,6 +14,11 @@
   function assert(condition, message) {
     if (!condition) throw new Error(message);
   }
+  function rejects(work, message) {
+    let rejected = false;
+    try { work(); } catch { rejected = true; }
+    assert(rejected, message);
+  }
   function equal(left, right, message) {
     assert(JSON.stringify(left) === JSON.stringify(right), message);
   }
@@ -32,6 +37,27 @@
     assert(!model.isValid({ ...model.atLevel(1), strength: 100 }) &&
       !model.isValid({ ...model.atLevel(1), level: 0 }) &&
       !model.isValid({ ...model.atLevel(1), endurance: "10" }), "malformed attributes accepted");
+  });
+  check("food overlays use rounded effective attributes and expire at the exact timestamp", () => {
+    const buffs = { strength: null, agility: null, endurance: null };
+    const permanent = model.atLevel(21);
+    const base = model.effects(permanent);
+    buffs.strength = { receiptId: "food-strength", expiresAt: 2000 };
+    buffs.agility = { receiptId: "food-agility", expiresAt: 2000 };
+    buffs.endurance = { receiptId: "food-endurance", expiresAt: 2000 };
+    equal(model.effectiveEffects(permanent, buffs, 1999),
+      { attack: 5, defense: 2, maxHp: 52, accuracy: 0.052, concentration: 0.13 },
+      "capped food-derived effects");
+    equal(model.effectiveEffects(permanent, buffs, 2000), base, "effect remained at expiry");
+    assert(model.effects(permanent).attack === 4 && model.isValid(permanent),
+      "food overlay mutated or invalidated canonical attributes");
+    const middle = model.atLevel(16);
+    buffs.strength.expiresAt = 3000;
+    assert(model.effectiveEffects(middle, buffs, 2999).attack === 4 &&
+      model.effectiveEffects(middle, buffs, 3000).attack === 3,
+      "strength uses floor(permanent × 1.2) before existing derivation");
+    rejects(() => model.effectiveEffects(permanent, { strength: buffs.strength }, 0),
+      "incomplete overlay keys accepted");
   });
   check("level growth is exactly once and cloud merge is commutative/associative", () => {
     const old = model.atLevel(1);

@@ -4,6 +4,7 @@
   const BASE = 10;
   const CAP = 30;
   const MAX_LEVEL = 10000;
+  const FOOD_CAP = Math.floor(CAP * 1.2);
   const KEYS = Object.freeze(["strength", "agility", "endurance"]);
 
   function atLevel(level = 1) {
@@ -44,5 +45,36 @@
     };
   }
 
-  root.WellAttributeModel = Object.freeze({ BASE, CAP, MAX_LEVEL, KEYS, atLevel, isValid, advance, merge, effects });
+  function effectiveEffects(value, buffs, now = Date.now()) {
+    if (!isValid(value)) throw new Error("Invalid effective attribute effects.");
+    if (!buffs || typeof buffs !== "object" || Array.isArray(buffs) ||
+      Object.keys(buffs).length !== KEYS.length ||
+      !KEYS.every((key) => Object.hasOwn(buffs, key)) || !Number.isFinite(now)) {
+      throw new Error("Invalid attribute food effects.");
+    }
+    const effective = Object.fromEntries(KEYS.map((key) => {
+      const buff = buffs[key];
+      if (buff !== null && (!buff || typeof buff !== "object" ||
+        typeof buff.receiptId !== "string" || buff.receiptId.length < 1 || buff.receiptId.length > 160 ||
+        !Number.isFinite(buff.expiresAt) || buff.expiresAt < 0 ||
+        Object.keys(buff).length !== 2 || !Object.hasOwn(buff, "receiptId") ||
+        !Object.hasOwn(buff, "expiresAt"))) {
+        throw new Error("Invalid attribute food effect.");
+      }
+      return [key, buff && buff.expiresAt > now
+        ? Math.min(FOOD_CAP, Math.floor(value[key] * 1.2))
+        : value[key]];
+    }));
+    return {
+      attack: Math.min(5, Math.floor((effective.strength - BASE) / 5)),
+      defense: Math.min(2, Math.floor((effective.endurance - BASE) / 10)),
+      maxHp: Math.min(52, (effective.endurance - BASE) * 2),
+      accuracy: Math.min(0.052, (effective.agility - BASE) * 0.002),
+      concentration: Math.min(0.13, (effective.agility - BASE) * 0.005),
+    };
+  }
+
+  root.WellAttributeModel = Object.freeze({
+    BASE, CAP, MAX_LEVEL, KEYS, atLevel, isValid, advance, merge, effects, effectiveEffects,
+  });
 })(window);

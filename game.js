@@ -607,6 +607,9 @@ let savedRun = readSavedRun();
 let localMetaReadable = true;
 let localTavernPresent = false;
 let metaProgress = readMetaProgress();
+if (savedRun) {
+  metaProgress.attributes = window.WellAttributeModel.advance(metaProgress.attributes, savedRun.level);
+}
 let tavernDialogBusy = false;
 let tavernStorageReady = false;
 let tavernStorageError = "";
@@ -697,6 +700,7 @@ function createState() {
     coopBattleReceipts: [],
     xp: 0,
     level: 1,
+    attributeHpBonus: 0,
     classId: null,
     advancedClassId: null,
     masteryClassId: null,
@@ -757,6 +761,7 @@ function createMetaProgress(now = Date.now()) {
     dungeonVictories: [],
     runeDrops: [],
     runeUses: [],
+    attributes: window.WellAttributeModel.atLevel(1),
     souls: window.WellSoulCraftingModel.createState(),
     harbor: window.WellExpeditionsModel.createState(),
     homestead: window.WellHomesteadModel.createState(now),
@@ -814,6 +819,7 @@ function isValidMetaProgress(progress) {
     )) &&
     (progress.runeDrops === undefined || isValidRuneDropLedger(progress.runeDrops)) &&
     (progress.runeUses === undefined || window.WellRuneModel.isValidReceipts(progress.runeUses, window.WellRuneModel.isValidUse)) &&
+    (progress.attributes === undefined || window.WellAttributeModel.isValid(progress.attributes)) &&
     (progress.tavern === undefined || window.WellTavernModel.isValidState(progress.tavern)) &&
     (progress.harbor === undefined || window.WellExpeditionsModel.isValidState(progress.harbor)) &&
     (progress.homestead === undefined || window.WellHomesteadModel.isValidState(progress.homestead))
@@ -835,6 +841,9 @@ function normalizeMetaProgress(progress) {
   }));
   normalized.runeDrops = (progress?.runeDrops || []).map((receipt) => ({ ...receipt }));
   normalized.runeUses = (progress?.runeUses || []).map((receipt) => ({ ...receipt }));
+  normalized.attributes = progress?.attributes === undefined
+    ? window.WellAttributeModel.atLevel(normalized.tavern.characterLevel)
+    : { ...progress.attributes };
   return normalized;
 }
 
@@ -995,6 +1004,7 @@ function mergeMetaProgress(left, right) {
     dungeonVictories,
     runeDrops,
     runeUses: runeProgress.uses,
+    attributes: window.WellAttributeModel.merge(first.attributes, second.attributes),
     secretsFound: [...new Set([...first.secretsFound, ...second.secretsFound])],
     groupInboxReceipts: [...new Set([
       ...(first.groupInboxReceipts || []),
@@ -1033,6 +1043,7 @@ function persistMetaProgress() {
         dungeonVictories: dungeonMerged.dungeonVictories,
         runeDrops: dungeonMerged.runeDrops,
         runeUses: dungeonMerged.runeUses,
+        attributes: dungeonMerged.attributes,
         souls: dungeonMerged.souls,
       };
     }
@@ -1186,6 +1197,7 @@ async function initializeTavernPersistence() {
       (!localMetaReadable || !localTavernPresent || backup.updatedAt > metaProgress.tavern.updatedAt ||
         (backup.updatedAt === metaProgress.tavern.updatedAt && backup.revision > metaProgress.tavern.revision))) {
       metaProgress.tavern = backup;
+      metaProgress.attributes = window.WellAttributeModel.advance(metaProgress.attributes, backup.characterLevel);
       try {
         window.localStorage.setItem(META_SAVE_KEY, JSON.stringify(metaProgress));
         localMetaReadable = true;
@@ -1226,6 +1238,9 @@ function isValidRun(run) {
       new Set(saved.coopBattleReceipts).size !== saved.coopBattleReceipts.length
     )) ||
     !isIntegerBetween(saved.level, 1, 10000) ||
+    (saved.attributeHpBonus !== undefined && (
+      !isIntegerBetween(saved.attributeHpBonus, 0, 40) || saved.attributeHpBonus % 2 !== 0
+    )) ||
     !isIntegerBetween(saved.xp, 0, XP_PER_LEVEL * saved.level - 1) ||
     (saved.classId !== undefined && saved.classId !== null &&
       !(BASE_CLASSES.some((item) => item.id === saved.classId) || legacyClass)) ||
@@ -1517,6 +1532,9 @@ function getCloudSaveSnapshot() {
 function restoreCloudSave(snapshot) {
   bestFloor = Math.max(bestFloor, snapshot.bestFloor);
   metaProgress = mergeMetaProgress(metaProgress, snapshot.meta);
+  if (snapshot.run) {
+    metaProgress.attributes = window.WellAttributeModel.advance(metaProgress.attributes, snapshot.run.state.level);
+  }
   persistTavernToIndexedDb(metaProgress.tavern).catch((error) => {
     console.warn("Не удалось восстановить резерв таверны из облачной копии.", error);
   });
@@ -1783,6 +1801,8 @@ function startGameWithClass(classId) {
       metaProgress.tavern.bonuses.maxHp - metaProgress.tavern.injuries * 2,
   );
   state.hp = state.maxHp;
+  applyAttributeHealth();
+  state.hp = state.maxHp;
   state.attack = randomInt(5, 8) + characterClass.attack - 5 +
     getUpgradeLevel("power") + metaProgress.tavern.bonuses.attack;
   metaProgress.tavern.characterLevel = 1;
@@ -1956,6 +1976,9 @@ function resumeGame() {
   if (state.liveDuelId === undefined) state.liveDuelId = null;
   if (migratedClass && state.level >= CLASS_UNLOCK_LEVELS.advanced) state.pendingClassLevels = [CLASS_UNLOCK_LEVELS.advanced];
   selectedClassId = state.classId;
+  metaProgress.attributes = window.WellAttributeModel.advance(metaProgress.attributes, state.level);
+  if (!dungeonDuelLocked()) applyAttributeHealth();
+  persistMetaProgress();
   savedRun = null;
   render();
   playSound("start");
@@ -2247,7 +2270,7 @@ function resolveDungeonEvent(action) {
     const endurance = window.WellGoldEconomyModel.rubbleEndurance(state.maxHp);
     state.maxHp += endurance;
     const gear = claimEventGear("armor");
-    finishDungeonEvent("ПРОХОД РАСЧИЩЕН", `Завал поддался, но камни отняли ${damage} здоровья. За ними было ${gold} монет. Выносливость: +${endurance} к максимуму здоровья до конца спуска.${gear}`, "⚒", "Разобранный завал");
+    finishDungeonEvent("ПРОХОД РАСЧИЩЕН", `Завал поддался, но камни отняли ${damage} здоровья. За ними было ${gold} монет. +${endurance} к максимуму здоровья до конца спуска (не рост атрибута).${gear}`, "⚒", "Разобранный завал");
   } else if (action === "rubble-squeeze") {
     const gold = 3 + state.floor;
     addGold(gold);
@@ -2569,9 +2592,9 @@ function getDungeonFighter() {
     hp: state.hp, maxHp: state.maxHp, attack,
     armor: Math.min(0.75, getArmorDefense() * 0.06 + getRuneStat("resistance") * 0.01 +
       (state.stance === "defensive" ? 0.2 : 0)),
-    accuracy: Math.min(1, 0.9 + getRuneStat("accuracy") * 0.01),
+    accuracy: Math.min(1, 0.9 + getRuneStat("accuracy") * 0.01 + getAttributeEffects().accuracy),
     concentration: Math.min(1.5, (state.stance === "offensive" ? 0.5 : 0.35) +
-      getRuneStat("concentration") * 0.01),
+      getRuneStat("concentration") * 0.01 + getAttributeEffects().concentration),
     agility: Math.min(1, getDodgeChance() * 2), evasion: Math.min(0.5, getDodgeChance()),
     potions: state.potions, focus: state.focus, offhand: state.offhand,
     skillType: ability.type, skillDamage: ability.type === "guard" ? Math.ceil(state.maxHp * 0.25) : Math.ceil(attack * 0.8),
@@ -2901,18 +2924,23 @@ function defeatEnemy() {
 function gainXp(amount) {
   state.xp += amount;
   let leveledUp = false;
-  while (state.xp >= XP_PER_LEVEL * state.level) {
+  while (state.level < window.WellAttributeModel.MAX_LEVEL && state.xp >= XP_PER_LEVEL * state.level) {
     state.xp -= XP_PER_LEVEL * state.level;
     state.level += 1;
     leveledUp = true;
-    state.maxHp += 6;
+    state.maxHp = Math.min(1000000, state.maxHp + 6);
     state.hp = Math.min(state.maxHp, state.hp + 12);
-    state.attack += 1;
+    state.attack = Math.min(1000000, state.attack + 1);
+    metaProgress.attributes = window.WellAttributeModel.advance(metaProgress.attributes, state.level);
+    applyAttributeHealth();
     addJournal("Новый уровень", `Уровень ${state.level}: здоровье и сила выросли.`, "✦");
     if (state.level === CLASS_UNLOCK_LEVELS.advanced || state.level === CLASS_UNLOCK_LEVELS.mastery) {
       state.pendingClassLevels.push(state.level);
       addJournal("Новый путь открыт", `На уровне ${state.level} можно выбрать следующий класс.`, "✦");
     }
+  }
+  if (state.level === window.WellAttributeModel.MAX_LEVEL) {
+    state.xp = Math.min(state.xp, XP_PER_LEVEL * state.level - 1);
   }
   if (leveledUp) {
     metaProgress.tavern.characterLevel = state.level;
@@ -2930,13 +2958,13 @@ function recordTavernInjury() {
 
 function getAttackPower() {
   const base = state.attack + (state.equipment.weapon?.bonus || 0) +
-    getClassStat("attack") + getRuneStat("attack");
+    getClassStat("attack") + getRuneStat("attack") + getAttributeEffects().attack;
   return hasActiveMealBuff("attack") ? Math.floor(base * 1.5) : base;
 }
 
 function getArmorDefense() {
   const base = (state.equipment.armor?.bonus || 0) + getCharacterClass().defense +
-    getClassStat("defense") + getRuneStat("armor");
+    getClassStat("defense") + getRuneStat("armor") + getAttributeEffects().defense;
   return hasActiveMealBuff("defense") ? Math.floor(base * 1.5) : base;
 }
 
@@ -2948,6 +2976,19 @@ function getDodgeChance() {
 function hasActiveMealBuff(stat, now = Date.now()) {
   const buff = metaProgress.homestead.mealBuff;
   return Boolean(buff && buff.stat === stat && buff.expiresAt > now);
+}
+
+function getAttributeEffects() {
+  return window.WellAttributeModel.effects(metaProgress.attributes);
+}
+
+function applyAttributeHealth() {
+  const bonus = getAttributeEffects().maxHp;
+  const previous = state.attributeHpBonus || 0;
+  // The run stores only the already-applied delta, never a second attribute ledger.
+  state.maxHp = Math.min(1000000, Math.max(1, state.maxHp + bonus - previous));
+  state.hp = Math.min(state.hp, state.maxHp);
+  state.attributeHpBonus = bonus;
 }
 
 function getHeavyAttackMultiplier() {
@@ -3759,7 +3800,7 @@ function renderHomestead() {
         : [homesteadButton(`Купить подвал · ${model.BASEMENT_GOLD_COST.toLocaleString("ru-RU")} золота`,
           "buy-basement", {}, metaProgress.tavern.gold < model.BASEMENT_GOLD_COST)]));
     bedroom.append(homeCard("Святилище",
-      "Алтарь рыбалки влияет на настоящий улов. Рун, характеристик и боли в боевой системе пока нет: эти алтари честно отмечены недоступными.",
+      "Алтарь рыбалки влияет на настоящий улов. Эффекты алтарей рун, характеристик и боли пока не реализованы: эти алтари честно отмечены недоступными.",
       [homesteadButton("К святилищу", "sanctuary")]));
   }
   holdings.append(bedroom);
@@ -3791,7 +3832,7 @@ function renderHomestead() {
     const afterRest = meal.afterRest;
     const lockedByRest = afterRest && !model.canUseRestMeal(homestead, now);
     const effect = meal.stat
-      ? `Недоступно: нет системы роста силы, ловкости и выносливости. Требуемый эффект — +50% к шансу роста ${growthLabels[meal.stat]} на 2 часа, не прямой боевой бонус. Старые порции можно съесть только для сытости.`
+      ? `Недоступно: нет системы роста силы, ловкости и выносливости после отдыха. Рост за рекорд уровня детерминирован. Требуемый эффект — +50% к шансу роста ${growthLabels[meal.stat]} на 2 часа. Старые порции дают только сытость.`
       : "Восстанавливает сытость до 100 без боевого усиления.";
     kitchen.append(homeCard(`${meal.name} · запас ${homestead.meals[mealId]}`,
       `Цена: ${ingredients}. ${effect}${afterRest && homestead.lastCompletedSleepAt !== null && !lockedByRest
@@ -5182,7 +5223,7 @@ function renderTavern() {
       const text = document.createElement("span");
       const price = meal.pricePerLevel * getTavernLevel();
       text.textContent = `${meal.name} · ${meal.pricePerLevel} × ${getTavernLevel()} = ${price} зол. · сытость 100%. ${
-        meal.stat ? `+20% (${meal.stat}) на 1 час — недоступно: системы этой характеристики нет.` : ""}`;
+        meal.stat ? `+20% (${meal.stat}) на 1 час — недоступно: временные бонусы к атрибутам пока не реализованы.` : ""}`;
       const button = tavernActionButton("Заказать", "buy-meal", { mealId });
       button.disabled = button.disabled || Boolean(meal.stat) || tavern.gold < price ||
         Date.now() < tavern.foodAvailableAt;
@@ -5401,6 +5442,15 @@ async function handleTavernAction(action, data = {}) {
 }
 
 function render() {
+  if (state.started && !state.gameOver && !dungeonDuelLocked()) applyAttributeHealth();
+  const attributes = metaProgress.attributes;
+  const effects = getAttributeEffects();
+  $("attribute-values").textContent =
+    `Сила ${attributes.strength} · Ловкость ${attributes.agility} · Выносливость ${attributes.endurance}`;
+  $("attribute-effects").textContent =
+    `Бонусы: атака +${effects.attack}, защита +${effects.defense}, здоровье +${effects.maxHp}, ` +
+    `точность +${(effects.accuracy * 100).toFixed(1)} п.п., концентрация +${(effects.concentration * 100).toFixed(1)} п.п. ` +
+    `Рекорд уровня: ${attributes.level}. Постоянный рост +1 каждого атрибута за новый рекорд, до 30.`;
   renderFoodInventory();
   const theme = getFloorTheme();
   const characterClass = state.classId ? getSelectedClassNodes().slice(-1)[0] : null;

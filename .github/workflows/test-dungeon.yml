@@ -5,6 +5,7 @@ on:
     paths:
       - "dungeon-model.js"
       - "rune-model.js"
+      - "attribute-model.js"
       - "soul-crafting-model.js"
       - "gold-economy-model.js"
       - "tavern-model.js"

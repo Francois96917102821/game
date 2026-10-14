@@ -196,7 +196,7 @@
   function buyMeal(current, mealId, level, now = Date.now(), id = `food-${createId(now, Math.random)}`) {
     const meal = MEALS[mealId];
     if (!meal) throw new Error("Блюдо не найдено.");
-    if (meal.stat) throw new Error("Нет системы силы, ловкости, выносливости: усиленная еда пока недоступна.");
+    if (meal.stat) throw new Error("Нет системы временных бонусов к атрибутам: усиленная еда пока недоступна.");
     if (!Number.isInteger(level) || level < 1 || level > 10000) throw new Error("Не удалось проверить уровень.");
     const state = updateSatiety(withDefaults(current, now), now);
     if (now < state.foodAvailableAt) throw new Error("Общий перерыв между блюдами таверны — 4 часа.");

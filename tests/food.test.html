@@ -308,16 +308,19 @@
       persistMetaProgress();
     `);
     const withRune = app.getAttackPower();
-    assert(withRune === 6 && app.getDungeonFighter().attack === 6, "permanent rune applied once in fighter");
+    const attributeAttack = app.getAttributeEffects().attack;
+    assert(withRune === 6 + attributeAttack && app.getDungeonFighter().attack === withRune,
+      "permanent rune applied once alongside explicit attribute attack");
     await app.handleTavernAction("eat", { recipeId: "fish-fillet" });
     assert(app.getAttackPower() === withRune &&
       app.getCloudSaveSnapshot().meta.runeUses.length === 1, "food transaction preserves rune ledger without extra combat multiplier");
     const legacyExpires = Date.now() + hour;
     app.eval(`metaProgress.homestead.mealBuff = { stat: "attack", startedAt: Date.now(), expiresAt: ${legacyExpires} };`);
-    assert(app.getAttackPower() === 9 && app.getDungeonFighter().attack === 9,
+    assert(app.getAttackPower() === Math.floor(withRune * 1.5) &&
+      app.getDungeonFighter().attack === Math.floor(withRune * 1.5),
       "legacy temporary multiplier and permanent rune compose exactly once");
     app.eval(`metaProgress.homestead.mealBuff.expiresAt = Date.now() - 1;`);
-    assert(app.getAttackPower() === 6, "temporary expiry retains permanent rune");
+    assert(app.getAttackPower() === withRune, "temporary expiry retains permanent rune and attributes");
     frame.remove();
     log.textContent += "PASS browser menu, purchase/reload, stable render, dungeon food, PvP gate, World Eater, cloud merge, legacy expiry, rune coexistence\n";
   } catch (error) { failures.push(`browser integration: ${error.stack}`); }

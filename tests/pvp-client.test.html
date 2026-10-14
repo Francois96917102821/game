@@ -73,7 +73,10 @@
   const before = app.getCloudSaveSnapshot();
   await app.WellPvp.start(false);
   assert(requests.some((entry) => entry.rpc === "pvp_start" && entry.args.p_request_id &&
-    entry.args.p_player.hp > 0), "start snapshot/request missing");
+    entry.args.p_player.hp > 0 &&
+    entry.args.p_player.agility === app.getDungeonFighter().agility &&
+    !Object.hasOwn(app.getCloudSaveSnapshot().run.state, "agilityBonus")),
+  "start snapshot/request missing or introduced a temporary Agility stat");
   assert(app.getCloudSaveSnapshot().run.state.liveDuelId === id, "active duel not persisted");
   assert(doc.getElementById("explore-button").hidden, "dungeon not locked");
   log("real-duel RPC snapshot, request UUID and persisted dungeon lock");

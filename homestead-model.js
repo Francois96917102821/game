@@ -81,6 +81,8 @@
       plots: [],
       resources: Object.fromEntries(RESOURCE_KEYS.map((key) => [key, 0])),
       receipts: [],
+      fishProcessingReceipts: [],
+      fishProcessingConflicts: [],
       gatheredAt: null,
       atHome: false,
       sleep: null,
@@ -152,6 +154,8 @@
   }
 
   function isValidState(state) {
+    const fishProcessingIds = new Set(Array.isArray(state?.fishProcessingReceipts)
+      ? state.fishProcessingReceipts.map((receipt) => receipt?.id) : []);
     if (!state || typeof state !== "object" || state.version !== VERSION ||
       !Number.isInteger(state.revision) || state.revision < 0 || state.revision > 1000000000 ||
       !Number.isFinite(state.updatedAt) ||
@@ -169,6 +173,16 @@
       !Array.isArray(state.receipts) || state.receipts.length > 100000 ||
       !state.receipts.every(isValidReceipt) ||
       new Set(state.receipts.map((receipt) => receipt.id)).size !== state.receipts.length ||
+      (state.fishProcessingReceipts !== undefined && (
+        !window.WellHeartShardModel.isValidReceipts(state.fishProcessingReceipts, ["fish-processing"]) ||
+        new Set(state.fishProcessingReceipts.map((receipt) => receipt.id)).size !== state.fishProcessingReceipts.length
+      )) ||
+      (state.fishProcessingConflicts !== undefined && (
+        !Array.isArray(state.fishProcessingConflicts) || state.fishProcessingConflicts.length > 100000 ||
+        !state.fishProcessingConflicts.every((id) => typeof id === "string" && id.length > 0 && id.length <= 160) ||
+        new Set(state.fishProcessingConflicts).size !== state.fishProcessingConflicts.length ||
+        state.fishProcessingConflicts.some((id) => fishProcessingIds.has(id))
+      )) ||
       (state.gatheredAt !== null && !Number.isFinite(state.gatheredAt)) ||
       typeof state.atHome !== "boolean" ||
       (state.sleep !== null && !(state.sleep && typeof state.sleep === "object" &&
@@ -497,6 +511,35 @@
     return { ok: true, state: stamp(state, now), fish: fishCount, bait: baitReward, water: target.water };
   }
 
+  function processFish(current, receiptId, heartShards, now = Date.now()) {
+    if (!current.atHome) return fail(current, "Перерабатывать улов можно только дома.");
+    if (current.resources.fish < 1) return fail(current, "Для переработки нужна 1 рыба.");
+    const receipts = current.fishProcessingReceipts || [];
+    if (receipts.some((receipt) => receipt.id === receiptId) ||
+      (current.fishProcessingConflicts || []).includes(receiptId)) {
+      return fail(current, "Эта переработка уже учтена.");
+    }
+    const issued = window.WellHeartShardModel.issue(receipts, receiptId, "fish-processing", heartShards);
+    if (!issued.ok) {
+      const reason = issued.reason === "duplicate" ? "Эта переработка уже учтена."
+        : issued.reason === "ledger-full" ? "Журнал переработки заполнен; рыба не списана."
+          : issued.reason === "invalid" ? "Квитанция переработки недействительна; рыба не списана."
+            : "Достигнут предел сердечных осколков; рыба не списана.";
+      return fail(current, reason);
+    }
+    if (issued.shards < 1) return fail(current, "Достигнут предел сердечных осколков; рыба не списана.");
+    const state = copy(current);
+    state.resources.fish -= 1;
+    state.fishProcessingReceipts = issued.receipts;
+    return {
+      ok: true,
+      state: stamp(state, now),
+      fish: 1,
+      shards: issued.shards,
+      heartShards: issued.balance,
+    };
+  }
+
   function plant(current, plotIndex, now = Date.now()) {
     if (!current.atHome) return fail(current, "Сеять можно только дома.");
     const plot = current.plots[plotIndex];
@@ -810,6 +853,35 @@
     }
     for (const [id, delta] of Object.entries(mealDeltas)) result.meals[id] = Math.max(0, result.meals[id] + delta);
     result.kitchenConflicts = [...kitchenConflicts];
+    const fishProcessingConflicts = new Set([
+      ...(first.fishProcessingConflicts || []),
+      ...(second.fishProcessingConflicts || []),
+    ]);
+    result.fishProcessingReceipts = result.fishProcessingReceipts
+      .filter((receipt) => !fishProcessingConflicts.has(receipt.id));
+    const fishProcessingById = new Map(result.fishProcessingReceipts.map((receipt) => [receipt.id, receipt]));
+    for (const receipt of other.fishProcessingReceipts || []) {
+      if (fishProcessingConflicts.has(receipt.id)) continue;
+      if (fishProcessingById.has(receipt.id)) {
+        const existing = fishProcessingById.get(receipt.id);
+        if (existing.source !== receipt.source || existing.shards !== receipt.shards) {
+          throw new Error("Конфликт квитанций переработки рыбы; облачное изменение не применено.");
+        }
+        continue;
+      }
+      if (result.resources.fish < 1 ||
+        result.fishProcessingReceipts.length >= window.WellHeartShardModel.MAX_RECEIPTS) {
+        fishProcessingConflicts.add(receipt.id);
+        continue;
+      }
+      result.resources.fish -= 1;
+      result.fishProcessingReceipts.push(copy(receipt));
+      fishProcessingById.set(receipt.id, receipt);
+    }
+    result.fishProcessingConflicts = [...fishProcessingConflicts];
+    if (result.fishProcessingConflicts.length > window.WellHeartShardModel.MAX_RECEIPTS) {
+      throw new Error("Журнал конфликтов переработки заполнен; облачное изменение не применено.");
+    }
     const homes = new Map([...first.homes, ...second.homes].map((home) => [home.id, home]));
     result.homes = [...homes.values()].sort((left, right) =>
       HOME_TYPES[left.tier].tier - HOME_TYPES[right.tier].tier ||
@@ -876,6 +948,7 @@
     eatMeal,
     fail,
     fish,
+    processFish,
     gather,
     getBestHome,
     getPlotLimit,

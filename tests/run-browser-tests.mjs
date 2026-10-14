@@ -5,9 +5,10 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
 const availableTests = ["dungeon", "dungeon-integration", "gold-economy", "runes", "pvp-client",
-  "tavern", "expeditions", "homestead", "soul-crafting", "food", "settings"];
+  "tavern", "expeditions", "homestead", "soul-crafting", "food", "settings", "heart-shards"];
 const tests = process.argv.length > 2 ? process.argv.slice(2) : availableTests;
 if (tests.some((test) => !availableTests.includes(test))) throw new Error("Unknown browser test.");
+const baseUrl = process.env.BASE_URL || "http://127.0.0.1:8765";
 let failed = false;
 
 for (const test of tests) {
@@ -16,24 +17,31 @@ for (const test of tests) {
     "--headless", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage",
     "--disable-extensions", "--no-first-run", "--remote-debugging-port=0",
     `--user-data-dir=${profile}`, "about:blank",
-  ], { stdio: "ignore" });
+  ], { stdio: ["ignore", "ignore", "pipe"] });
+  let browserLog = "";
+  browser.stderr.on("data", (data) => {
+    browserLog = (browserLog + data.toString()).slice(-8000);
+  });
   let launchError;
   browser.on("error", (error) => { launchError = error; });
   let socket;
   try {
     let port;
-    for (let attempt = 0; attempt < 100; attempt += 1) {
+    for (let attempt = 0; attempt < 300; attempt += 1) {
       if (launchError) throw launchError;
+      if (browser.exitCode !== null || browser.signalCode !== null) {
+        throw new Error(`Chrome exited before startup (${browser.exitCode ?? browser.signalCode}).\n${browserLog}`);
+      }
       try {
         port = Number((await readFile(join(profile, "DevToolsActivePort"), "utf8")).split("\n")[0]);
         break;
       } catch (error) {
-        if (error.code !== "ENOENT") throw error;
+        if (error.code !== "ENOENT" && error.code !== "EBUSY") throw error;
         await delay(100);
       }
     }
-    if (!port) throw new Error("Chrome did not start its debugging endpoint.");
-    const url = `http://127.0.0.1:8765/tests/${test}.test.html`;
+    if (!port) throw new Error(`Chrome did not start its debugging endpoint within 30 seconds.\n${browserLog}`);
+    const url = `${baseUrl}/tests/${test}.test.html`;
     const response = await fetch(`http://127.0.0.1:${port}/json/new?${encodeURIComponent(url)}`, { method: "PUT" });
     if (!response.ok) throw new Error(`Chrome target creation failed: ${response.status}`);
     const target = await response.json();

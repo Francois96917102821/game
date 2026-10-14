@@ -216,6 +216,7 @@ const DUNGEON_EVENT_ACTIONS = new Map([
   ["rubble-squeeze", "Протиснуться сбоку"],
   ["dive-deep", "Нырнуть глубже"],
   ["dive-shallow", "Собрать у берега"],
+  ["flower-harvest", "Сорвать цветок глубин"],
   ["ore-careful", "Добыть жилу"],
   ["ore-force", "Ударить сильнее"],
   ["fish-net", "Закинуть сеть"],
@@ -266,9 +267,16 @@ const DUNGEON_EVENTS = [
     actions: ["rubble-clear", "rubble-squeeze"],
   },
   {
-    minFloor: 2, weight: 10, title: "ОСКОЛКИ ПОД ВОДОЙ", icon: "♆",
-    text: "В затопленной нише видны сияющие осколки. Глубокое погружение опасно, зато у кромки тоже что-то блестит.",
+    minFloor: 2, weight: 10, title: "ПОГРУЖЕНИЕ ЗА СЕРДЕЧНЫМИ ОСКОЛКАМИ", icon: "♆",
+    shardSource: "shard-dive",
+    text: "В затопленной нише пульсируют сердечные осколки. Глубокое погружение опасно; у кромки тоже что-то блестит. Постоянная награда ловкости пока недоступна: безопасная система роста характеристик не реализована.",
     actions: ["dive-deep", "dive-shallow"],
+  },
+  {
+    minFloor: 3, weight: 10, title: "ЦВЕТОК ГЛУБИН", icon: "❀",
+    shardSource: "deep-flower",
+    text: "В расщелине раскрывается цветок, питающийся подземным светом. Чтобы добраться до него, придётся пройти через острые корни.",
+    actions: ["flower-harvest"],
   },
   {
     minFloor: 3, weight: 10, title: "РУДНАЯ ЖИЛА", icon: "⚒",
@@ -576,6 +584,7 @@ const ui = {
   quests: $("quest-list"),
   journalStatus: $("journal-status"),
   metaEssence: $("meta-essence"),
+  metaHeartShards: $("meta-heart-shards"),
   metaUpgrades: $("meta-upgrades"),
   metaSecrets: $("meta-secrets"),
   harborDialog: $("harbor-dialog"),
@@ -733,6 +742,7 @@ function createState() {
       icon: "☼",
       tag: "ЭТАЖ 1",
       actions: [],
+      receiptId: null,
     },
     journal: [],
   };
@@ -747,6 +757,8 @@ function createMetaProgress(now = Date.now()) {
   if (now === 0) tavern.satietyAt = Date.now();
   return {
     essence: 0,
+    heartShards: 0,
+    heartShardReceipts: [],
     upgrades: { vitality: 0, power: 0, supplies: 0 },
     bossesDefeated: 0,
     secretsFound: [],
@@ -816,7 +828,24 @@ function isValidMetaProgress(progress) {
     (progress.runeUses === undefined || window.WellRuneModel.isValidReceipts(progress.runeUses, window.WellRuneModel.isValidUse)) &&
     (progress.tavern === undefined || window.WellTavernModel.isValidState(progress.tavern)) &&
     (progress.harbor === undefined || window.WellExpeditionsModel.isValidState(progress.harbor)) &&
-    (progress.homestead === undefined || window.WellHomesteadModel.isValidState(progress.homestead))
+    (progress.homestead === undefined || window.WellHomesteadModel.isValidState(progress.homestead)) &&
+    (progress.heartShardReceipts === undefined ||
+      window.WellHeartShardModel.isValidReceipts(
+        progress.heartShardReceipts,
+        window.WellHeartShardModel.EVENT_SOURCES,
+      )) &&
+    new Set([
+      ...(progress.heartShardReceipts || []),
+      ...(progress.homestead?.fishProcessingReceipts || []),
+    ].map((receipt) => receipt.id)).size ===
+      (progress.heartShardReceipts || []).length + (progress.homestead?.fishProcessingReceipts || []).length &&
+    (progress.heartShards === undefined || (
+      isIntegerBetween(progress.heartShards, 0, window.WellHeartShardModel.MAX_SHARDS) &&
+      progress.heartShards === window.WellHeartShardModel.balance(
+        progress.heartShardReceipts || [],
+        progress.homestead?.fishProcessingReceipts || [],
+      )
+    ))
   );
 }
 
@@ -827,6 +856,12 @@ function normalizeMetaProgress(progress) {
     : window.WellTavernModel.withDefaults(progress.tavern);
   normalized.harbor = window.WellExpeditionsModel.withDefaults(progress?.harbor);
   normalized.homestead = window.WellHomesteadModel.withDefaults(progress?.homestead);
+  normalized.heartShardReceipts = (progress?.heartShardReceipts || [])
+    .map((receipt) => ({ ...receipt }));
+  normalized.heartShards = window.WellHeartShardModel.balance(
+    normalized.heartShardReceipts,
+    normalized.homestead.fishProcessingReceipts,
+  );
   normalized.orderReputation = progress?.orderReputation ?? 0;
   normalized.souls = window.WellSoulCraftingModel.withDefaults(progress?.souls);
   normalized.dungeonTrophies = { ...(progress?.dungeonTrophies || {}) };
@@ -923,6 +958,10 @@ function mergeMetaProgress(left, right) {
     (useSecondTavern ? first : second).tavern);
   const harbor = window.WellExpeditionsModel.merge(first.harbor, second.harbor);
   const homestead = window.WellHomesteadModel.merge(first.homestead, second.homestead);
+  const heartShardReceipts = window.WellHeartShardModel.mergeReceipts(
+    first.heartShardReceipts,
+    second.heartShardReceipts,
+  );
   const mailGearByMailId = new Map();
   for (const source of [first, second]) {
     for (const receipt of source.homestead.mailReceipts) {
@@ -985,6 +1024,11 @@ function mergeMetaProgress(left, right) {
       essenceAfterHomePurchases(second, first, secondHomesteadReceipts) -
         missingDebits(secondTicketReceipts, first.harbor),
     ),
+    heartShards: window.WellHeartShardModel.balance(
+      heartShardReceipts,
+      homestead.fishProcessingReceipts,
+    ),
+    heartShardReceipts,
     upgrades: Object.fromEntries(Object.keys(META_UPGRADES).map((id) => [
       id,
       Math.max(first.upgrades[id], second.upgrades[id]),
@@ -1028,6 +1072,11 @@ function persistMetaProgress() {
           gold: Math.max(0, foodTavern.gold - missingDebits("gold")),
         },
         homestead: window.WellHomesteadModel.merge(metaProgress.homestead, local.homestead),
+        heartShardReceipts: dungeonMerged.heartShardReceipts,
+        heartShards: window.WellHeartShardModel.balance(
+          dungeonMerged.heartShardReceipts,
+          dungeonMerged.homestead.fishProcessingReceipts,
+        ),
         orderReputation: dungeonMerged.orderReputation,
         dungeonTrophies: dungeonMerged.dungeonTrophies,
         dungeonVictories: dungeonMerged.dungeonVictories,
@@ -1401,7 +1450,10 @@ function isValidRun(run) {
       Array.isArray(saved.event.actions) && saved.event.actions.length <= 3 &&
       saved.event.actions.every((action) => DUNGEON_EVENT_ACTIONS.has(action)) &&
       new Set(saved.event.actions).size === saved.event.actions.length
-    ));
+    )) &&
+    (saved.event.receiptId === undefined || saved.event.receiptId === null ||
+      typeof saved.event.receiptId === "string" &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(saved.event.receiptId));
 }
 
 function isValidGear(item, expectedType) {
@@ -1515,8 +1567,9 @@ function getCloudSaveSnapshot() {
 }
 
 function restoreCloudSave(snapshot) {
+  const mergedMeta = mergeMetaProgress(metaProgress, snapshot.meta);
   bestFloor = Math.max(bestFloor, snapshot.bestFloor);
-  metaProgress = mergeMetaProgress(metaProgress, snapshot.meta);
+  metaProgress = mergedMeta;
   persistTavernToIndexedDb(metaProgress.tavern).catch((error) => {
     console.warn("Не удалось восстановить резерв таверны из облачной копии.", error);
   });
@@ -1657,6 +1710,7 @@ function buyMetaUpgrade(id) {
 
 function renderMetaProgress() {
   ui.metaEssence.textContent = `${metaProgress.essence} ✦`;
+  ui.metaHeartShards.textContent = String(metaProgress.heartShards);
   ui.metaUpgrades.replaceChildren();
   const campAvailable = !state.started || state.gameOver;
   for (const [id, upgrade] of Object.entries(META_UPGRADES)) {
@@ -1736,8 +1790,10 @@ function advanceQuest(questId) {
   addJournal("Награда за задание", rewardMessage, definition.icon);
 }
 
-function setEvent(kicker, text, icon, tag, actions = []) {
-  state.event = { kicker, text: text.slice(0, 300), icon, tag: tag || `ЭТАЖ ${state.floor}`, actions };
+function setEvent(kicker, text, icon, tag, actions = [], receiptId = null) {
+  state.event = {
+    kicker, text: text.slice(0, 300), icon, tag: tag || `ЭТАЖ ${state.floor}`, actions, receiptId,
+  };
   ui.eventKicker.textContent = state.event.kicker;
   ui.eventText.textContent = state.event.text;
   ui.eventIcon.textContent = state.event.icon;
@@ -1922,6 +1978,7 @@ function resumeGame() {
   if (state.runBossesDefeated === undefined) state.runBossesDefeated = 0;
   if (state.runRewardClaimed === undefined) state.runRewardClaimed = false;
   if (state.secretFragments === undefined) state.secretFragments = [];
+  if (state.event.receiptId === undefined) state.event.receiptId = null;
   if (migratedClass) state.classId = "knight";
   if (legacyClass) {
     const hadLegacySubclass = Boolean(state.subclassId);
@@ -1989,7 +2046,9 @@ function explore() {
         break;
       }
     }
-    setEvent(dungeonEvent.title, dungeonEvent.text, dungeonEvent.icon, "ВЫБЕРИ ДЕЙСТВИЕ", dungeonEvent.actions);
+    const receiptId = dungeonEvent.shardSource ? heartShardReceiptId() : null;
+    setEvent(dungeonEvent.title, dungeonEvent.text, dungeonEvent.icon, "ВЫБЕРИ ДЕЙСТВИЕ",
+      dungeonEvent.actions, receiptId);
     if (dungeonEvent.actions.includes("monty-0")) state.monty = window.DungeonModel.createMonty();
     setCaption("Решение за тобой");
     addJournal(dungeonEvent.title, dungeonEvent.text, dungeonEvent.icon);
@@ -2060,6 +2119,43 @@ function explore() {
 
 function addEventEssence(amount) {
   addEssence(amount);
+}
+
+function awardHeartShards(source, receiptId) {
+  const previous = metaProgress;
+  const issued = window.WellHeartShardModel.issue(
+    previous.heartShardReceipts,
+    receiptId,
+    source,
+    previous.heartShards,
+  );
+  if (!issued.ok) return issued;
+  metaProgress = {
+    ...previous,
+    heartShardReceipts: issued.receipts,
+    heartShards: window.WellHeartShardModel.balance(
+      issued.receipts,
+      previous.homestead.fishProcessingReceipts,
+    ),
+  };
+  if (!persistMetaProgress()) {
+    metaProgress = previous;
+    return { ok: false, reason: "save" };
+  }
+  renderMetaProgress();
+  return issued;
+}
+
+function heartShardRewardText(result) {
+  if (!result.ok) {
+    if (result.reason === "duplicate") return "Квитанция уже использована: повторная награда не выдана.";
+    if (result.reason === "invalid") return "Квитанция события недействительна; осколки не выданы.";
+    if (result.reason === "ledger-full") return "Журнал наград заполнен; осколки не выданы.";
+    return "Не удалось сохранить награду; осколки не выданы.";
+  }
+  return result.shards
+    ? `Получено сердечных осколков: ${result.shards}.`
+    : "Достигнут предел сердечных осколков; новая награда не начислена.";
 }
 
 function addGold(amount) {
@@ -2257,7 +2353,16 @@ function resolveDungeonEvent(action) {
     const gold = 4 + state.floor;
     addGold(gold);
     addEventEssence(1);
-    finishDungeonEvent("ОСКОЛОК ИЗ ГЛУБИНЫ", `Ты нырнул за сияющим осколком, потерял ${damage} здоровья и нашёл ${gold} монет. Лагерь получил 1 осколок.`, "♆", "Погружение за осколком");
+    const reward = awardHeartShards("shard-dive", state.event.receiptId);
+    finishDungeonEvent("ОСКОЛОК ИЗ ГЛУБИНЫ",
+      `Ты нырнул за сердечными осколками, потерял ${damage} здоровья и нашёл ${gold} монет. Лагерь получил 1 обычный осколок. ${heartShardRewardText(reward)} Постоянная награда ловкости заблокирована до появления безопасной системы роста характеристик.`,
+      "♆", "Погружение за осколком");
+  } else if (action === "flower-harvest") {
+    const damage = damageFromEvent(2, 4);
+    const reward = awardHeartShards("deep-flower", state.event.receiptId);
+    finishDungeonEvent("ЦВЕТОК СОБРАН",
+      `Острые корни ранили тебя на ${damage} здоровья. ${heartShardRewardText(reward)}`,
+      "❀", "Цветок глубин");
   } else if (action === "dive-shallow") {
     const gold = 4 + state.floor;
     addGold(gold);
@@ -3554,6 +3659,18 @@ function homesteadReceiptId() {
     : `home-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
+function heartShardReceiptId() {
+  if (typeof window.crypto?.randomUUID === "function") return window.crypto.randomUUID();
+  if (typeof window.crypto?.getRandomValues !== "function") {
+    throw new Error("Браузер не может создать безопасную квитанцию награды.");
+  }
+  const bytes = window.crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 function homesteadButton(label, action, data = {}, disabled = false) {
   const button = document.createElement("button");
   button.type = "button";
@@ -3621,6 +3738,7 @@ function renderHomestead() {
   ui.homesteadWallet.replaceChildren();
   const walletData = [
     ["ОСКОЛКИ", `${metaProgress.essence} ✦`],
+    ["СЕРДЕЧНЫЕ ОСКОЛКИ", String(metaProgress.heartShards)],
     ["ЗОЛОТО ТАВЕРНЫ", `${metaProgress.tavern.gold} золота`],
     ["СКЛАД", `${model.resourceTotal(homestead)} / ${model.getStorageCapacity(homestead)}`],
   ];
@@ -3686,6 +3804,10 @@ function renderHomestead() {
   holdings.append(homeCard("Автоматический выбор дома",
     `Всегда активен самый высокий купленный уровень: ${homeType.name}. Смена дома не удаляет купленные участки.`,
     [enter]));
+  if (homestead.fishProcessingConflicts.length > 0) {
+    holdings.append(homeCard("Конфликт квитанций переработки",
+      `${homestead.fishProcessingConflicts.length} операций не удалось согласовать с облачной копией; их квитанции не начислены в объединённом состоянии.`));
+  }
   if (homestead.plots.length < model.getPlotLimit(homestead)) {
     holdings.append(homeCard(`Новый участок · 100 осколков`,
       `Куплено участков: ${homestead.plots.length} / ${model.getPlotLimit(homestead)}. Участок сохраняет номер и не пропадает при смене дома.`,
@@ -3709,6 +3831,10 @@ function renderHomestead() {
       Boolean(homestead.gatheredAt !== null && now - homestead.gatheredAt < model.DAY) ||
         model.resourceTotal(homestead) + 20 > model.getStorageCapacity(homestead),
     )]));
+  holdings.append(homeCard("Обработка улова",
+    "Сдай 1 рыбу из домашнего запаса и получи 1 сердечный осколок. Это отдельная расходуемая операция, а не награда за саму ловлю.",
+    [homesteadButton("Переработать 1 рыбу · +1 сердечный осколок", "process-fish", {},
+      homestead.resources.fish < 1 || metaProgress.heartShards >= window.WellHeartShardModel.MAX_SHARDS)]));
   const house = homeType;
   const bedroom = homeSection("Комнаты", `Уровень сна выбранного дома: ${house.sleepMs / 60000} минут. Спальня восстанавливает травмы только по завершении таймера, пока путник остаётся дома.`);
   bedroom.append(homeCard("Спальня",
@@ -4093,6 +4219,10 @@ function saveHomesteadResult(result, message, options = {}) {
   metaProgress = {
     ...previous,
     essence: result.essence === undefined ? previous.essence : result.essence,
+    heartShards: window.WellHeartShardModel.balance(
+      previous.heartShardReceipts,
+      result.state.fishProcessingReceipts,
+    ),
     tavern,
     homestead: result.state,
   };
@@ -4477,9 +4607,9 @@ function closeHomestead() {
 }
 
 async function handleHomesteadAction(action, data = {}) {
-  if (["cook-meal", "eat-meal"].includes(action) && !data.foodLockAcquired) {
+  if (["cook-meal", "eat-meal", "process-fish"].includes(action) && !data.foodLockAcquired) {
     if (!navigator.locks) {
-      homesteadMessage = "Браузер не поддерживает безопасную блокировку кухни. Еда не списана.";
+      homesteadMessage = "Браузер не поддерживает безопасную блокировку домашних ресурсов. Ничего не списано.";
       renderHomestead();
       return;
     }
@@ -4541,6 +4671,13 @@ async function handleHomesteadAction(action, data = {}) {
     } else if (action === "process") {
       result = model.processMaterials(current, Number(data.index), 1, now);
       message = result.ok ? `Переработано: ${result.output} ед. материала. Операции списаны из дневного лимита.` : "";
+    } else if (action === "process-fish") {
+      latestHomesteadBalances();
+      current = metaProgress.homestead;
+      result = model.processFish(current, heartShardReceiptId(), metaProgress.heartShards, now);
+      message = result.ok
+        ? `Переработана 1 рыба. Получен сердечный осколок; всего: ${result.heartShards}.`
+        : "";
     } else if (action === "draw-water") {
       result = model.drawWater(current, Number(data.index), now);
       message = result.ok ? `В пруду ${result.water} / 1 000 воды.` : "";

@@ -47,7 +47,8 @@
     "restored cooperative receipt must suppress a repeated achievement");
   output.textContent += "PASS cooperative receipts suppress reward and achievement replay, including cloud restore\n";
 
-  app.eval("state.enemy=null;state.liveDuelId=null;state.ghostDuel=null;state.waitingToDescend=false;");
+  app.eval("state.enemy=null;state.liveDuelId=null;state.ghostDuel=null;state.waitingToDescend=false;state.merchantAvailable=false;state.event.actions=[];");
+  assert(app.canRequestDungeonDuel(), "test fixture must allow a dungeon duel");
   const requests = [];
   app.WellPlayerGroups.getPvpContext = () => ({
     userId, active: true, members: [{ user_id: userId }, { user_id: partnerId }],

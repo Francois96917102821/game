@@ -17,6 +17,7 @@ on:
       - "guild-client.js"
       - "supabase/guild-schema.sql"
       - "supabase/tests/guilds.sql"
+      - "player-groups.js"
       - "index.html"
       - "styles.css"
       - ".github/workflows/deploy-pages.yml"

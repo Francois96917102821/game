@@ -352,6 +352,17 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--gold-light); ou
 .game-dialog h2 { margin: 7px 0 6px; font-size: 22px; }
 .dialog-intro { margin: 0 0 16px; color: #aeb2a5; font-size: 11px; line-height: 1.55; }
 .settings-dialog { width: min(480px, calc(100% - 28px)); }
+.player-progress-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 14px 0 20px; }
+.player-progress-stats > div { display: grid; align-content: start; gap: 5px; min-height: 68px; border: 1px solid #393d31; border-radius: 7px; padding: 10px; background: #171b15; }
+.player-progress-stats strong { color: var(--gold-light); font: 500 18px "DM Mono", monospace; }
+.player-progress-stats span { color: #aeb2a5; font-size: 9px; line-height: 1.4; }
+.player-progress-heading { margin: 0 0 8px; color: var(--gold-light); font-size: 13px; }
+.player-progress-achievements { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.player-progress-achievement { display: grid; gap: 4px; border: 1px solid #393d31; border-radius: 7px; padding: 10px; color: #92988a; }
+.player-progress-achievement.is-unlocked { border-color: #6b6846; color: #d4d6ca; background: #202219; }
+.player-progress-achievement strong { color: inherit; font-size: 11px; }
+.player-progress-achievement span { font-size: 10px; line-height: 1.45; }
+.player-progress-achievement small { color: var(--gold-light); font-size: 9px; }
 .profile-settings-form { display: grid; gap: 7px; margin: 16px 0; color: #c8cabb; font-size: 11px; }
 .profile-name-row { display: flex; gap: 8px; }
 .profile-name-row input { min-width: 0; min-height: 44px; flex: 1; border: 1px solid #51594a; border-radius: 6px; padding: 9px 11px; background: #11150f; color: var(--text); font: inherit; }
@@ -544,6 +555,10 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--gold-light); ou
 }
 @media (max-width: 700px) {
   .game-shell { padding: 0 12px; }
+  .player-progress-stats { gap: 5px; }
+  .player-progress-stats > div { padding: 8px 6px; }
+  .player-progress-stats strong { font-size: 16px; }
+  .player-progress-stats span { font-size: 8px; }
   .topbar { height: 65px; gap: 5px; }
   .top-note { font-size: 8px; letter-spacing: .06em; }
   .top-note { display: none; }

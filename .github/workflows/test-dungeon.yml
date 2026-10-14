@@ -4,6 +4,9 @@ on:
   pull_request:
     paths:
       - "dungeon-model.js"
+      - "player-progress-model.js"
+      - "tests/prepare-pages-artifact.py"
+      - "tests/pages-artifact.test.html"
       - "rune-model.js"
       - "soul-crafting-model.js"
       - "gold-economy-model.js"
@@ -12,6 +15,7 @@ on:
       - "pvp-client.js"
       - "index.html"
       - "styles.css"
+      - ".github/workflows/deploy-pages.yml"
       - "tests/*.html"
       - "tests/run-browser-tests.mjs"
       - ".github/workflows/test-dungeon.yml"
@@ -32,6 +36,10 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "22"
+      - name: Prepare static Pages artifact
+        env:
+          DEPLOY_SHA: ${{ github.sha }}
+        run: python3 tests/prepare-pages-artifact.py
       - name: Run dungeon browser tests
         run: |
           set -euo pipefail

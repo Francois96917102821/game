@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>GitHub Pages artifact browser regression</title>
+<h1 id="result">RUNNING</h1>
+<pre id="log"></pre>
+<script>
+"use strict";
+(async () => {
+  const log = document.getElementById("log");
+  const failures = [];
+  function assert(condition, message) {
+    if (!condition) throw new Error(message);
+  }
+  function check(name, work) {
+    try { work(); log.textContent += `PASS ${name}\n`; }
+    catch (error) { failures.push(`${name}: ${error.stack}`); }
+  }
+
+  const artifactUrl = new URL("../dist/index.html", location.href);
+  const response = await fetch(artifactUrl);
+  assert(response.ok, `Built Pages index returned ${response.status}.`);
+  const markup = await response.text();
+  const artifactDocument = new DOMParser().parseFromString(markup, "text/html");
+  const localScripts = [...artifactDocument.querySelectorAll("script[src]")]
+    .map((script) => new URL(script.getAttribute("src"), artifactUrl))
+    .filter((url) => url.origin === artifactUrl.origin);
+  const assets = await Promise.all(localScripts.map(async (url) => ({
+    name: url.pathname.split("/").pop(),
+    response: await fetch(url),
+    url,
+  })));
+  check("every local script referenced by the built artifact exists", () => {
+    assert(localScripts.length > 0, "artifact contains no local script references");
+    for (const asset of assets) {
+      assert(asset.response.ok, `${asset.name} returned ${asset.response.status}`);
+    }
+  });
+  check("achievement model is packaged and cache-busted in the artifact", () => {
+    const model = localScripts.find((url) => url.pathname.endsWith("/player-progress-model.js"));
+    assert(model, "artifact index does not reference the progress model");
+    assert(model.searchParams.has("v"), "progress model URL has no release cache-busting query");
+    assert(assets.find((asset) => asset.url.href === model.href)?.response.ok,
+      "cache-busted progress model cannot be fetched from the artifact");
+  });
+
+  const frame = document.createElement("iframe");
+  frame.title = "Built GitHub Pages game";
+  const loaded = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("Built game load timed out.")), 15000);
+    frame.addEventListener("load", () => {
+      clearTimeout(timer);
+      resolve();
+    }, { once: true });
+    frame.addEventListener("error", reject, { once: true });
+  });
+  frame.src = artifactUrl.href;
+  document.body.append(frame);
+  await loaded;
+  const readiness = frame.contentWindow.eval("gameServicesReady");
+  check("built artifact exposes its real service readiness promise", () => {
+    assert(readiness instanceof frame.contentWindow.Promise, "gameServicesReady is not a Promise");
+  });
+  await readiness;
+  check("built artifact initializes the game and opens achievements", () => {
+    assert(frame.contentWindow.eval("tavernStorageReady") === true, "game services did not finish initializing");
+    assert(frame.contentWindow.eval("tavernStorageError") === "", "game services reported a storage error");
+    assert(frame.contentWindow.WellPlayerProgressModel, "progress model did not load");
+    assert(frame.contentWindow.document.getElementById("player-progress-open-button"),
+      "built game's progress entry is missing");
+    frame.contentWindow.document.getElementById("player-progress-open-button").click();
+    assert(frame.contentWindow.document.getElementById("player-progress-dialog").open,
+      "built game's achievements dialog did not open");
+  });
+
+  document.getElementById("result").dataset.result = failures.length ? "fail" : "pass";
+  document.getElementById("result").textContent = failures.length ? "FAIL" : "PASS";
+  if (failures.length) log.textContent += failures.join("\n");
+})().catch((error) => {
+  document.getElementById("result").dataset.result = "fail";
+  document.getElementById("result").textContent = "FAIL";
+  document.getElementById("log").textContent += `${error.stack}\n`;
+});
+</script>

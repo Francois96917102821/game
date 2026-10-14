@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="ru">
+<meta charset="utf-8">
+<title>Player progress browser regression</title>
+<h1 id="result">RUNNING</h1>
+<pre id="log"></pre>
+<script>
+"use strict";
+(async () => {
+  const log = document.getElementById("log");
+  const failures = [];
+  function assert(condition, message) {
+    if (!condition) throw new Error(message);
+  }
+  function check(name, work) {
+    try { work(); log.textContent += `PASS ${name}\n`; }
+    catch (error) { failures.push(`${name}: ${error.stack}`); }
+  }
+  localStorage.setItem("well-of-whispers-best-floor", "3");
+  localStorage.setItem("well-of-whispers-player-progress", "{");
+
+  const frame = document.createElement("iframe");
+  frame.id = "game";
+  frame.title = "Game under test";
+  const loaded = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("Game page load timed out.")), 10000);
+    frame.addEventListener("load", () => {
+      clearTimeout(timer);
+      resolve();
+    }, { once: true });
+    frame.addEventListener("error", reject, { once: true });
+  });
+  frame.src = "../index.html";
+  document.body.append(frame);
+  await loaded;
+
+  function app() { return frame.contentWindow; }
+  function element(id) { return app().document.getElementById(id); }
+  check("legacy best-floor save survives malformed independent statistics", () => {
+    assert(element("best-floor").textContent === "ЭТАЖ 3", "legacy record is still loaded");
+    assert(element("player-progress-open-button").getAttribute("aria-controls") === "player-progress-dialog",
+      "progress entry is linked to its dialog");
+    assert(element("player-progress-status").textContent.includes("повреждена"),
+      "malformed local statistics are reported");
+    assert(app().localStorage.getItem("well-of-whispers-best-floor") === "3",
+      "reading corrupt statistics does not clear the older best-floor save");
+  });
+
+  const model = app().WellPlayerProgressModel;
+  check("missing and corrupt statistics fields normalize without fabricating counts", () => {
+    const normalized = model.normalizeStats({
+      version: 1, descentsStarted: 2, guardiansDefeated: "not-a-count", deepestFloor: -4,
+    });
+    assert(normalized.descentsStarted === 2, "valid stored count is retained");
+    assert(normalized.guardiansDefeated === 0, "corrupt count is reset");
+    assert(normalized.deepestFloor === 0, "invalid floor is reset");
+    assert(model.normalizeStats(undefined).deepestFloor === 0, "missing statistics default safely");
+  });
+  check("only supported events update statistics and achievement criteria", () => {
+    let stats = model.createStats();
+    stats = model.record(stats, "descent-started");
+    assert(stats.descentsStarted === 1 && stats.deepestFloor === 1, "starting a run records a first floor");
+    stats = model.record(stats, "floor-reached", 2);
+    stats = model.record(stats, "guardian-defeated");
+    stats = model.record(stats, "unknown-event", 999);
+    assert(stats.deepestFloor === 2 && stats.guardiansDefeated === 1,
+      "confirmed event counters advance and unsupported events do nothing");
+    assert(model.listAchievements(stats).every((achievement) => achievement.unlocked),
+      "all milestone achievements use their corresponding confirmed counters");
+    assert(model.record(stats, "floor-reached", -1).deepestFloor === 2, "invalid floor events are ignored");
+  });
+
+  check("achievement dialog shows actual counters and locked milestones", () => {
+    element("player-progress-open-button").click();
+    assert(element("player-progress-dialog").open, "dialog opens");
+    assert(element("player-progress-descents").textContent === "0", "corrupt totals are reset");
+    assert(element("player-progress-floor").textContent === "—", "unrecorded depth stays empty");
+    assert(element("player-progress-achievements").children.length === 3, "the complete achievement list is visible");
+    assert([...element("player-progress-achievements").children]
+      .every((achievement) => achievement.textContent.includes("Пока закрыто")), "unearned milestones remain locked");
+    assert(element("player-progress-dialog").textContent.includes("не входят в облачное сохранение"),
+      "local-only limitation is disclosed in the dialog");
+    element("player-progress-dialog").close();
+  });
+
+  element("start-button").click();
+  element("choose-class-button").click();
+  check("a new run records and persists only its confirmed start", () => {
+    const stats = JSON.parse(app().localStorage.getItem("well-of-whispers-player-progress"));
+    assert(stats.descentsStarted === 1 && stats.deepestFloor === 1, "run start updates local counts");
+    assert(stats.guardiansDefeated === 0, "run start does not invent a guardian victory");
+    assert(element("player-progress-achievements").children[0].textContent.includes("Открыто"),
+      "the first-descent achievement unlocks");
+    const run = JSON.parse(app().localStorage.getItem("well-of-whispers-active-run"));
+    assert(run?.state && run.state.playerProgress === undefined,
+      "existing active-run format remains independent of progress statistics");
+  });
+
+  app().eval("state.enemy={name:'Тестовый страж',xp:0,gold:0,boss:true,elite:false,special:null,skin:'guardian',maxHp:1,hp:0};state.hp=state.maxHp;defeatEnemy();");
+  check("confirmed guardian victory records once through the game event", () => {
+    const stats = JSON.parse(app().localStorage.getItem("well-of-whispers-player-progress"));
+    assert(stats.guardiansDefeated === 1, "guardian victory increments the local statistic");
+    assert(element("player-progress-achievements").children[1].textContent.includes("Открыто"),
+      "guardian milestone unlocks from the victory handler");
+  });
+  element("descend-button").click();
+  check("only the actual next-floor transition unlocks its milestone", () => {
+    const stats = JSON.parse(app().localStorage.getItem("well-of-whispers-player-progress"));
+    assert(stats.deepestFloor === 2, "successful descent records the newly reached floor");
+    assert(element("player-progress-achievements").children[2].textContent.includes("Открыто"),
+      "second-floor achievement unlocks after descending");
+    const cloud = app().getCloudSaveSnapshot();
+    assert(cloud.playerProgress === undefined && cloud.meta.playerProgress === undefined,
+      "local statistics are excluded from cloud snapshots");
+  });
+
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("Game reload timed out.")), 10000);
+    frame.addEventListener("load", () => {
+      clearTimeout(timer);
+      resolve();
+    }, { once: true });
+    app().location.reload();
+  });
+  check("statistics and legacy game progress survive reload independently", () => {
+    const stats = JSON.parse(app().localStorage.getItem("well-of-whispers-player-progress"));
+    assert(stats.descentsStarted === 1, "local statistics persist");
+    assert(element("best-floor").textContent === "ЭТАЖ 3", "legacy record is unchanged");
+    assert(element("resume-button").hidden === false, "saved run remains resumable");
+    assert(element("player-progress-open-button").getBoundingClientRect().height >= 44,
+      "progress entry remains touch-sized");
+  });
+  element("resume-button").click();
+  check("resuming a saved run does not count as another descent", () => {
+    const stats = JSON.parse(app().localStorage.getItem("well-of-whispers-player-progress"));
+    assert(stats.descentsStarted === 1, "resume does not duplicate a confirmed new-run event");
+  });
+
+  document.getElementById("result").dataset.result = failures.length ? "fail" : "pass";
+  document.getElementById("result").textContent = failures.length ? "FAIL" : "PASS";
+  if (failures.length) log.textContent += failures.join("\n");
+})().catch((error) => {
+  document.getElementById("result").dataset.result = "fail";
+  document.getElementById("result").textContent = "FAIL";
+  document.getElementById("log").textContent += `${error.stack}\n`;
+});
+</script>

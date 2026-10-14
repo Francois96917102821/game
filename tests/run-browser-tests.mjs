@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
 const availableTests = ["dungeon", "dungeon-integration", "gold-economy", "runes", "pvp-client",
-  "tavern", "expeditions", "homestead", "soul-crafting", "food", "settings"];
+  "tavern", "expeditions", "homestead", "soul-crafting", "food", "settings", "player-progress",
+  "pages-artifact"];
 const tests = process.argv.length > 2 ? process.argv.slice(2) : availableTests;
 if (tests.some((test) => !availableTests.includes(test))) throw new Error("Unknown browser test.");
 let failed = false;
@@ -22,13 +23,13 @@ for (const test of tests) {
   let socket;
   try {
     let port;
-    for (let attempt = 0; attempt < 100; attempt += 1) {
+    for (let attempt = 0; attempt < 300; attempt += 1) {
       if (launchError) throw launchError;
       try {
         port = Number((await readFile(join(profile, "DevToolsActivePort"), "utf8")).split("\n")[0]);
         break;
       } catch (error) {
-        if (error.code !== "ENOENT") throw error;
+        if (error.code !== "ENOENT" && error.code !== "EBUSY") throw error;
         await delay(100);
       }
     }

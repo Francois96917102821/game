@@ -332,7 +332,7 @@ begin
   if (v_result ->> 'round')::integer <> 2 or
     (v_result -> 'players' -> 0 ->> 'potions')::integer <> 1 or
     (select count(*) from jsonb_array_elements(v_result -> 'action_log') as log_item(value)
-      where value ->> 'type' = 'player' and value ->> 'action' = 'guard') <> 1 then
+      where value ->> 'type' = 'player' and value ->> 'action' = 'guard') <> 2 then
     raise exception 'A retry after the next round must return current state without replaying or rewinding the action';
   end if;
   v_result := public.leave_player_group_battle(v_battle_id);

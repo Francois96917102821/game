@@ -1,0 +1,379 @@
+<!doctype html>
+<html lang="ru">
+<meta charset="utf-8">
+<title>Регрессия слота колец</title>
+<h1 id="result">RUNNING</h1>
+<pre id="log"></pre>
+<script>
+"use strict";
+const failures = [];
+const output = document.getElementById("log");
+function assert(condition, message) {
+  if (!condition) throw new Error(message);
+}
+async function check(name, action) {
+  try {
+    await action();
+    output.textContent += `PASS ${name}\n`;
+  } catch (error) {
+    failures.push(name);
+    output.textContent += `FAIL ${name}: ${error.message}\n`;
+  }
+}
+const copy = (value) => JSON.parse(JSON.stringify(value));
+const id = (n) => `aaaaaaaa-aaaa-4aaa-8aaa-${String(n).padStart(12, "0")}`;
+
+(async () => {
+  localStorage.clear();
+  const frame = document.createElement("iframe");
+  frame.src = "../index.html?rings-regression=1";
+  const loaded = new Promise((resolve) => frame.addEventListener("load", resolve, { once: true }));
+  document.body.append(frame);
+  await loaded;
+  async function waitForGame() {
+    const deadline = Date.now() + 10000;
+    while (Date.now() < deadline) {
+      if (typeof frame.contentWindow.initializeTavernPersistence === "function" &&
+        frame.contentDocument.readyState === "complete") return;
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    }
+    throw new Error("game iframe did not finish loading");
+  }
+  await waitForGame();
+  let app = frame.contentWindow;
+  let doc = app.document;
+  await app.initializeTavernPersistence();
+  const souls = app.WellSoulCraftingModel;
+  const runes = app.WellRuneModel;
+  const metaKey = app.eval("META_SAVE_KEY");
+  const runKey = app.eval("RUN_SAVE_KEY");
+  function stock(amount = 14) {
+    const state = souls.createState();
+    state.base.time = state.balances.time = amount;
+    return state;
+  }
+  function install(meta) {
+    localStorage.removeItem(runKey);
+    app.eval(`state=createState();savedRun=null;metaProgress=${JSON.stringify(meta)};`);
+    localStorage.setItem(metaKey, JSON.stringify(meta));
+    app.render();
+  }
+  function craftedMeta(recipeId = "time-ring", gearId = "gear-1", receipt = "ring-craft", at = 1) {
+    const meta = app.createMetaProgress();
+    meta.souls = stock();
+    meta.tavern.characterLevel = 150;
+    const result = souls.craft(meta.souls, 150, recipeId, gearId, receipt, at);
+    assert(result.ok, "craft fixture failed");
+    meta.souls = result.state;
+    meta.tavern.stash = [result.gear];
+    meta.tavern.nextGearSequence = Number(gearId.slice(5));
+    meta.tavern.equippedRingId = gearId;
+    return meta;
+  }
+  await check("old save and cloud fields migrate empty without changing existing gear", () => {
+    const old = app.createMetaProgress();
+    delete old.tavern.equippedRingId;
+    assert(app.isValidMetaProgress(old), "legacy meta rejected");
+    const migrated = app.normalizeMetaProgress(old);
+    assert(migrated.tavern.equippedRingId === null && migrated.tavern.stash.length === 0,
+      "legacy migration minted a ring");
+    install(migrated);
+    app.startGameWithClass("knight");
+    const run = copy(app.getCloudSaveSnapshot().run);
+    delete run.state.equipment.ring;
+    assert(app.isValidRun(run), "legacy active run rejected");
+    app.restoreCloudSave({ version: 1, bestFloor: 0, meta: old, run });
+    app.resumeGame();
+    assert(app.getCloudSaveSnapshot().run.state.equipment.ring === null, "legacy run gained a bonus");
+    const invalid = copy(app.getCloudSaveSnapshot().run);
+    invalid.state.equipment.ring = { id: "gear-1", type: "weapon", name: "wrong", bonus: 8 };
+    invalid.state.gearSequence = 1;
+    assert(!app.isValidRun(invalid), "wrong slot type accepted");
+  });
+  await check("ring recipe UI consumes seven souls once and stores one +8 ring", async () => {
+    const meta = app.createMetaProgress();
+    meta.souls = stock(7);
+    meta.tavern.characterLevel = 150;
+    install(meta);
+    app.confirm = () => true;
+    doc.getElementById("profile-soul-crafting-button").click();
+    const button = doc.querySelector('[data-homestead-action="craft-soul"][data-recipe-id="time-ring"]');
+    assert(button && !button.disabled, "ring recipe missing");
+    await app.handleHomesteadAction("craft-soul", { recipeId: "time-ring" });
+    await app.handleHomesteadAction("craft-soul", { recipeId: "time-ring" });
+    const saved = JSON.parse(localStorage.getItem(metaKey));
+    assert(saved.souls.balances.time === 0 && saved.tavern.stash.length === 1 &&
+      saved.tavern.stash[0].type === "ring" && saved.tavern.stash[0].bonus === 8,
+      "duplicate output or incorrect soul debit");
+    const transaction = saved.souls.transactions.find((entry) => entry.kind === "craft");
+    const retry = souls.craft(saved.souls, 150, transaction.recipeId, transaction.gear.id,
+      transaction.id, transaction.createdAt);
+    assert(retry.ok && retry.duplicate && retry.state.balances.time === 0, "receipt retry charged again");
+    doc.getElementById("homestead-dialog").close();
+  });
+  await check("camp equip/unequip uses a single stash reference and persists reload", async () => {
+    const meta = craftedMeta();
+    meta.tavern.equippedRingId = null;
+    install(meta);
+    app.renderTavern();
+    let button = doc.querySelector('[data-tavern-action="equip-ring"]');
+    assert(button && button.textContent === "Надеть кольцо", "missing camp equip button");
+    await Promise.all([
+      app.handleTavernAction("equip-ring", { gearId: "gear-1", removeRing: "false" }),
+      app.handleTavernAction("equip-ring", { gearId: "gear-1", removeRing: "false" }),
+    ]);
+    let saved = JSON.parse(localStorage.getItem(metaKey));
+    assert(saved.tavern.equippedRingId === "gear-1" && saved.tavern.stash.length === 1,
+      "equip duplicated or moved the stash item");
+    assert(doc.getElementById("equipped-ring").textContent.includes("×2"), "profile slot missing");
+    await app.handleTavernAction("equip-ring", { gearId: "gear-1", removeRing: "true" });
+    saved = JSON.parse(localStorage.getItem(metaKey));
+    assert(saved.tavern.equippedRingId === null && saved.tavern.stash.length === 1, "unequip lost the item");
+    await app.handleTavernAction("equip-ring", { gearId: "gear-1", removeRing: "false" });
+    const snapshot = app.getCloudSaveSnapshot();
+    app.restoreCloudSave(snapshot);
+    assert(app.getCloudSaveSnapshot().meta.tavern.equippedRingId === "gear-1", "restore lost ring selection");
+    await app.persistTavernToIndexedDb(app.getCloudSaveSnapshot().meta.tavern);
+    const reload = new Promise((resolve) => frame.addEventListener("load", resolve, { once: true }));
+    frame.src = "../index.html?rings-regression=reload";
+    await reload;
+    await waitForGame();
+    app = frame.contentWindow;
+    doc = app.document;
+    await app.initializeTavernPersistence();
+    assert(app.getCloudSaveSnapshot().meta.tavern.equippedRingId === "gear-1" &&
+      doc.getElementById("equipped-ring").textContent.includes("×2"), "browser reload lost ring slot");
+    app.startGameWithClass("knight");
+    const run = app.getCloudSaveSnapshot().run;
+    assert(run.state.equipment.ring?.id === "gear-1" && run.state.inventory.length === 0 &&
+      app.isValidRun(run), "run ring view invalid or duplicated");
+    assert(app.getCloudSaveSnapshot().meta.tavern.stash.length === 1, "starting consumed persistent ring");
+    app.restoreCloudSave(app.getCloudSaveSnapshot());
+    app.resumeGame();
+    assert(app.getCloudSaveSnapshot().run.state.equipment.ring?.id === "gear-1", "run reload lost ring");
+  });
+  await check("ring cannot change in active/saved runs, PvP or shared combat", async () => {
+    const before = app.getCloudSaveSnapshot().meta.tavern.equippedRingId;
+    await app.handleTavernAction("equip-ring", { gearId: "gear-1", removeRing: "true" });
+    assert(app.getCloudSaveSnapshot().meta.tavern.equippedRingId === before, "active run allowed ring removal");
+    app.restoreCloudSave(app.getCloudSaveSnapshot());
+    assert(!app.canChangeRing(), "saved run allowed camp ring changes");
+    await app.handleTavernAction("equip-ring", { gearId: "gear-1", removeRing: "true" });
+    assert(app.getCloudSaveSnapshot().meta.tavern.equippedRingId === before, "saved run allowed removal");
+    install(craftedMeta());
+    app.eval(`state.liveDuelId=${JSON.stringify(id(1))};`);
+    assert(!app.canChangeRing(), "PvP ring change allowed");
+    app.eval("state.liveDuelId=null;");
+    const getBattle = app.WellPlayerGroups.getBattle;
+    app.WellPlayerGroups.getBattle = () => ({ status: "active" });
+    try {
+      await app.handleTavernAction("equip-ring", { gearId: "gear-1", removeRing: "true" });
+      assert(app.getCloudSaveSnapshot().meta.tavern.equippedRingId === before, "shared combat allowed removal");
+    } finally { app.WellPlayerGroups.getBattle = getBattle; }
+  });
+  await check("stale ring selection and failed storage writes cannot overwrite equipment", async () => {
+    install(craftedMeta());
+    const newer = copy(app.getCloudSaveSnapshot().meta);
+    newer.tavern.equippedRingId = null;
+    newer.tavern.revision += 1;
+    newer.tavern.updatedAt += 1000;
+    localStorage.setItem(metaKey, JSON.stringify(newer));
+    await app.handleTavernAction("equip-ring", { gearId: "gear-1", removeRing: "true" });
+    assert(JSON.parse(localStorage.getItem(metaKey)).tavern.equippedRingId === null,
+      "stale tab overwrote newer selection");
+    const durable = craftedMeta();
+    durable.tavern.revision = 10000;
+    install(durable);
+    await app.persistTavernToIndexedDb(durable.tavern);
+    const setItem = app.Storage.prototype.setItem;
+    app.Storage.prototype.setItem = function(key, value) {
+      if (key === metaKey) throw new Error("simulated disk failure");
+      return setItem.call(this, key, value);
+    };
+    try {
+      await app.handleTavernAction("equip-ring", { gearId: "gear-1", removeRing: "true" });
+      assert(app.getCloudSaveSnapshot().meta.tavern.equippedRingId === "gear-1", "failed write changed ring");
+      assert((await app.readTavernFromIndexedDb()).equippedRingId === "gear-1",
+        "failed slot change leaked into IndexedDB recovery");
+    } finally { app.Storage.prototype.setItem = setItem; }
+  });
+  await check("failed atomic craft cannot leak free ring output into IndexedDB recovery", async () => {
+    const meta = app.createMetaProgress();
+    meta.tavern.characterLevel = 150;
+    meta.tavern.revision = 10002;
+    meta.souls = stock(7);
+    install(meta);
+    await app.persistTavernToIndexedDb(meta.tavern);
+    const setItem = app.Storage.prototype.setItem;
+    app.Storage.prototype.setItem = function(key, value) {
+      if (key === metaKey) throw new Error("simulated disk failure");
+      return setItem.call(this, key, value);
+    };
+    try {
+      app.confirm = () => true;
+      await app.handleHomesteadAction("craft-soul", { recipeId: "time-ring" });
+      const saved = app.getCloudSaveSnapshot().meta;
+      assert(saved.souls.balances.time === 7 && saved.tavern.stash.length === 0,
+        "failed craft debited souls or produced gear");
+      assert((await app.readTavernFromIndexedDb()).stash.length === 0,
+        "failed craft leaked a ring without its debit into the stash-only backup");
+    } finally { app.Storage.prototype.setItem = setItem; }
+  });
+  await check("cloud merges keep one ring, latest selection, and exact crafting debit", () => {
+    const equipped = craftedMeta();
+    const stale = app.createMetaProgress();
+    stale.souls = stock();
+    stale.tavern.updatedAt = 0;
+    const merged = app.mergeMetaProgress(equipped, stale);
+    const twice = app.mergeMetaProgress(merged, equipped);
+    assert(twice.tavern.stash.length === 1 && twice.tavern.equippedRingId === "gear-1" &&
+      twice.souls.balances.time === 7 && app.isValidMetaProgress(twice), "merge minted ring/souls or lost slot");
+    const removed = copy(twice);
+    removed.tavern.equippedRingId = null;
+    removed.tavern.updatedAt += 1000;
+    removed.tavern.revision += 1;
+    for (const result of [app.mergeMetaProgress(removed, twice), app.mergeMetaProgress(twice, removed)]) {
+      assert(result.tavern.equippedRingId === null && result.tavern.stash.length === 1, "stale merge re-equipped ring");
+    }
+    const invalid = copy(equipped);
+    invalid.tavern.equippedRingId = "gear-999";
+    assert(!app.isValidMetaProgress(invalid), "dangling slot accepted");
+  });
+  await check("independent colliding crafts retain both rings; overspent craft keeps no free output", () => {
+    const left = craftedMeta("time-ring", "gear-1", "a", 1);
+    const right = craftedMeta("time-ring", "gear-1", "b", 2);
+    let merged = app.mergeMetaProgress(left, right);
+    assert(merged.souls.balances.time === 0 && merged.tavern.stash.length === 2 &&
+      new Set(merged.tavern.stash.map((gear) => gear.soulCraftId)).size === 2,
+      "independent paid crafts must retain both outputs even with the same local ID");
+    // Distinct ring recipes with colliding local gear sequences both survive affordable crafts.
+    right.souls = stock();
+    right.souls.base.fire = right.souls.balances.fire = 10;
+    const fire = souls.craft(right.souls, 150, "fire-ring", "gear-1", "fire", 2);
+    right.souls = fire.state;
+    right.tavern.stash = [fire.gear];
+    merged = app.mergeMetaProgress(left, right);
+    assert(merged.tavern.stash.length === 2 && new Set(merged.tavern.stash.map((gear) => gear.id)).size === 2,
+      "different affordable crafts lost a ring or duplicate ID");
+    const again = app.mergeMetaProgress(merged, right);
+    assert(again.tavern.stash.length === 2 && app.isValidMetaProgress(again), "repeated collision merge duplicated gear");
+    for (const ring of again.tavern.stash) {
+      const duplicate = copy(again);
+      duplicate.tavern.stash.push({ ...ring, id: "gear-999" });
+      duplicate.tavern.nextGearSequence = 999;
+      assert(!app.isValidMetaProgress(duplicate), "same craft receipt duplicated under a different gear ID");
+    }
+    const one = craftedMeta("time-ring", "gear-1", "first", 1);
+    one.souls.base.time = 7;
+    one.souls.balances.time = 0;
+    const two = craftedMeta("time-ring", "gear-2", "second", 2);
+    two.souls.base.time = 7;
+    two.souls.balances.time = 0;
+    two.tavern.updatedAt = one.tavern.updatedAt + 1000;
+    const overspent = app.mergeMetaProgress(one, two);
+    assert(overspent.souls.transactions.length === 1 && overspent.souls.balances.time === 0 &&
+      overspent.tavern.stash.length === 1 && overspent.tavern.stash[0].id === "gear-1" &&
+      overspent.tavern.equippedRingId === null && app.isValidMetaProgress(overspent),
+      "rejected concurrent debit kept a free ring");
+    const retry = app.mergeMetaProgress(overspent, two);
+    assert(retry.tavern.stash.length === 1 && retry.souls.balances.time === 0,
+      "repeated stale merge resurrected rejected output");
+  });
+  await check("equipped ring doubles one typed PvE drop, never stats or caps", () => {
+    install(craftedMeta());
+    app.startGameWithClass("knight");
+    app.eval("state.room=1;state.level=30;state.enemy=null;state.quests=[];state.event.actions=[];");
+    const attack = app.getAttackPower();
+    const defense = app.getArmorDefense();
+    const ring = app.getCloudSaveSnapshot().run.state.equipment.ring;
+    app.eval("state.equipment.ring=null;");
+    assert(app.getAttackPower() === attack && app.getArmorDefense() === defense, "+8 ring changed combat stats");
+    app.eval(`state.equipment.ring=${JSON.stringify(ring)};`);
+    app.spawnSpecificEnemy("keeper");
+    const random = app.Math.random;
+    app.Math.random = () => 0;
+    try { app.defeatEnemy(); } finally { app.Math.random = random; }
+    let drops = app.getCloudSaveSnapshot().meta.runeDrops;
+    assert(drops.length === 1 && drops[0].count === 2 && drops[0].type === "attack" &&
+      drops[0].level === 30, "PvE drop was not doubled in one receipt");
+    app.Math.random = () => 0;
+    try { assert(app.awardEnhancementRune(30, drops[0].id) === null, "same receipt rewarded twice"); }
+    finally { app.Math.random = random; }
+    assert(runes.counts(drops).attack === 2, "doubled drop exceeded cap");
+    app.eval(`metaProgress.runeDrops=[{id:${JSON.stringify(id(2))},type:"attack",count:1,level:30}];`);
+    app.Math.random = () => 0;
+    try { assert(app.awardEnhancementRune(30, id(3)).count === 1, "one remaining cap yielded two"); }
+    finally { app.Math.random = random; }
+    drops = app.getCloudSaveSnapshot().meta.runeDrops;
+    assert(runes.counts(drops).attack === 2, "remaining cap not respected");
+    const maxed = Object.entries(runes.RUNES).flatMap(([type, rune], index) =>
+      Array.from({ length: rune.cap(30) }, (_, n) => ({
+        id: id(20 + index * 10 + n), type, count: 1, level: 30,
+      })));
+    assert(runes.rollDrop(30, maxed, () => 0, true) === null, "maxed ring still dropped a rune");
+    assert(runes.rollDrop(29, [], () => 0, true) === null, "ring bypassed drop level");
+  });
+  await check("ring applies once to shared PvE victory and never to PvP victory", () => {
+    install(craftedMeta());
+    app.startGameWithClass("knight");
+    app.eval("state.room=1;state.level=30;state.enemy=null;state.quests=[];state.event.actions=[];");
+    const battle = {
+      id: id(80), status: "victory", players: [], floor: 1, round: 2, xp: 0, gold: 0,
+      boss: { name: "Страж", icon: "☠", skin: "guardian" },
+    };
+    const random = app.Math.random;
+    app.Math.random = () => 0;
+    try {
+      app.applyGroupBattleUpdate(battle, "test-player");
+      app.applyGroupBattleUpdate(battle, "test-player");
+    } finally { app.Math.random = random; }
+    const drops = app.getCloudSaveSnapshot().meta.runeDrops;
+    assert(drops.length === 1 && drops[0].id === battle.id && drops[0].count === 2,
+      "shared victory duplicated or failed to double drop");
+    app.startGhostDuel();
+    app.eval("state.ghostDuel.ghost.hp=1;state.ghostDuel.player.attack=1000;state.ghostDuel.player.accuracy=1;");
+    app.Math.random = () => 0;
+    try { app.ghostAction("attack"); } finally { app.Math.random = random; }
+    assert(app.getCloudSaveSnapshot().meta.runeDrops.length === 1, "ring awarded runes for PvP");
+  });
+  await check("rings cannot sell, send mail, duplicate inventory/equipment, or mutate mid-run", async () => {
+    const run = copy(app.getCloudSaveSnapshot().run);
+    run.state.inventory.push(copy(run.state.equipment.ring));
+    assert(!app.isValidRun(run), "inventory/equip duplicate accepted");
+    const ring = run.state.equipment.ring;
+    assert(app.getRunGearSalePrice(ring) === null && !app.isValidMailGear(ring), "ring became sale/mail gear");
+    let called = false;
+    const rpc = app.mailboxRpc;
+    app.mailboxRpc = async () => { called = true; throw new Error("must not reach server"); };
+    try {
+      let rejected = false;
+      try { await app.finishMailboxSend({ gear: ring, kind: "gear" }); }
+      catch { rejected = true; }
+      assert(rejected && !called, "ring mailbox reached RPC");
+    } finally { app.mailboxRpc = rpc; }
+    const before = JSON.stringify(app.getCloudSaveSnapshot().run.state.equipment.ring);
+    const other = { ...ring, id: "gear-999" };
+    app.eval(`state.inventory=[${JSON.stringify(other)}];state.gearSequence=999;state.enemy=null;`);
+    app.equipGear(other.id);
+    assert(JSON.stringify(app.getCloudSaveSnapshot().run.state.equipment.ring) === before,
+      "inventory ring changed immutable run slot");
+    app.eval(`state.inventory=[];state.tavernGearIds=[${JSON.stringify(ring.id)}];`);
+    app.saveActiveRun();
+    assert(app.getCloudSaveSnapshot().meta.tavern.stash.some((gear) => gear.id === ring.id) &&
+      app.isValidMetaProgress(app.getCloudSaveSnapshot().meta),
+      "run gear cleanup consumed a persistent ring after a cross-device ID collision");
+    app.eval("state.inventory=[];state.gameOver=true;state.enemy=null;");
+    app.render();
+    assert(app.getCloudSaveSnapshot().meta.tavern.stash.some((gear) => gear.id === ring.id),
+      "ring lost at run end");
+  });
+  frame.remove();
+})().catch((error) => {
+  failures.push("harness");
+  output.textContent += `FAIL harness: ${error.stack}\n`;
+}).finally(() => {
+  const result = document.getElementById("result");
+  result.dataset.result = failures.length ? "fail" : "pass";
+  result.textContent = failures.length ? `${failures.length} FAILURES` : "PASS";
+});
+</script>

@@ -1,18 +1,18 @@
 import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
 const availableTests = ["dungeon", "dungeon-integration", "gold-economy", "runes", "attributes", "pvp-client",
-  "guild-integration", "tavern", "expeditions", "homestead", "soul-crafting", "food", "settings",
+  "guild-integration", "tavern", "expeditions", "homestead", "soul-crafting", "rings", "food", "settings",
   "player-progress", "player-groups", "system-compatibility", "pages-artifact", "classes", "trophy-buyback", "city"];
 const tests = process.argv.length > 2 ? process.argv.slice(2) : availableTests;
+const baseUrl = process.env.BROWSER_TEST_BASE_URL || "http://127.0.0.1:8765";
 if (tests.some((test) => !availableTests.includes(test))) throw new Error("Unknown browser test.");
 let failed = false;
 
 for (const test of tests) {
-  const profile = await mkdtemp(join(tmpdir(), "well-browser-test-"));
+  const profile = await mkdtemp(join(process.cwd(), ".well-browser-test-"));
   const browser = spawn(process.env.CHROME_BIN || "chrome", [
     "--headless", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage",
     "--disable-extensions", "--no-first-run", "--remote-debugging-port=0",
@@ -34,7 +34,7 @@ for (const test of tests) {
       }
     }
     if (!port) throw new Error("Chrome did not start its debugging endpoint.");
-    const url = `http://127.0.0.1:8765/tests/${test}.test.html`;
+    const url = `${baseUrl}/tests/${test}.test.html`;
     const response = await fetch(`http://127.0.0.1:${port}/json/new?${encodeURIComponent(url)}`, { method: "PUT" });
     if (!response.ok) throw new Error(`Chrome target creation failed: ${response.status}`);
     const target = await response.json();

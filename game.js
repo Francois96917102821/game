@@ -2676,11 +2676,13 @@ function applyPvpBattle(battle, userId) {
   state.extraLifeUsed = Boolean(own.revivalUsed);
   if (battle.status === "finished") {
     state.liveDuelId = null;
-    if (battle.winner_id !== userId) finishDungeonDefeat(false);
+    if (battle.reason === "stale") {
+      setEvent("СОБЫТИЕ PvP ЗАВЕРШЕНО", "Оппонент не подключился вовремя. Забег продолжается; наград и потерь нет.", "◈");
+    } else if (battle.winner_id !== userId) finishDungeonDefeat(false);
     else setEvent("ДУЭЛЬ ЗАВЕРШЕНА", "Ты победил напарника. За PvP нет золота, осколков, опыта или репутации.", "◈");
   } else {
     state.liveDuelId = battle.id;
-    setEvent("ОНЛАЙН PvP", "Ходы идут по очереди. Сервер отводит 40 секунд; три пропуска подряд означают поражение. Действия — в панели дуэли.", "◈");
+    setEvent("ОНЛАЙН PvP", "Это принудительная встреча, а не вызов на дуэль. Отказаться или отменить бой нельзя. Ходы идут по очереди: 40 секунд на ход, три пропуска подряд — поражение AFK. Действия — в панели PvP.", "◈");
   }
   render();
 }

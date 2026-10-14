@@ -218,15 +218,14 @@
             <label for="gang-command">Команда подземелья</label>
             <input id="gang-command" value="!ганг" maxlength="16" autocomplete="off" spellcheck="false">
             <button class="action-button" type="submit">Выполнить</button>
-            <button class="action-button" id="gang-button" type="button">Вызвать напарника · !ганг</button>
+            <button class="action-button" id="gang-button" type="button">Событие PvP · !ганг</button>
           </form>
           <p id="pvp-status" role="status" aria-live="polite"></p>
           <section class="pvp-panel" id="pvp-panel" aria-label="Онлайн PvP" hidden>
-            <h3>Поединок с напарником</h3>
+            <h3>Принудительная встреча PvP</h3>
             <p id="pvp-players"></p>
             <p id="pvp-turn" role="status"></p>
             <div class="coop-log" id="pvp-log" aria-label="Журнал дуэли"></div>
-            <button class="action-button" id="pvp-join-button" type="button" hidden>Принять вызов</button>
             <div class="coop-actions">
               <button class="action-button" type="button" data-pvp-action="attack">Ударить</button>
               <button class="action-button" type="button" data-pvp-action="heavy">Сокрушительный</button>
@@ -237,7 +236,6 @@
               <button class="action-button" type="button" data-pvp-action="equip-shield">Взять щит</button>
               <button class="action-button" type="button" data-pvp-action="equip-torch">Взять факел</button>
               <button class="action-button" type="button" data-pvp-action="equip-staff">Взять посох</button>
-              <button class="action-button" id="pvp-leave-button" type="button">Сдаться / отменить вызов</button>
               <button class="action-button" id="pvp-retry-button" type="button" hidden>Повторить отправку</button>
               <button class="action-button" id="pvp-close-button" type="button" hidden>Закрыть результат</button>
             </div>

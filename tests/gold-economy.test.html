@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="ru">
+<meta charset="utf-8">
+<title>Gold economy</title>
+<h1 id="result">RUNNING</h1>
+<pre id="log"></pre>
+<script src="../gold-economy-model.js"></script>
+<script>
+"use strict";
+(async () => {
+  const output = document.getElementById("log");
+  const failures = [];
+  function assert(condition, message) {
+    if (!condition) throw new Error(message);
+  }
+  function rejects(work, message) {
+    let rejected = false;
+    try { work(); } catch { rejected = true; }
+    assert(rejected, message);
+  }
+  function check(name, work) {
+    try { work(); output.textContent += `PASS ${name}\n`; }
+    catch (error) { failures.push(`${name}: ${error.stack}`); }
+  }
+  const economy = window.WellGoldEconomyModel;
+  check("ordinary gear prices are bounded; special items are not saleable", () => {
+    for (const type of ["weapon", "armor"]) {
+      const max = type === "weapon" ? 6 : 4;
+      for (const names of Object.values(economy.ORDINARY_GEAR_NAMES)) {
+        const name = names[type];
+        for (let bonus = 1; bonus <= max; bonus += 1) {
+          assert(economy.gearSalePrice({ type, name, bonus }) === bonus * 3, "price is not three per bonus");
+        }
+        for (const bonus of [-1, 0, .5, max + 1, 8, 10, Infinity, NaN]) {
+          assert(economy.gearSalePrice({ type, name, bonus }) === null, "invalid/special bonus has a price");
+        }
+      }
+      const name = type === "weapon" ? "Клинок адмов" : "Доспех адмов";
+      assert(economy.gearSalePrice({ type, name, bonus: 3 }) === null, "low-bonus ADM gear has a price");
+      assert(economy.gearSalePrice({ type, name: "Unknown special item", bonus: 1 }) === null, "unknown item sold");
+    }
+    assert(economy.gearSalePrice({ type: "soul", bonus: 1 }) === null, "soul sale allowed");
+    assert(economy.gearSalePrice(null) === null, "missing gear sale allowed");
+  });
+  check("rubble endurance respects health bounds", () => {
+    assert(economy.rubbleEndurance(1) === 1, "minimum health");
+    assert(economy.rubbleEndurance(999999) === 1, "last available health point");
+    assert(economy.rubbleEndurance(1000000) === 0, "health overflow");
+    for (const value of [0, -1, 1.5, 1000001, Infinity, NaN]) {
+      rejects(() => economy.rubbleEndurance(value), "bad health accepted");
+    }
+  });
+  localStorage.clear();
+  const frame = document.createElement("iframe");
+  frame.style.width = "390px";
+  frame.style.height = "800px";
+  frame.src = "../index.html?gold-economy=1";
+  const loaded = new Promise((resolve) => frame.addEventListener("load", resolve, { once: true }));
+  document.body.append(frame);
+  await loaded;
+  const app = frame.contentWindow;
+  const doc = app.document;
+  const saved = () => app.getCloudSaveSnapshot();
+  // Use the game's key rather than duplicating its storage version.
+  const key = app.eval("RUN_SAVE_KEY");
+  function reset() {
+    app.startGameWithClass("knight");
+    app.eval("state.enemy=null; state.room=1; state.event.actions=[]; state.inventory=[]; state.equipment={weapon:null,armor:null}; state.gold=0; state.quests=[];");
+    app.render();
+  }
+  function giveGear(type = "weapon") {
+    const gear = app.createGear(type);
+    app.eval("state.inventory.push(" + JSON.stringify(gear) + ");");
+    app.render();
+    return gear;
+  }
+  check("Sell action persists payment/removal together and cannot pay twice", () => {
+    reset();
+    const gear = giveGear();
+    const button = doc.querySelector("[data-sell-gear-id]");
+    assert(button && button.textContent.includes("3 зол."), "sale price missing");
+    button.click();
+    const after = saved();
+    assert(after.run.state.gold === 3 && after.run.state.inventory.length === 0, "sale result wrong");
+    const durable = JSON.parse(localStorage.getItem(key));
+    assert(durable.state.gold === 3 && durable.state.inventory.length === 0, "sale not durable");
+    app.sellRunGear(gear.id);
+    assert(saved().run.state.gold === 3, "duplicate click paid twice");
+    const merged = app.mergeMetaProgress(after.meta, after.meta);
+    assert(merged.tavern.gold === after.meta.tavern.gold, "sale leaked into permanent wallet");
+    assert(app.isValidRun(after.run), "sale save invalid");
+  });
+  check("storage failures and stale tabs cannot grant sale rewards", () => {
+    reset();
+    const gear = giveGear();
+    const storage = app.Storage.prototype;
+    const write = storage.setItem;
+    storage.setItem = () => { throw new app.DOMException("blocked", "QuotaExceededError"); };
+    try { app.sellRunGear(gear.id); } finally { storage.setItem = write; }
+    assert(saved().run.state.gold === 0 && saved().run.state.inventory.length === 1, "failed save sold gear");
+    const otherTab = JSON.parse(localStorage.getItem(key));
+    otherTab.state.inventory = [];
+    otherTab.state.gold = 3;
+    localStorage.setItem(key, JSON.stringify(otherTab));
+    app.sellRunGear(gear.id);
+    assert(saved().run.state.gold === 0, "stale tab paid again");
+    assert(JSON.parse(localStorage.getItem(key)).state.gold === 3, "stale sale overwrote stored result");
+  });
+  check("sale respects cap, combat, pending event, mailbox and special gear locks", () => {
+    reset();
+    const gear = giveGear();
+    app.eval("state.gold=1000000000;");
+    app.render();
+    assert(doc.querySelector("[data-sell-gear-id]").disabled, "full wallet sale enabled");
+    app.sellRunGear(gear.id);
+    assert(saved().run.state.inventory.length === 1, "cap sold gear");
+    app.eval("state.gold=0;");
+    app.spawnSpecificEnemy("keeper");
+    app.sellRunGear(gear.id);
+    assert(saved().run.state.gold === 0, "combat sale allowed");
+    app.eval("state.enemy=null;");
+    app.setEvent("ЗАВАЛ", "Выбери.", "⚒", "ВЫБОР", ["rubble-clear", "rubble-squeeze"]);
+    app.render();
+    app.sellRunGear(gear.id);
+    assert(saved().run.state.event.actions.length === 2, "sale discarded unresolved choice");
+    app.eval("state.event.actions=[];");
+    app.render();
+    const mailKey = "well-of-whispers-mail-outbox:test:gear";
+    localStorage.setItem(mailKey, JSON.stringify({ itemId: gear.id }));
+    app.sellRunGear(gear.id);
+    localStorage.removeItem(mailKey);
+    assert(saved().run.state.gold === 0, "escrow gear sold");
+    app.eval("state.tavernGearIds=[" + JSON.stringify(gear.id) + "];");
+    app.render();
+    assert(!doc.querySelector("[data-sell-gear-id]"), "stash gear sold");
+    reset();
+    giveGear();
+    app.eval("state.inventory[0].bonus=8;");
+    app.render();
+    assert(!doc.querySelector("[data-sell-gear-id]"), "R-gear sold");
+  });
+  check("rubble pays once, trains health without healing, preserves floor gates", () => {
+    reset();
+    const before = saved().run.state;
+    const rng = app.Math.random;
+    app.Math.random = () => 0;
+    try {
+      app.setEvent("ЗАВАЛ", "Выбери.", "⚒", "ВЫБОР", ["rubble-clear", "rubble-squeeze"]);
+      app.resolveDungeonEvent("rubble-clear");
+    } finally { app.Math.random = rng; }
+    const after = saved().run.state;
+    assert(after.gold === 4 + before.floor && after.maxHp === before.maxHp + 1, "rubble reward wrong");
+    assert(after.hp === before.hp - 3, "endurance healed damage");
+    assert(after.inventory.length === 1 && after.inventory[0].type === "armor", "existing armor reward changed");
+    app.resolveDungeonEvent("rubble-clear");
+    assert(saved().run.state.gold === after.gold && saved().run.state.maxHp === after.maxHp, "rubble replay");
+    assert(app.isValidRun(saved().run), "rubble save invalid");
+    reset();
+    app.eval("state.maxHp=1000000; state.hp=1; state.floor=1000000;");
+    app.setEvent("ЗАВАЛ", "Выбери.", "⚒", "ВЫБОР", ["rubble-clear"]);
+    app.resolveDungeonEvent("rubble-clear");
+    assert(saved().run.state.maxHp === 1000000 && saved().run.state.hp === 1, "extreme bounds");
+    assert(app.isValidRun(saved().run), "extreme rubble save invalid");
+  });
+  check("low-bonus named ADM equipment cannot be sold through UI or direct action", () => {
+    for (const type of ["weapon", "armor"]) {
+      reset();
+      const gear = giveGear(type);
+      const name = type === "weapon" ? "Клинок адмов" : "Доспех адмов";
+      app.eval("state.inventory[0].name=" + JSON.stringify(name) + "; state.inventory[0].bonus=3;");
+      app.render();
+      assert(app.isValidRun(saved().run), "existing low-bonus ADM save rejected");
+      assert(!doc.querySelector("[data-sell-gear-id]"), "low-bonus ADM sale button visible");
+      app.sellRunGear(gear.id);
+      assert(saved().run.state.gold === 0 && saved().run.state.inventory[0].name === name,
+        "direct action sold ADM gear");
+    }
+  });
+  check("gold pot retains cache range, mimic gate and room/quest behavior", () => {
+    for (const [sample, expected] of [[0, 6], [.999999, 13]]) {
+      reset();
+      const samples = [.99, .5, .5, sample, .99, 0];
+      const rng = app.Math.random;
+      app.Math.random = () => samples.shift() ?? .5;
+      try { app.explore(); } finally { app.Math.random = rng; }
+      const after = saved().run.state;
+      assert(after.gold === expected && after.room === 2 && after.floor === 1, "pot reward/room bounds");
+      assert(after.event.kicker === "ГОРШОК С ЗОЛОТОМ" && after.inventory.length === 1, "pot missing existing loot");
+      assert(app.isValidRun(saved().run), "pot save invalid");
+    }
+    reset();
+    const samples = [.99, .5, 0];
+    const rng = app.Math.random;
+    app.Math.random = () => samples.shift() ?? .5;
+    try { app.explore(); } finally { app.Math.random = rng; }
+    assert(saved().run.state.enemy.special === "mimic" && saved().run.state.gold === 0, "mimic gate changed");
+  });
+  check("new sale controls fit mobile sidebar", () => {
+    reset();
+    giveGear();
+    assert(doc.documentElement.scrollWidth <= 390, "page overflow");
+    for (const button of doc.querySelectorAll("[data-sell-gear-id]")) {
+      assert(button.getBoundingClientRect().right <= 390, "sale control overflow");
+    }
+  });
+  reset();
+  const soldBeforeReload = giveGear();
+  app.sellRunGear(soldBeforeReload.id);
+  app.eval("savedRun=readSavedRun(); state=createState();");
+  app.render();
+  const tavernBeforeReload = saved().meta.tavern;
+  const reload = new Promise((resolve) => frame.addEventListener("load", resolve, { once: true }));
+  frame.src = "../index.html?gold-economy=reload";
+  await reload;
+  check("reload preserves run sale without migration bonuses or Tavern changes", () => {
+    const restored = frame.contentWindow.getCloudSaveSnapshot();
+    assert(restored.meta.tavern.gold === tavernBeforeReload.gold &&
+      restored.meta.tavern.satiety === tavernBeforeReload.satiety, "gold changes affected Tavern");
+    assert(restored.run.state.gold === 3 && restored.run.state.inventory.length === 0, "sale duplicated/lost on reload");
+    assert(frame.contentWindow.isValidMetaProgress(restored.meta), "old-compatible meta rejected");
+  });
+  output.textContent += failures.join("\n");
+  document.getElementById("result").dataset.result = failures.length ? "fail" : "pass";
+  document.getElementById("result").textContent = failures.length ? "FAIL" : "PASS";
+})().catch((error) => {
+  document.getElementById("result").dataset.result = "fail";
+  document.getElementById("log").textContent += error.stack;
+});
+</script>

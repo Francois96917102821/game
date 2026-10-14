@@ -4,6 +4,10 @@ on:
   pull_request:
     paths:
       - "dungeon-model.js"
+      - "rune-model.js"
+      - "soul-crafting-model.js"
+      - "gold-economy-model.js"
+      - "tavern-model.js"
       - "game.js"
       - "pvp-client.js"
       - "guild-client.js"
@@ -12,6 +16,7 @@ on:
       - "index.html"
       - "styles.css"
       - "tests/*.html"
+      - "tests/run-browser-tests.mjs"
       - ".github/workflows/test-dungeon.yml"
   workflow_dispatch:
 
@@ -26,6 +31,10 @@ jobs:
         uses: actions/checkout@v4
       - name: Set up Chrome
         uses: browser-actions/setup-chrome@v1
+      - name: Set up browser test runtime
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
       - name: Run dungeon browser tests
         run: |
           set -euo pipefail
@@ -39,14 +48,4 @@ jobs:
             fi
             sleep 1
           done
-          for test in dungeon dungeon-integration pvp-client guild-integration tavern expeditions homestead; do
-            chrome --headless --no-sandbox --disable-gpu --disable-dev-shm-usage \
-              --user-data-dir="$PWD/.dungeon-ci/game-${test}-profile" \
-              --disable-extensions --dump-dom --virtual-time-budget=120000 \
-              "http://127.0.0.1:8765/tests/${test}.test.html" > ".dungeon-ci/${test}.html"
-            if ! grep -q 'data-result="pass"' ".dungeon-ci/${test}.html"; then
-              cat ".dungeon-ci/${test}.html"
-              exit 1
-            fi
-            grep -o 'PASS [^<]*' ".dungeon-ci/${test}.html"
-          done
+          node tests/run-browser-tests.mjs

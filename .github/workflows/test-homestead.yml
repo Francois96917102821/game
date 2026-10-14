@@ -1,15 +1,19 @@
-name: Test houses and homesteads
+name: Test houses, homesteads and food
 
 on:
   pull_request:
     paths:
       - "homestead-model.js"
+      - "tavern-model.js"
       - "cloud-save.js"
       - "game.js"
       - "player-groups.js"
       - "index.html"
       - "styles.css"
       - "tests/homestead.test.html"
+      - "tests/tavern.test.html"
+      - "tests/food.test.html"
+      - "tests/run-browser-tests.mjs"
       - ".github/workflows/test-homestead.yml"
   workflow_dispatch:
 
@@ -24,7 +28,11 @@ jobs:
         uses: actions/checkout@v4
       - name: Set up Chrome
         uses: browser-actions/setup-chrome@v1
-      - name: Run homestead browser tests
+      - name: Set up browser test runtime
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Run homestead and food browser tests
         run: |
           set -euo pipefail
           python3 -m http.server 8765 --bind 127.0.0.1 > /tmp/game-homestead-test-server.log 2>&1 &
@@ -36,11 +44,4 @@ jobs:
             fi
             sleep 1
           done
-          chrome --headless --no-sandbox --disable-gpu --disable-dev-shm-usage \
-            --disable-extensions --dump-dom --virtual-time-budget=120000 \
-            http://127.0.0.1:8765/tests/homestead.test.html > /tmp/homestead-test.html
-          if ! grep -q 'data-result="pass"' /tmp/homestead-test.html; then
-            cat /tmp/homestead-test.html
-            exit 1
-          fi
-          grep -o 'PASS [^<]*' /tmp/homestead-test.html
+          node tests/run-browser-tests.mjs homestead tavern food

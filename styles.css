@@ -106,6 +106,7 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--gold-light); ou
 .inventory-item { display: flex; align-items: center; justify-content: space-between; gap: 7px; }
 .inventory-art { width: 32px; height: 32px; flex: 0 0 32px; padding: 2px; border: 1px solid #363c30; border-radius: 5px; background: #171b16; }
 .inventory-item > div { min-width: 0; }
+.inventory-actions { display: flex; flex-direction: column; gap: 4px; flex: 0 0 auto; }
 .inventory-item strong, .inventory-item span { display: block; }
 .inventory-item strong { color: #d6d6c9; font-size: 9px; line-height: 1.35; }
 .inventory-item span { margin-top: 2px; color: #9b9d8f; font-size: 8px; }
@@ -131,6 +132,15 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--gold-light); ou
 .meta-secrets { display: grid; gap: 3px; padding-top: 7px; border-top: 1px solid #30342d; }
 .meta-secrets strong { color: #b8b9a9; font-size: 8px; }
 .meta-secrets span { color: #888e81; font-size: 7px; line-height: 1.45; }
+.rune-meta { display: grid; gap: 7px; padding-top: 8px; border-top: 1px solid #30342d; }
+.rune-meta > strong { color: #d1d2c5; font: 8px "DM Mono", monospace; letter-spacing: .08em; }
+.rune-meta > p { margin: 0; color: #888e81; font-size: 7px; line-height: 1.45; }
+.rune-list { display: grid; gap: 6px; }
+.rune-entry { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 5px; }
+.rune-entry > div { min-width: 0; }
+.rune-entry strong, .rune-entry span { display: block; }
+.rune-entry strong { color: #d1d2c5; font-size: 8px; }
+.rune-entry span { margin-top: 2px; color: #858b7d; font-size: 7px; line-height: 1.35; }
 .save-note { margin-top: auto; padding-top: 15px; color: #777d70; font-size: 9px; }
 .save-note span { color: #93a77a; margin-right: 5px; font-size: 8px; }
 

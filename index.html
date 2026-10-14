@@ -67,8 +67,16 @@
             <div class="inventory-list" id="inventory-list" aria-live="polite">
               <p class="inventory-empty">Рюкзак пуст. Экипировка иногда выпадает с врагов.</p>
             </div>
+            <p class="inventory-empty">Обычную добычу можно продать между встречами: 3 золота за пункт бонуса. Золото остаётся в этом спуске; складские и особые вещи не продаются.</p>
+            <details id="food-panel">
+              <summary>Запас еды · сытость <span id="food-satiety">50 / 100</span></summary>
+              <p class="inventory-empty">Порции доступны в любой локации без таймера. Во время онлайн-боя и дуэли еда заблокирована.</p>
+              <p id="food-status" role="status" aria-live="polite"></p>
+              <div id="food-inventory" class="tavern-recipe-list"></div>
+            </details>
             <button class="service-button profile-crafting-button" id="profile-crafting-button" type="button">Ремесленный стол · открыть в доме</button>
             <button class="service-button guild-open-button" id="guild-open-button" type="button" aria-haspopup="dialog" aria-controls="guild-dialog">Гильдия · открыть холл</button>
+            <button class="service-button profile-crafting-button" id="profile-soul-crafting-button" type="button">Души и R-ремесло</button>
           </section>
           <div class="panel-divider"></div>
           <div class="best-run"><span>ЛУЧШИЙ СПУСК</span><strong id="best-floor">—</strong></div>
@@ -79,6 +87,13 @@
             <div class="meta-secrets"><strong>Летопись глубин</strong><span id="meta-secrets">0/4 записей · исследуй тайные залы</span></div>
             <div class="meta-secrets"><strong>Репутация ордена: <span id="order-reputation">0</span></strong><span id="dungeon-trophies">Трофеев пока нет.</span></div>
             <p class="inventory-empty">Коллекционные трофеи сохраняются между спусками. Обмен и использование манускриптов пока недоступны.</p>
+            <section class="rune-meta" aria-labelledby="rune-heading">
+              <strong id="rune-heading">РУНЫ УСИЛЕНИЯ</strong>
+              <p>С 30-го уровня. При использовании руна расходуется, но счётчик добытых рун остаётся; применение стоит репутацию ордена и доступно только в лагере.</p>
+              <div id="rune-list"></div>
+              <p class="inventory-empty">Сопротивление — не отдельная характеристика: оно добавляется к снижению урона от брони с общим пределом 75%. В совместном бою защита вычитается из урона целым числом; точность, концентрация и удача туда не передаются.</p>
+              <p class="inventory-empty">Кольца рун в экипировке пока нет: удвоение добычи поддерживается правилами, но не активно.</p>
+            </section>
             <button class="service-button profile-homes-button" id="homestead-open-button" type="button">Магазин · Дома</button>
           </section>
           <p class="save-note"><span aria-hidden="true">●</span> Прогресс сохраняется автоматически</p>
@@ -253,6 +268,7 @@
             <button class="action-button" id="buy-weapon-button" type="button">⚔ Заточка · 18 ✦</button>
             <button class="action-button guard-action" id="buy-armor-button" type="button">⬡ Броня · 24 ✦</button>
             <button class="action-button secondary-action" id="buy-healing-button" type="button">✚ Лечение · 8 ✦</button>
+            <button class="action-button guard-action" id="buy-fire-soul-button" type="button" hidden>♨ Душа огня · 50 ✦</button>
             <button class="action-button guard-action" id="leave-merchant-button" type="button">Продолжить путь <span aria-hidden="true">→</span></button>
           </div>
           <button class="primary-button descend-button" id="descend-button" type="button" hidden>Спуститься глубже <span aria-hidden="true">↓</span></button>
@@ -314,6 +330,11 @@
       </nav>
       <section class="tavern-pane" data-tavern-pane="food">
         <p class="tavern-note">Сытость убывает на 5 пунктов за каждый полный час реального времени, включая время вне игры. На нуле штрафа к бою нет. Рецепты хранятся по 3 порции; некоторые блюда также влияют на травмы.</p>
+        <div class="tavern-recipe-list" id="tavern-menu"></div>
+        <p class="tavern-note" id="tavern-food-cooldown"></p>
+        <p class="tavern-note">Премиальный перерыв 2 часа отложен: проверяемых премиальных прав в игре нет. Флаги сохранения не дают премиум. Усиленные блюда не продаются до появления настоящих характеристик.</p>
+        <h3>Готовые порции по рецептам</h3>
+        <p class="tavern-note">Готовка длится 1 час и гарантированно даёт одну порцию, если есть место. Ингредиенты ниже — описание кухни таверны, не скрытое списание из вашего дома.</p>
         <div class="tavern-recipe-list" id="tavern-recipes"></div>
         <h3>Склад находок</h3>
         <p class="tavern-note">Уборка приносит случайный предмет экипировки. Выбери один предмет, чтобы взять его в следующий новый спуск; предмет останется на складе, пока спуск не сохранится.</p>
@@ -569,8 +590,11 @@
     <script src="cloud-save.js"></script>
     <script src="player-groups.js"></script>
     <script src="tavern-model.js"></script>
+    <script src="gold-economy-model.js"></script>
     <script src="expeditions-model.js"></script>
     <script src="homestead-model.js"></script>
+    <script src="soul-crafting-model.js"></script>
+    <script src="rune-model.js"></script>
     <script src="dungeon-model.js"></script>
     <script src="pvp-client.js"></script>
     <script src="guild-client.js"></script>

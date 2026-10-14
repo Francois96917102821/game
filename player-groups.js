@@ -451,6 +451,7 @@
       members: (group?.members || []).map((member) => ({
         user_id: member.user_id,
         nickname: member.nickname,
+        level: member.level,
       })),
     };
   }

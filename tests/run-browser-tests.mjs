@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
 const availableTests = ["dungeon", "dungeon-integration", "gold-economy", "runes", "pvp-client",
-  "tavern", "expeditions", "homestead", "soul-crafting", "food", "settings"];
+  "tavern", "expeditions", "homestead", "soul-crafting", "food", "settings", "guild-treasury"];
+const origin = (process.env.BROWSER_TEST_ORIGIN || "http://127.0.0.1:8765").replace(/\/+$/, "");
 const tests = process.argv.length > 2 ? process.argv.slice(2) : availableTests;
 if (tests.some((test) => !availableTests.includes(test))) throw new Error("Unknown browser test.");
 let failed = false;
@@ -33,7 +34,7 @@ for (const test of tests) {
       }
     }
     if (!port) throw new Error("Chrome did not start its debugging endpoint.");
-    const url = `http://127.0.0.1:8765/tests/${test}.test.html`;
+    const url = `${origin}/tests/${test}.test.html`;
     const response = await fetch(`http://127.0.0.1:${port}/json/new?${encodeURIComponent(url)}`, { method: "PUT" });
     if (!response.ok) throw new Error(`Chrome target creation failed: ${response.status}`);
     const target = await response.json();

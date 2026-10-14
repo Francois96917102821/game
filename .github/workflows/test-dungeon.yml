@@ -10,6 +10,8 @@ on:
       - "tavern-model.js"
       - "game.js"
       - "pvp-client.js"
+      - "guild-treasury.js"
+      - "cloud-save.js"
       - "index.html"
       - "styles.css"
       - "tests/*.html"

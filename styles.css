@@ -498,6 +498,38 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--gold-light); ou
 .group-presence.present { color: #a8bd8a; }
 .group-activity { margin: 0; color: #bfc6ac; font-size: 10px; line-height: 1.45; }
 .group-disband-button { border-color: #63443c; color: #d79585; }
+.treasury-dialog { width: min(620px, calc(100% - 28px)); }
+.treasury-status { min-height: 35px; margin: 12px 0; padding: 9px 10px; border: 1px solid #34382e; border-radius: 6px; background: #1a1e18; color: #bfc6ac; font-size: 10px; line-height: 1.45; }
+.treasury-status.treasury-error, .treasury-transfer-result.treasury-error { border-color: #764b40; color: #e4a192; }
+.treasury-wallet { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 12px 0; }
+.treasury-wallet > div { display: grid; gap: 5px; align-content: start; padding: 10px; border: 1px solid #393d31; border-radius: 6px; background: #1a1e18; }
+.treasury-wallet span { color: #93998b; font: 8px "DM Mono", monospace; letter-spacing: .08em; }
+.treasury-wallet strong { color: var(--gold-light); font-size: 15px; overflow-wrap: anywhere; }
+.treasury-wallet small { color: #9b9d8f; font-size: 9px; line-height: 1.4; }
+.treasury-balance-server { border-color: #74603b !important; }
+.treasury-balance-local { border-style: dashed !important; }
+.treasury-balance-local strong { color: #c6c8bc; }
+.treasury-section { display: grid; gap: 8px; margin-top: 12px; padding-top: 12px; border-top: 1px solid #34382e; }
+.treasury-section h3 { margin: 0; font-size: 14px; }
+.treasury-section label { color: #c6c8bc; font-size: 10px; }
+.treasury-note, .treasury-timer, .treasury-reward, .treasury-transfer-result, .treasury-confirm p { margin: 0; color: #aeb2a5; font-size: 10px; line-height: 1.5; overflow-wrap: anywhere; }
+.treasury-timer { color: #dedfd2; font-size: 12px; font-variant-numeric: tabular-nums; }
+.treasury-reward { color: var(--gold-light); }
+.treasury-reward[hidden], .treasury-confirm[hidden], .treasury-actions[hidden] { display: none; }
+.treasury-actions { display: flex; flex-wrap: wrap; gap: 7px; }
+.treasury-actions > button { flex: 1 1 160px; min-height: 43px; }
+.treasury-transfer-form { display: grid; gap: 7px; }
+.treasury-section input { width: 100%; min-height: 39px; border: 1px solid #414638; border-radius: 5px; padding: 8px 10px; background: #12150f; color: var(--text); font: inherit; font-size: 12px; }
+.treasury-section input:focus-visible { outline: 2px solid var(--gold-light); outline-offset: 2px; }
+.treasury-section input:disabled, .treasury-section button:disabled { opacity: .45; cursor: not-allowed; }
+.treasury-id-row input { font: 700 11px "DM Mono", monospace; letter-spacing: 0; text-align: left; }
+.treasury-confirm { display: grid; gap: 8px; padding: 10px; border: 1px solid #74603b; border-radius: 6px; background: #1d1c14; }
+.treasury-transfer-result:empty { display: none; }
+@media (max-width: 520px) {
+  .treasury-dialog { padding: 18px 14px; }
+  .treasury-wallet { grid-template-columns: 1fr; }
+  .treasury-actions > button { flex-basis: 100%; }
+}
 .group-notification-setting { display: flex; align-items: center; gap: 8px; margin-top: 15px; padding-top: 12px; border-top: 1px solid #34382e; color: #b7bbac; font-size: 10px; cursor: pointer; }
 .group-notification-setting input { accent-color: #b79b65; }
 .group-notice { position: fixed; z-index: 20; right: 20px; bottom: 20px; width: min(350px, calc(100% - 32px)); padding: 13px 15px; border: 1px solid #625237; border-radius: 8px; background: #211f18; color: #e8dfc6; font-size: 11px; line-height: 1.45; box-shadow: 0 12px 35px rgba(0,0,0,.55); }

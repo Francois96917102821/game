@@ -77,6 +77,15 @@ const CITY_DISTRICTS = {
         action: "upgrades",
         actionLabel: "К улучшениям за осколки",
       },
+      {
+        icon: "⛁",
+        name: "Казна гильдии",
+        description: "Серверное золото, часовой «Патруль гильдии» с наградой от сервера и переводы серверного золота. Нужен вход в облачный аккаунт; локальное золото сюда не переносится.",
+        status: "ready",
+        statusLabel: "ОНЛАЙН",
+        action: "treasury",
+        actionLabel: "Открыть казну гильдии",
+      },
       { icon: "✦", name: "Башня магов", description: "Временные зачарования, перераспределение характеристик и дополнительные ячейки пассивных умений.", status: "soon", statusLabel: "СКОРО" },
       {
         icon: "ᛟ",
@@ -5823,6 +5832,8 @@ ui.cityServices.addEventListener("click", (event) => {
     openHarbor();
   } else if (button.dataset.cityAction === "homestead") {
     openHomestead();
+  } else if (button.dataset.cityAction === "treasury") {
+    window.WellGuildTreasury?.open();
   }
 });
 ui.homesteadOpenButton.addEventListener("click", openHomestead);
@@ -5895,9 +5906,32 @@ setInterval(() => {
   if (ui.homesteadDialog.open) renderHomestead();
 }, 1000);
 
+function initializeGuildTreasury() {
+  window.WellGuildTreasury?.initialize({
+    isConfigured: () => window.WellCloudSave.isConfigured(),
+    getUser: () => window.WellCloudSave.getCurrentUser(),
+    rpc: (name, args) => window.WellCloudSave.groupRpc(name, args),
+    onAuthChange: (listener) => window.WellCloudSave.onAuthChange(listener),
+    getLocalGold: () => ({
+      tavern: metaProgress.tavern.gold,
+      run: state.started && !state.gameOver ? state.gold : null,
+    }),
+    openCloud: () => $("cloud-open-button").click(),
+    onClose: () => {
+      selectedDistrict = "main";
+      renderCity();
+    },
+  });
+}
+
 async function initializeGameServices() {
   await initializeTavernPersistence();
   render();
+  try {
+    initializeGuildTreasury();
+  } catch (error) {
+    console.error("Не удалось подключить серверную казну гильдии.", error);
+  }
   window.WellCloudSave.initialize({
   readLocal: readLocalCloudSave,
   validateRun: isValidRun,

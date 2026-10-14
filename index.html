@@ -542,6 +542,73 @@
         <span>Групповые уведомления</span>
       </label>
     </dialog>
+    <dialog class="game-dialog treasury-dialog" id="treasury-dialog" aria-labelledby="treasury-title">
+      <form method="dialog" class="dialog-close-form">
+        <button class="dialog-close" aria-label="Закрыть казну гильдии и вернуться в город">×</button>
+      </form>
+      <span class="eyebrow">ГИЛЬДИЯ ОХОТНИКОВ · СЕРВЕР</span>
+      <h2 id="treasury-title">Серверная казна и экспедиции</h2>
+      <p class="dialog-intro">Серверное золото начисляет и хранит только сервер; клиент не задаёт ни сумму, ни время. Локальное золото из сохранения этого браузера показано отдельно и не конвертируется в серверное.</p>
+      <p class="treasury-status" id="treasury-status" role="status" aria-live="polite"></p>
+      <div class="treasury-actions" id="treasury-auth-actions" hidden>
+        <button class="primary-button" id="treasury-signin-button" type="button">Открыть вход в облако</button>
+      </div>
+      <section class="treasury-wallet" aria-label="Балансы золота">
+        <div class="treasury-balance-server">
+          <span>СЕРВЕРНОЕ ЗОЛОТО</span>
+          <strong id="treasury-server-gold">—</strong>
+          <small>Подтверждено сервером. Только для экспедиций и переводов.</small>
+        </div>
+        <div class="treasury-balance-local">
+          <span>ЛОКАЛЬНОЕ ЗОЛОТО · НЕ КОНВЕРТИРУЕТСЯ</span>
+          <strong id="treasury-local-gold">—</strong>
+          <small id="treasury-local-detail"></small>
+        </div>
+      </section>
+      <section class="treasury-section" aria-labelledby="treasury-expedition-title">
+        <h3 id="treasury-expedition-title">Патруль гильдии</h3>
+        <p class="treasury-note">Ровно 1 час по часам сервера. Награда — 15, 20 или 25 серверного золота по жребию сервера. Не больше одной незабранной экспедиции и трёх стартов за календарные сутки UTC.</p>
+        <p class="treasury-timer" id="treasury-timer"></p>
+        <p class="treasury-reward" id="treasury-reward" hidden></p>
+        <div class="treasury-actions">
+          <button class="primary-button" id="treasury-start-button" type="button">Отправить экспедицию</button>
+          <button class="action-button" id="treasury-claim-button" type="button">Забрать награду</button>
+          <button class="action-button secondary-action" id="treasury-refresh-button" type="button">Обновить</button>
+        </div>
+      </section>
+      <section class="treasury-section" aria-labelledby="treasury-transfer-title">
+        <h3 id="treasury-transfer-title">Перевод серверного золота</h3>
+        <p class="treasury-note">Только серверное золото, минимум 100. Комиссия казны 10% (округляется вниз). Получатель указывается по ID облачного аккаунта; локальное золото переводить нельзя.</p>
+        <label for="treasury-own-id">Твой ID для получения переводов</label>
+        <div class="group-code-row treasury-id-row">
+          <input id="treasury-own-id" readonly>
+          <button class="action-button" id="treasury-copy-id-button" type="button">Копировать</button>
+        </div>
+        <form class="treasury-transfer-form" id="treasury-transfer-form" novalidate>
+          <label for="treasury-recipient">ID аккаунта получателя</label>
+          <input id="treasury-recipient" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="36" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
+          <label for="treasury-amount">Сумма серверного золота</label>
+          <input id="treasury-amount" type="number" min="100" step="1" inputmode="numeric">
+          <button class="action-button" id="treasury-review-button" type="submit">Проверить перевод</button>
+        </form>
+        <div class="treasury-confirm" id="treasury-confirm" role="group" aria-labelledby="treasury-confirm-text" hidden>
+          <p id="treasury-confirm-text"></p>
+          <div class="treasury-actions">
+            <button class="primary-button" id="treasury-send-button" type="button">Подтвердить и отправить</button>
+            <button class="action-button secondary-action" id="treasury-cancel-button" type="button">Изменить</button>
+          </div>
+        </div>
+        <div class="treasury-confirm" id="treasury-pending-transfer" role="group" aria-labelledby="treasury-pending-text" hidden>
+          <p id="treasury-pending-text"></p>
+          <div class="treasury-actions">
+            <button class="primary-button" id="treasury-retry-transfer-button" type="button">Повторить с тем же ключом</button>
+            <button class="action-button secondary-action" id="treasury-forget-transfer-button" type="button">Забыть неподтверждённый</button>
+          </div>
+        </div>
+        <p class="treasury-transfer-result" id="treasury-transfer-result" role="status" aria-live="polite"></p>
+      </section>
+      <button class="tavern-return-button" id="treasury-return-button" type="button">← Вернуться в основной район</button>
+    </dialog>
     <div class="group-notice" id="group-notice" role="status" aria-live="polite" hidden>
       <span id="group-notice-text"></span>
       <button class="primary-button group-battle-invite-button" id="group-battle-invite-button" type="button" hidden>Вступить в бой со стражем!</button>
@@ -557,6 +624,7 @@
     <script src="rune-model.js"></script>
     <script src="dungeon-model.js"></script>
     <script src="pvp-client.js"></script>
+    <script src="guild-treasury.js"></script>
     <script src="game.js"></script>
   </body>
 </html>

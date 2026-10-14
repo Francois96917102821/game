@@ -76,6 +76,7 @@
       jobReceipts: [],
       stash: [],
       preparedGearId: null,
+      equippedRingId: null,
       nextGearSequence: 0,
       bonuses: { attack: 0, maxHp: 0 },
       game: null,
@@ -86,9 +87,11 @@
     return Boolean(
       item && typeof item === "object" &&
       typeof item.id === "string" && /^gear-\d+$/.test(item.id) &&
-      (item.type === "weapon" || item.type === "armor") &&
+      ["weapon", "armor", "ring"].includes(item.type) &&
       typeof item.name === "string" && item.name.length > 0 && item.name.length <= 60 &&
-      Number.isInteger(item.bonus) && item.bonus >= 1 && item.bonus <= 10
+      Number.isInteger(item.bonus) && item.bonus >= 1 && item.bonus <= 10 &&
+      (item.soulCraftId === undefined || item.type === "ring" &&
+        typeof item.soulCraftId === "string" && item.soulCraftId.length > 0 && item.soulCraftId.length <= 100)
     );
   }
 
@@ -155,7 +158,12 @@
       new Set(state.jobReceipts).size === state.jobReceipts.length &&
       Array.isArray(state.stash) && state.stash.length <= 10000 && state.stash.every(isValidGear) &&
       new Set(state.stash.map((item) => item.id)).size === state.stash.length &&
-      (state.preparedGearId === null || state.stash.some((item) => item.id === state.preparedGearId)) &&
+      new Set(state.stash.filter((item) => item.soulCraftId).map((item) => item.soulCraftId)).size ===
+        state.stash.filter((item) => item.soulCraftId).length &&
+      (state.preparedGearId === null || state.stash.some((item) =>
+        item.id === state.preparedGearId && item.type !== "ring")) &&
+      (state.equippedRingId === undefined || state.equippedRingId === null ||
+        state.stash.some((item) => item.id === state.equippedRingId && item.type === "ring")) &&
       Number.isInteger(state.nextGearSequence) && state.nextGearSequence >= 0 &&
       state.stash.every((item) => Number(item.id.slice(5)) <= state.nextGearSequence) &&
       state.bonuses && Number.isInteger(state.bonuses.attack) && state.bonuses.attack >= 0 &&

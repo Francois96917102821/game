@@ -44,6 +44,10 @@ try {
   assert.ok(html.includes(`src="heart-shard-model.js?v=${sha}"`), "Heart Shard module is not versioned");
   assert.ok(html.indexOf(`src="heart-shard-model.js?v=${sha}"`) <
     html.indexOf(`src="homestead-model.js?v=${sha}"`), "Heart Shard dependency must load first");
+  assert.ok(packaged.has("elemental-gear-model.js"), "Elemental module must be packaged");
+  assert.ok(html.includes(`src="elemental-gear-model.js?v=${sha}"`), "Elemental cache version is missing");
+  assert.ok(html.indexOf(`src="elemental-gear-model.js?v=${sha}"`) < html.indexOf(`src="game.js?v=${sha}"`),
+    "Elemental model must load before game");
   assert.ok((await readFile(join(dist, "game.js"), "utf8")).includes(`game-art.svg?v=${sha}`),
     "Game artwork is not versioned");
   console.log(`PASS Pages preparer packages and versions all local assets (${packaged.size} files)`);

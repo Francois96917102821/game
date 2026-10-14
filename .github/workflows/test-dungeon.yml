@@ -15,6 +15,7 @@ on:
       - "rune-model.js"
       - "attribute-model.js"
       - "soul-crafting-model.js"
+      - "elemental-gear-model.js"
       - "gold-economy-model.js"
       - "tests/trophy-buyback.test.html"
       - "tavern-model.js"

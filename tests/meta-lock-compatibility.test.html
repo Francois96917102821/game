@@ -191,6 +191,43 @@
       "reload diverged from the committed mixed snapshot");
   });
 
+  await check("elemental essence craft vs meal, ring equip and trophy buyback across two tabs keeps every result", async () => {
+    const meta = fixture({ crafted: true });
+    const elementalModel = app.WellElementalGearModel;
+    for (const [index, [resourceId, source]] of [["emberglass", "ore-careful"], ["primalWater", "grove-drink"]].entries()) {
+      const result = elementalModel.grant(meta.elemental, 30, resourceId, `meta-lock-drop-${index}`, source, index + 1);
+      assert(result.ok, `${resourceId} fixture grant failed`);
+      meta.elemental = result.state;
+    }
+    assert(app.isValidMetaProgress(meta), "elemental fixture meta invalid");
+    const [tabA, tabB] = await installTabs(meta);
+    const shardsBefore = meta.essence;
+    tabA.Math.random = tabB.Math.random = () => 0.5;
+    await withTimeout(Promise.all([
+      tabA.handleHomesteadAction("make-elemental-essence", { materialId: "emberglass" }),
+      tabB.handleTavernAction("buy-meal", { mealId: "lunch" }),
+      tabA.handleTavernAction("equip-ring", { gearId: "gear-1", removeRing: "false" }),
+      tabB.sellGuildTrophy("shell", id(3)),
+    ]), "mixed elemental/food/ring/trophy operations");
+    const after = stored(tabA, metaKey);
+    const essenceCrafts = after.elemental.transactions.filter((entry) => entry.kind === "essence");
+    assert(essenceCrafts.length === 1 && after.elemental.balances.emberEssence === 1 &&
+      after.elemental.balances.emberglass === 0 && after.elemental.balances.primalWater === 0,
+      `essence craft output or material debit lost: ${tabA.eval("homesteadMessage")}`);
+    assert(after.essence === shardsBefore, "essence craft changed camp shards");
+    assert(after.tavern.equippedRingId === "gear-1", "concurrent writes overwrote ring equip");
+    assert(after.trophySales.length === 1 && after.dungeonTrophies.shell === 2, "trophy receipt or stock lost");
+    const saleGold = after.trophySales.reduce((sum, receipt) => sum + app.WellGoldEconomyModel.trophySalePrice(receipt.key), 0);
+    assert(goldMatchesReceipts(after, startGold, saleGold),
+      `gold diverged from food and trophy receipts (gold=${after.tavern.gold}, meals=${after.tavern.foodReceipts.length})`);
+    const reloaded = await reloadedMeta();
+    assert(reloaded.elemental.balances.emberEssence === 1 &&
+      reloaded.elemental.transactions.filter((entry) => entry.kind === "essence").length === 1 &&
+      reloaded.tavern.equippedRingId === "gear-1" && reloaded.trophySales.length === 1 &&
+      goldMatchesReceipts(reloaded, startGold, saleGold), "reload diverged from the committed mixed snapshot");
+    output.textContent += `  info elemental mix: meal receipts=${after.tavern.foodReceipts.length}, gold=${after.tavern.gold}\n`;
+  });
+
   document.getElementById("result").dataset.result = failures.length ? "fail" : "pass";
   document.getElementById("result").textContent = failures.length ? "FAIL" : "PASS";
 })().catch((error) => {

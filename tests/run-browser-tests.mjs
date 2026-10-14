@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
 const availableTests = ["dungeon", "dungeon-integration", "gold-economy", "runes", "attributes", "pvp-client",
-  "guild-integration", "tavern", "expeditions", "homestead", "soul-crafting", "rings", "food", "settings", "heart-shards",
+  "guild-integration", "tavern", "expeditions", "homestead", "soul-crafting", "elemental-gear", "rings", "food", "settings", "heart-shards",
   "player-progress", "player-groups", "system-compatibility", "meta-lock-compatibility", "pages-artifact", "classes", "trophy-buyback", "city"];
 const tests = process.argv.length > 2 ? process.argv.slice(2) : availableTests;
 if (tests.some((test) => !availableTests.includes(test))) throw new Error("Unknown browser test.");
@@ -27,7 +27,7 @@ for (const test of tests) {
   let socket;
   try {
     let port;
-    for (let attempt = 0; attempt < 300; attempt += 1) {
+    for (let attempt = 0; attempt < 600; attempt += 1) {
       if (launchError) throw launchError;
       if (browser.exitCode !== null || browser.signalCode !== null) {
         throw new Error(`Chrome exited before startup (${browser.exitCode ?? browser.signalCode}).\n${browserLog}`);
@@ -40,7 +40,7 @@ for (const test of tests) {
         await delay(100);
       }
     }
-    if (!port) throw new Error(`Chrome did not start its debugging endpoint within 30 seconds.\n${browserLog}`);
+    if (!port) throw new Error(`Chrome did not start its debugging endpoint within 60 seconds.\n${browserLog}`);
     const url = `${baseUrl}/tests/${test}.test.html`;
     const response = await fetch(`http://127.0.0.1:${port}/json/new?${encodeURIComponent(url)}`, { method: "PUT" });
     if (!response.ok) throw new Error(`Chrome target creation failed: ${response.status}`);

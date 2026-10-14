@@ -11,6 +11,7 @@ ASSETS = (
     "game-art.svg",
     "cloud-save.js",
     "player-groups.js",
+    "elemental-gear-model.js",
     "cloud-config.js",
     "tavern-model.js",
     "gold-economy-model.js",

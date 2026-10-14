@@ -725,6 +725,7 @@ function createMetaProgress(now = Date.now()) {
     runeUses: [],
     attributes: window.WellAttributeModel.atLevel(1),
     souls: window.WellSoulCraftingModel.createState(),
+    elemental: window.WellElementalGearModel.createState(),
     harbor: window.WellExpeditionsModel.createState(),
     homestead: window.WellHomesteadModel.createState(now),
   };
@@ -764,6 +765,7 @@ function isValidMetaProgress(progress) {
     isValidInboxReceipts(progress.groupInboxReceipts) &&
     window.WellGoldEconomyModel.isValidTrophySales(progress.trophySales) &&
     (progress.souls === undefined || window.WellSoulCraftingModel.isValidState(progress.souls)) &&
+    (progress.elemental === undefined || window.WellElementalGearModel.isValidState(progress.elemental)) &&
     (progress.orderReputation === undefined || isIntegerBetween(progress.orderReputation, 0, 1000000000)) &&
     (progress.dungeonTrophies === undefined || (
       progress.dungeonTrophies && typeof progress.dungeonTrophies === "object" &&
@@ -866,6 +868,7 @@ function normalizeMetaProgress(progress) {
   );
   normalized.orderReputation = progress?.orderReputation ?? 0;
   normalized.souls = window.WellSoulCraftingModel.withDefaults(progress?.souls);
+  normalized.elemental = window.WellElementalGearModel.withDefaults(progress?.elemental);
   normalized.dungeonTrophies = { ...(progress?.dungeonTrophies || {}) };
   normalized.dungeonVictories = (progress?.dungeonVictories || []).map((receipt) => ({
     ...receipt, trophies: [...receipt.trophies],
@@ -961,6 +964,7 @@ function readMetaProgress() {
 function mergeMetaProgress(left, right) {
   const first = normalizeMetaProgress(isValidMetaProgress(left) ? left : createMetaProgress(0));
   const second = normalizeMetaProgress(isValidMetaProgress(right) ? right : createMetaProgress(0));
+  const elemental = window.WellElementalGearModel.merge(first.elemental, second.elemental);
   const victoryById = new Map();
   for (const receipt of [...first.dungeonVictories, ...second.dungeonVictories]) {
     const existing = victoryById.get(receipt.id);
@@ -1146,6 +1150,7 @@ function mergeMetaProgress(left, right) {
       ...(second.groupInboxReceipts || []),
     ])],
     souls,
+    elemental,
     tavern: mergedSoulGearTavern,
     harbor,
     homestead,
@@ -1183,6 +1188,7 @@ function persistMetaProgress({ requireLocalCommit = false } = {}) {
         runeUses: dungeonMerged.runeUses,
         attributes: dungeonMerged.attributes,
         souls: dungeonMerged.souls,
+        elemental: dungeonMerged.elemental,
       };
     }
     window.localStorage.setItem(META_SAVE_KEY, JSON.stringify(metaProgress));
@@ -2536,6 +2542,32 @@ function addSoulDrop(soulId, source, playerLevel = state.level) {
   return false;
 }
 
+function addElementalResource(resourceId, source, playerLevel = state.level) {
+  const model = window.WellElementalGearModel;
+  if (playerLevel < model.CRAFT_LEVEL) return false;
+  const result = model.grant(
+    metaProgress.elemental,
+    playerLevel,
+    resourceId,
+    window.crypto.randomUUID(),
+    source,
+  );
+  if (!result.ok) {
+    console.warn("Не удалось выдать стихийный материал.", result.reason);
+    return false;
+  }
+  const previous = metaProgress;
+  metaProgress = { ...previous, elemental: result.state };
+  if (persistMetaProgress()) return true;
+  metaProgress = previous;
+  return false;
+}
+
+function elementalFindText(resourceId, source) {
+  if (!addElementalResource(resourceId, source)) return "";
+  return ` Найдено: ${window.WellElementalGearModel.MATERIALS[resourceId].name}.`;
+}
+
 function applySharedGoldReward(amount, receiptId) {
   if (!state.started || state.gameOver) return false;
   if (state.groupInboxReceipts?.includes(receiptId)) return true;
@@ -2724,7 +2756,8 @@ function resolveDungeonEvent(action) {
     const gold = 4 + state.floor;
     addGold(gold);
     state.attack += 1;
-    finishDungeonEvent("РУДНАЯ ЗАГОТОВКА", `Ты аккуратно добыл ${gold} монет ценного металла. Сила удара выросла на 1.`, "⚒", "Добыта руда");
+    const find = elementalFindText("emberglass", action);
+    finishDungeonEvent("РУДНАЯ ЗАГОТОВКА", `Ты аккуратно добыл ${gold} монет ценного металла. Сила удара выросла на 1.${find}`, "⚒", "Добыта руда");
   } else if (action === "ore-force") {
     const damage = damageFromEvent(4, 8);
     const gold = 14 + state.floor;
@@ -2755,7 +2788,8 @@ function resolveDungeonEvent(action) {
     const gold = 8 + state.floor;
     addGold(gold);
     addEventEssence(1);
-    finishDungeonEvent("БЛЕСК НА ДНЕ", `Среди камней нашлись жемчужина и ${gold} монет. Её сияние укрепило лагерь на 1 осколок.`, "✧", "Жемчужина из ручья");
+    const find = elementalFindText("tidePearl", action);
+    finishDungeonEvent("БЛЕСК НА ДНЕ", `Среди камней нашлись жемчужина и ${gold} монет. Её сияние укрепило лагерь на 1 осколок.${find}`, "✧", "Жемчужина из ручья");
   } else if (action === "door-listen") {
     const gold = 5 + state.floor;
     addGold(gold);
@@ -2840,7 +2874,8 @@ function resolveDungeonEvent(action) {
     finishDungeonEvent("АЛТАРЬ УТИХ", `Подношение принято. Лагерь получил 1 осколок${healing ? `, восстановлено ${healing} здоровья` : ""}.`, "ᛟ", "Подношение алтарю", "rune");
   } else if (action === "book-study") {
     state.attack += 1;
-    finishDungeonEvent("ЗАПОМНЕННАЯ ГЛАВА", "Ты успел разобрать один боевой приём до того, как чернила поблёкли. Сила удара навсегда выросла на 1.", "▤", "Страница из истлевшей книги", "rune");
+    const find = elementalFindText("recipeBook", action);
+    finishDungeonEvent("ЗАПОМНЕННАЯ ГЛАВА", `Ты успел разобрать один боевой приём до того, как чернила поблёкли. Сила удара навсегда выросла на 1.${find}`, "▤", "Страница из истлевшей книги", "rune");
   } else if (action === "book-seal") {
     const gold = 7 + state.floor;
     addGold(gold);
@@ -2859,12 +2894,14 @@ function resolveDungeonEvent(action) {
   } else if (action === "grove-drink") {
     const healing = Math.min(randomInt(9, 14), state.maxHp - state.hp);
     state.hp += healing;
-    finishDungeonEvent("РОСА С КОРНЕЙ", healing ? `Чистая роса восстановила ${healing} здоровья.` : "Роса свежа, но ты и так полон сил.", "♧", "Передышка в подземной роще", "heal");
+    const find = elementalFindText("primalWater", action);
+    finishDungeonEvent("РОСА С КОРНЕЙ", `${healing ? `Чистая роса восстановила ${healing} здоровья.` : "Роса свежа, но ты и так полон сил."}${find}`, "♧", "Передышка в подземной роще", "heal");
   } else if (action === "grove-harvest") {
     state.maxHp += 4;
     const healing = Math.min(4, state.maxHp - state.hp);
     state.hp += healing;
-    finishDungeonEvent("СЕМЕНА РОЩИ", `Ты сохранил семена: максимум здоровья навсегда вырос на 4${healing ? `, восстановлено ${healing}` : ""}.`, "♧", "Дар подземной рощи", "rune");
+    const find = elementalFindText("rootAmber", action);
+    finishDungeonEvent("СЕМЕНА РОЩИ", `Ты сохранил семена: максимум здоровья навсегда вырос на 4${healing ? `, восстановлено ${healing}` : ""}.${find}`, "♧", "Дар подземной рощи", "rune");
   } else if (action === "rune-strength") {
     state.attack += 1;
     finishDungeonEvent("РУНА ОТКЛИКНУЛАСЬ", "Камень рассыпался искрами. Сила удара навсегда выросла на 1.", "ᛟ", "Руна силы", "rune");
@@ -3301,6 +3338,12 @@ function defeatEnemy() {
   const guildLuck = metaProgress.guildLuck.expiresAt > Date.now()
     ? metaProgress.guildLuck.bonus / 100
     : 0;
+  if (enemy.special === "keeper") {
+    const heartFragment = addElementalResource("heartFragment", "keeper-defeat", victoryLevel);
+    if (heartFragment) {
+      gearMessage += ` Найдено: ${window.WellElementalGearModel.MATERIALS.heartFragment.name}.`;
+    }
+  }
   if (state.level >= window.WellSoulCraftingModel.DROP_LEVEL && Math.random() < 0.08) {
     const soulId = Math.random() < 0.5 ? "blood" : "fury";
     if (addSoulDrop(soulId, "random-combat-drop")) {
@@ -3893,7 +3936,8 @@ function renderEquipment() {
     : "Ремесленный стол · сначала купи дом";
   const soulCraftButton = $("profile-soul-crafting-button");
   soulCraftButton.disabled = state.started && !state.gameOver;
-  soulCraftButton.textContent = `Души и R-ремесло · ур. ${metaProgress.tavern.characterLevel} / ${window.WellSoulCraftingModel.CRAFT_LEVEL}`;
+  soulCraftButton.textContent =
+    `Стихийное ремесло · ур. ${window.WellElementalGearModel.CRAFT_LEVEL} · R-ремесло · ур. ${window.WellSoulCraftingModel.CRAFT_LEVEL}`;
   const weapon = state.equipment.weapon;
   const armor = state.equipment.armor;
   const ring = state.started && !state.gameOver ? state.equipment.ring
@@ -4276,6 +4320,40 @@ function renderHomestead() {
     ));
   }
   ui.homesteadContent.append(soulCrafting);
+  const elementalModel = window.WellElementalGearModel;
+  const elementalState = elementalModel.withDefaults(metaProgress.elemental);
+  const elementalLevel = metaProgress.tavern.characterLevel;
+  const elementalCounts = Object.entries(elementalModel.MATERIALS)
+    .concat(Object.entries(elementalModel.ESSENCES))
+    .map(([id, resource]) => `${resource.name}: ${elementalState.balances[id]}`)
+    .join(" · ");
+  const elementalCrafting = homeSection(
+    "Стихийное снаряжение",
+    `Материалы и эссенции доступны с ${elementalModel.CRAFT_LEVEL}-го уровня. ${elementalCounts}`,
+  );
+  for (const [materialId, material] of Object.entries(elementalModel.MATERIALS)) {
+    if (!material.essence) continue;
+    const missing = elementalState.balances[materialId] < 1 ||
+      elementalState.balances.primalWater < 1;
+    const unavailable = elementalLevel < elementalModel.CRAFT_LEVEL || missing;
+    elementalCrafting.append(homeCard(
+      `Эссенция · ${material.name}`,
+      `${material.name} + 1 × ${elementalModel.MATERIALS.primalWater.name}. ` +
+        `Критический результат: ${elementalModel.CRITICAL_CHANCE * 100}% на 2 эссенции.`,
+      [homesteadButton("Смешать эссенцию", "make-elemental-essence", { materialId }, unavailable)],
+    ));
+  }
+  for (const recipe of Object.values(elementalModel.RECIPES)) {
+    const attributeNames = { strength: "Сила", agility: "Ловкость", endurance: "Выносливость" };
+    const tradeoff = `${attributeNames[recipe.advantage]} +100% к росту / ` +
+      `${attributeNames[recipe.drawback]} −50% к росту`;
+    elementalCrafting.append(homeCard(
+      `${recipe.name} · ${recipe.type === "weapon" ? "оружие" : "броня"}`,
+      `${tradeoff}. ${elementalModel.GEAR_CRAFTING_BLOCKED_REASON} Полный рецепт и цена не подтверждены.`,
+      [homesteadButton("Недоступно", "craft-elemental-gear", { recipeId: recipe.id }, true)],
+    ));
+  }
+  ui.homesteadContent.append(elementalCrafting);
   if (!bestHome) return;
 
   const holdings = homeSection("Личные владения", `Куплено домов: ${homestead.homes.length} · используется ${homeType.name} · открыто ${model.getPlotLimit(homestead)} участков.`);
@@ -5039,7 +5117,12 @@ async function claimMailboxItem(mailId) {
       ...nextTavern.stash.map((item) => Number(item.id.slice(5))),
     );
     const gearId = `gear-${highestSequence + 1}`;
-    const gear = { id: gearId, type: claim.gear.type, name: claim.gear.name, bonus: claim.gear.bonus };
+    const gear = {
+      id: gearId,
+      type: claim.gear.type,
+      name: claim.gear.name,
+      bonus: claim.gear.bonus,
+    };
     nextTavern.stash.push(gear);
     nextTavern.nextGearSequence = highestSequence + 1;
     nextTavern.revision += 1;
@@ -5091,6 +5174,15 @@ function closeHomestead() {
 }
 
 async function handleHomesteadAction(action, data = {}) {
+  if (action === "make-elemental-essence" && !data.elementalLockAcquired) {
+    if (!navigator.locks) {
+      homesteadMessage = "Браузер не поддерживает безопасную блокировку ремесла. Материалы не списаны.";
+      renderHomestead();
+      return;
+    }
+    return navigator.locks.request("well-elemental-crafting", () =>
+      handleHomesteadAction(action, { ...data, elementalLockAcquired: true }));
+  }
   if (action === "craft-soul" && !data.gearLockAcquired) {
     if (!navigator.locks) {
       homesteadMessage = "Браузер не поддерживает безопасную блокировку ремесла. Души не списаны.";
@@ -5267,6 +5359,40 @@ async function handleHomesteadAction(action, data = {}) {
         throw new Error("Не удалось сохранить R-экипировку. Души не списаны.");
       }
       homesteadMessage = `${result.gear.name} сохранён в постоянном запасе. Списано ${recipe.amount} × ${recipe.soulName}.`;
+      render();
+      return;
+    } else if (action === "make-elemental-essence") {
+      latestHomesteadBalances();
+      const previous = metaProgress;
+      const model = window.WellElementalGearModel;
+      const material = model.MATERIALS[data.materialId];
+      if (!material?.essence) throw new Error("Для этого материала нет рецепта эссенции.");
+      if (!window.confirm(
+        `Смешать одну «${material.name}» и одну «${model.MATERIALS.primalWater.name}»? ` +
+        `Шанс получить 2 эссенции: ${model.CRITICAL_CHANCE * 100}%.`,
+      )) return;
+      const result = model.createEssence(
+        previous.elemental,
+        previous.tavern.characterLevel,
+        data.materialId,
+        homesteadReceiptId(),
+      );
+      if (!result.ok) {
+        homesteadMessage = result.reason;
+        return;
+      }
+      metaProgress = { ...previous, elemental: result.state };
+      if (!persistMetaProgress()) {
+        metaProgress = previous;
+        throw new Error("Не удалось сохранить эссенцию. Материалы и вода не списаны.");
+      }
+      homesteadMessage = `${result.essence.name} создана${result.critical ? " в критическом результате: получено 2" : ""}.`;
+      render();
+      return;
+    } else if (action === "craft-elemental-gear") {
+      const model = window.WellElementalGearModel;
+      const result = model.craft(metaProgress.tavern.characterLevel, data.recipeId);
+      homesteadMessage = result.reason;
       render();
       return;
     } else if (action === "cook-meal") {

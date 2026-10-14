@@ -86,6 +86,13 @@
             <div class="meta-secrets"><strong>Летопись глубин</strong><span id="meta-secrets">0/4 записей · исследуй тайные залы</span></div>
             <div class="meta-secrets"><strong>Репутация ордена: <span id="order-reputation">0</span></strong><span id="dungeon-trophies">Трофеев пока нет.</span></div>
             <p class="inventory-empty">Коллекционные трофеи сохраняются между спусками. Обмен и использование манускриптов пока недоступны.</p>
+            <section class="rune-meta" aria-labelledby="rune-heading">
+              <strong id="rune-heading">РУНЫ УСИЛЕНИЯ</strong>
+              <p>С 30-го уровня. При использовании руна расходуется, но счётчик добытых рун остаётся; применение стоит репутацию ордена и доступно только в лагере.</p>
+              <div id="rune-list"></div>
+              <p class="inventory-empty">Сопротивление — не отдельная характеристика: оно добавляется к снижению урона от брони с общим пределом 75%. В совместном бою защита вычитается из урона целым числом; точность, концентрация и удача туда не передаются.</p>
+              <p class="inventory-empty">Кольца рун в экипировке пока нет: удвоение добычи поддерживается правилами, но не активно.</p>
+            </section>
             <button class="service-button profile-homes-button" id="homestead-open-button" type="button">Магазин · Дома</button>
           </section>
           <p class="save-note"><span aria-hidden="true">●</span> Прогресс сохраняется автоматически</p>
@@ -509,6 +516,7 @@
     <script src="expeditions-model.js"></script>
     <script src="homestead-model.js"></script>
     <script src="soul-crafting-model.js"></script>
+    <script src="rune-model.js"></script>
     <script src="dungeon-model.js"></script>
     <script src="pvp-client.js"></script>
     <script src="game.js"></script>

@@ -297,8 +297,29 @@
     app.eval("metaProgress.homestead.mealBuff = { stat: 'attack', startedAt: 1000, expiresAt: 1000 + 7200000 };");
     assert(app.hasActiveMealBuff("attack", 1000 + 2 * hour - 1) &&
       !app.hasActiveMealBuff("attack", 1000 + 2 * hour), "legacy gameplay buff exact expiry");
+    app.eval(`
+      state.enemy = null;
+      state.attack = 5;
+      state.equipment.weapon = null;
+      state.classId = "knight";
+      metaProgress.homestead.mealBuff = null;
+      metaProgress.runeDrops = [{ id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", type: "attack", count: 1, level: 30 }];
+      metaProgress.runeUses = [{ id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", type: "attack", cost: 500 }];
+      persistMetaProgress();
+    `);
+    const withRune = app.getAttackPower();
+    assert(withRune === 6 && app.getDungeonFighter().attack === 6, "permanent rune applied once in fighter");
+    await app.handleTavernAction("eat", { recipeId: "fish-fillet" });
+    assert(app.getAttackPower() === withRune &&
+      app.getCloudSaveSnapshot().meta.runeUses.length === 1, "food transaction preserves rune ledger without extra combat multiplier");
+    const legacyExpires = Date.now() + hour;
+    app.eval(`metaProgress.homestead.mealBuff = { stat: "attack", startedAt: Date.now(), expiresAt: ${legacyExpires} };`);
+    assert(app.getAttackPower() === 9 && app.getDungeonFighter().attack === 9,
+      "legacy temporary multiplier and permanent rune compose exactly once");
+    app.eval(`metaProgress.homestead.mealBuff.expiresAt = Date.now() - 1;`);
+    assert(app.getAttackPower() === 6, "temporary expiry retains permanent rune");
     frame.remove();
-    log.textContent += "PASS browser menu, purchase/reload, stable render, dungeon food, PvP gate, World Eater, cloud merge, legacy expiry\n";
+    log.textContent += "PASS browser menu, purchase/reload, stable render, dungeon food, PvP gate, World Eater, cloud merge, legacy expiry, rune coexistence\n";
   } catch (error) { failures.push(`browser integration: ${error.stack}`); }
   log.textContent += failures.join("\n");
   const result = document.getElementById("result");

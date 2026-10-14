@@ -24,7 +24,9 @@
   document.body.append(frame);
   await new Promise((resolve) => frame.addEventListener("load", resolve, { once: true }));
   const app = frame.contentWindow;
-  await app.gameServicesReady;
+  await app.eval("gameServicesReady");
+  assert(app.WellPvp?.isReady(), "PvP service did not initialize its callbacks");
+  output.textContent += "PASS game services and PvP callbacks are ready\n";
 
   check("old meta saves initialize guild transaction ledgers", () => {
     const old = app.createMetaProgress();

@@ -250,7 +250,7 @@ $daily$;
 -- Separate top-level transactions prevent parent assertions retaining locks
 -- when the next dblink case acquires its gate.
 create function public.expedition_test_concurrency(p_case integer)
-returns void language plpgsql as $$
+returns void language plpgsql as $concurrency$
 declare
   v_connection text := format(
     'host=127.0.0.1 port=%s dbname=%s user=postgres password=local-test-only',
@@ -304,7 +304,7 @@ begin
   perform dblink_disconnect('exp_b');
   perform dblink_disconnect('exp_blocker');
 end;
-$$;
+$concurrency$;
 select public.expedition_test_concurrency(1);
 select public.expedition_test_concurrency(2);
 -- Remove only the unclaimed test start so distinct concurrent starts can race.

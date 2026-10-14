@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - "expeditions-model.js"
+      - "class-model.js"
       - "game.js"
       - "index.html"
       - "styles.css"

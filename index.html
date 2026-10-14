@@ -22,7 +22,12 @@
         </button>
         <button class="group-open-button" id="group-open-button" type="button" aria-haspopup="dialog" aria-controls="group-dialog">Группа</button>
         <button class="sound-toggle" id="sound-toggle" type="button" aria-label="Включить звук" aria-pressed="false" title="Звук выключен">
-          <span aria-hidden="true">♫</span><span id="sound-toggle-label">Звук: выкл.</span>
+          <svg class="sound-toggle-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M4 10v4h4l5 4V6l-5 4H4z"/>
+            <path class="sound-icon-wave" d="M16 9a5 5 0 0 1 0 6m2-8a8 8 0 0 1 0 10"/>
+            <path class="sound-icon-muted" d="m17 9 5 6m0-6-5 6"/>
+          </svg>
+          <span id="sound-toggle-label">Звук: выкл.</span>
         </button>
       </header>
 

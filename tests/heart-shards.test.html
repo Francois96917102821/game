@@ -117,32 +117,35 @@
   app.eval(`(() => {
     state.floor = 2;
     state.hp = state.maxHp;
-    state.agilityBonus = 0;
     setEvent("ПОГРУЖЕНИЕ", "Глубокая ниша.", "♆", "ВЫБЕРИ ДЕЙСТВИЕ",
       ["dive-deep"], "${ids[1]}");
   })()`);
+  const agilityBeforeDive = app.getDungeonFighter().agility;
   app.resolveDungeonEvent("dive-deep");
-  check("Shard Dive awards two shards and one bounded run-only agility bonus", () => {
+  check("Shard Dive awards two shards without changing combat Agility", () => {
     const snapshot = app.getCloudSaveSnapshot();
     assert(snapshot.meta.heartShards === 4, "deep dive did not grant two shards");
     assert(snapshot.meta.essence === 1, "existing ordinary essence reward was removed");
-    assert(snapshot.run.state.agilityBonus === 0.1, "deep dive did not grant +0.10 run Agility");
-    assert(app.eval("getDungeonFighter().agility") <= 1, "Agility exceeded the combat contract cap");
+    assert(!Object.hasOwn(snapshot.run.state, "agilityBonus"), "temporary Agility stat introduced");
+    assert(app.getDungeonFighter().agility === agilityBeforeDive,
+      "dive changed normalized combat Agility instead of a permanent attribute");
     const event = app.eval('DUNGEON_EVENTS.find((item) => item.shardSource === "shard-dive")');
     assert(event.minFloor === 2 && event.weight === 10, "Shard Dive left the existing regular event pool");
+    assert(snapshot.run.state.event.text.includes("Постоянная награда ловкости заблокирована"),
+      "blocked permanent attribute reward was not disclosed");
   });
 
   app.eval(`(() => {
     state.hp = state.maxHp;
-    state.agilityBonus = 0;
     setEvent("ПОГРУЖЕНИЕ", "Повтор.", "♆", "ВЫБЕРИ ДЕЙСТВИЕ",
       ["dive-deep"], "${ids[1]}");
   })()`);
   app.resolveDungeonEvent("dive-deep");
-  check("restored Shard Dive receipt cannot duplicate shards or Agility", () => {
+  check("restored Shard Dive receipt cannot duplicate shards or change Agility", () => {
     const snapshot = app.getCloudSaveSnapshot();
     assert(snapshot.meta.heartShards === 4, "replayed dive minted shards");
-    assert(snapshot.run.state.agilityBonus === 0, "replayed dive restored the Agility bonus");
+    assert(!Object.hasOwn(snapshot.run.state, "agilityBonus") &&
+      app.getDungeonFighter().agility === agilityBeforeDive, "replayed dive changed Agility");
   });
 
   check("invalid receipts, over-cap rewards, and invalid save data are rejected", () => {
@@ -159,9 +162,6 @@
     const invalidRun = JSON.parse(JSON.stringify(snapshot.run));
     invalidRun.state.event.receiptId = "bad";
     assert(!app.isValidRun(invalidRun), "invalid active-event receipt accepted");
-    invalidRun.state.event.receiptId = null;
-    invalidRun.state.agilityBonus = 0.11;
-    assert(!app.isValidRun(invalidRun), "run Agility bonus exceeded its 0.10 cap");
   });
 
   check("cloud merge and restore deduplicate event and fish receipts", () => {
@@ -190,6 +190,51 @@
       "restoring the same cloud snapshot changed the shard balance");
   });
 
+  check("conflicting event payloads reject successive cloud merges without dropping history", () => {
+    const original = [{ id: ids[0], source: "deep-flower", shards: 1 }];
+    const disputed = [{ id: ids[0], source: "deep-flower", shards: 0 }];
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      let rejected = false;
+      try { model.mergeReceipts(original, disputed); } catch { rejected = true; }
+      assert(rejected, "conflicting UUID was silently dropped instead of rejecting the merge");
+      assert(model.mergeReceipts(original, original).length === 1 &&
+        model.balance(original, []) === 1, "failed merge changed the accepted ledger");
+    }
+    const snapshot = app.getCloudSaveSnapshot();
+    const invalidCloud = JSON.parse(JSON.stringify(snapshot));
+    invalidCloud.meta.heartShardReceipts.find((receipt) => receipt.id === ids[0]).shards = 0;
+    invalidCloud.meta.heartShards -= 1;
+    let restoreRejected = false;
+    try { app.restoreCloudSave(invalidCloud); } catch { restoreRejected = true; }
+    assert(restoreRejected, "conflicting cloud snapshot was accepted");
+    assert(app.getCloudSaveSnapshot().meta.heartShards === snapshot.meta.heartShards,
+      "failed conflicting restore changed the local balance");
+  });
+
+  check("rejected fish receipts stay rejected after new fish and stale cloud merges", () => {
+    const base = homeModel.createState(1000);
+    base.atHome = true;
+    base.resources.fish = 1;
+    const left = homeModel.processFish(base, ids[2], 0, 1001).state;
+    const right = homeModel.processFish(base, ids[3], 0, 1002).state;
+    const merged = homeModel.merge(left, right);
+    assert(merged.fishProcessingReceipts.length === 1 &&
+      merged.fishProcessingConflicts.includes(ids[2]), "overspent fish receipt was not rejected");
+    merged.resources.fish = 2;
+    merged.updatedAt = 1003;
+    merged.revision += 1;
+    const stale = homeModel.merge(merged, left);
+    const repeated = homeModel.merge(stale, left);
+    assert(repeated.resources.fish === 2 && repeated.fishProcessingReceipts.length === 1 &&
+      repeated.fishProcessingConflicts.includes(ids[2]), "rejected receipt spent newly caught fish");
+    assert(!homeModel.processFish(repeated, ids[2], 1).ok, "rejected UUID reused for a new debit");
+    const conflict = JSON.parse(JSON.stringify(right));
+    conflict.fishProcessingReceipts[0].shards = 0;
+    let rejected = false;
+    try { homeModel.merge(right, conflict); } catch { rejected = true; }
+    assert(rejected, "fish receipt payload conflict was silently accepted");
+  });
+
   const beforeReload = app.getCloudSaveSnapshot();
   await reloadApp();
   check("page reload preserves shard balance and receipt history", () => {
@@ -206,7 +251,6 @@
   delete legacyMeta.homestead.fishProcessingReceipts;
   delete legacyMeta.homestead.fishProcessingConflicts;
   const legacyRun = beforeReload.run;
-  delete legacyRun.state.agilityBonus;
   delete legacyRun.state.event.receiptId;
   check("pre-feature saves validate and receive safe defaults", () => {
     assert(app.isValidMetaProgress(legacyMeta), "legacy meta save rejected");
@@ -220,12 +264,51 @@
   localStorage.setItem("well-of-whispers-camp-progress", JSON.stringify(legacyMeta));
   localStorage.setItem("well-of-whispers-active-run", JSON.stringify(legacyRun));
   await reloadApp();
-  check("resuming an old run defaults temporary Agility safely", () => {
+  check("resuming an old run defaults receipts without introducing temporary stats", () => {
     app.eval("resumeGame()");
     const run = app.getCloudSaveSnapshot().run;
-    assert(run.state.agilityBonus === 0 && run.state.event.receiptId === null,
-      "legacy run did not receive safe event and Agility defaults");
+    assert(!Object.hasOwn(run.state, "agilityBonus") && run.state.event.receiptId === null,
+      "legacy run introduced a temporary stat or missed safe receipt defaults");
     assert(app.getCloudSaveSnapshot().meta.heartShards === 0, "legacy migration created shards");
+  });
+
+  const lastFish = app.createMetaProgress();
+  lastFish.homestead.homes.push({ id: "test-cabin", tier: "cabin", purchasedAt: Date.now() });
+  lastFish.homestead.atHome = true;
+  lastFish.homestead.resources.fish = 1;
+  localStorage.setItem("well-of-whispers-camp-progress", JSON.stringify(lastFish));
+  app.eval(`metaProgress = normalizeMetaProgress(${JSON.stringify(lastFish)})`);
+  const secondFrame = document.createElement("iframe");
+  secondFrame.src = "../index.html?heart-shards-second-tab=1";
+  document.body.append(secondFrame);
+  await new Promise((resolve) => secondFrame.addEventListener("load", resolve, { once: true }));
+  const secondApp = secondFrame.contentWindow;
+  await secondApp.eval("gameServicesReady");
+  await Promise.all([
+    app.handleHomesteadAction("process-fish"),
+    secondApp.handleHomesteadAction("process-fish"),
+  ]);
+  const raced = JSON.parse(localStorage.getItem("well-of-whispers-camp-progress"));
+  check("two tabs process the last fish once under the shared resource lock", () => {
+    assert(raced.heartShards === 1 && raced.homestead.resources.fish === 0 &&
+      raced.homestead.fishProcessingReceipts.length === 1,
+    "parallel real actions minted two receipts or restored the last fish");
+    for (const tab of [app, secondApp]) {
+      const merged = tab.mergeMetaProgress(tab.getCloudSaveSnapshot().meta, raced);
+      const replayed = tab.mergeMetaProgress(merged, lastFish);
+      assert(replayed.heartShards === 1 && replayed.homestead.resources.fish === 0 &&
+        replayed.homestead.fishProcessingReceipts.length === 1,
+      "repeated stale-cloud merge resurrected a rejected receipt or fish");
+      tab.restoreCloudSave({ ...tab.getCloudSaveSnapshot(), meta: replayed });
+    }
+  });
+  secondFrame.remove();
+  await reloadApp();
+  check("two-tab processing remains single-issued after reload", () => {
+    const saved = app.getCloudSaveSnapshot().meta;
+    assert(saved.heartShards === 1 && saved.homestead.resources.fish === 0 &&
+      saved.homestead.fishProcessingReceipts.length === 1,
+    "reload resurrected a rejected processing receipt or fish");
   });
 
   if (failures.length) {

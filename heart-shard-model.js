@@ -41,19 +41,21 @@
 
   function mergeReceipts(...ledgers) {
     const receiptsById = new Map();
-    const conflicts = new Set();
     for (const receipts of ledgers) {
       if (!isValidReceipts(receipts, EVENT_SOURCES)) throw new Error("Квитанции сердечных осколков повреждены.");
       for (const receipt of receipts) {
         const existing = receiptsById.get(receipt.id);
         if (!existing) receiptsById.set(receipt.id, receipt);
-        else if (JSON.stringify(existing) !== JSON.stringify(receipt)) conflicts.add(receipt.id);
+        else if (existing.source !== receipt.source || existing.shards !== receipt.shards) {
+          throw new Error("Конфликт квитанций сердечных осколков; облачное изменение не применено.");
+        }
       }
     }
+    if (receiptsById.size > MAX_RECEIPTS) {
+      throw new Error("Журнал сердечных осколков заполнен; облачное изменение не применено.");
+    }
     return [...receiptsById.entries()]
-      .filter(([id]) => !conflicts.has(id))
       .sort(([left], [right]) => left.localeCompare(right))
-      .slice(0, MAX_RECEIPTS)
       .map(([, receipt]) => ({ ...receipt }));
   }
 
@@ -63,14 +65,14 @@
       throw new Error("Квитанции сердечных осколков повреждены.");
     }
     const byId = new Map();
-    const conflicts = new Set();
     for (const receipt of [...eventReceipts, ...fishReceipts]) {
       const existing = byId.get(receipt.id);
       if (!existing) byId.set(receipt.id, receipt);
-      else if (JSON.stringify(existing) !== JSON.stringify(receipt)) conflicts.add(receipt.id);
+      else if (existing.source !== receipt.source || existing.shards !== receipt.shards) {
+        throw new Error("Конфликт квитанций сердечных осколков; награда не применена.");
+      }
     }
     const total = [...byId.entries()]
-      .filter(([id]) => !conflicts.has(id))
       .reduce((sum, [, receipt]) => sum + receipt.shards, 0);
     return Math.min(MAX_SHARDS, total);
   }

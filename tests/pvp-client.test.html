@@ -17,7 +17,7 @@
   const app = frame.contentWindow;
   const doc = app.document;
   app.WellPvp.initialize({
-    getFighter: () => app.getDungeonFighter(false),
+    getFighter: app.getDungeonFighter,
     getBattleId: () => app.eval("state.liveDuelId"),
     canDuel: app.canRequestDungeonDuel,
     inDungeon: () => app.eval("state.started && !state.gameOver"),
@@ -70,14 +70,13 @@
     throw new Error("Unknown mock RPC");
   };
   await app.WellPvp.refresh();
-  app.eval("state.agilityBonus = 0.1");
   const before = app.getCloudSaveSnapshot();
   await app.WellPvp.start(false);
   assert(requests.some((entry) => entry.rpc === "pvp_start" && entry.args.p_request_id &&
     entry.args.p_player.hp > 0 &&
-    entry.args.p_player.agility === app.getDungeonFighter(false).agility &&
-    app.getDungeonFighter().agility > entry.args.p_player.agility),
-  "start snapshot/request missing or included run-only Agility");
+    entry.args.p_player.agility === app.getDungeonFighter().agility &&
+    !Object.hasOwn(app.getCloudSaveSnapshot().run.state, "agilityBonus")),
+  "start snapshot/request missing or introduced a temporary Agility stat");
   assert(app.getCloudSaveSnapshot().run.state.liveDuelId === id, "active duel not persisted");
   assert(doc.getElementById("explore-button").hidden, "dungeon not locked");
   log("real-duel RPC snapshot, request UUID and persisted dungeon lock");

@@ -15,7 +15,6 @@ const POTION_LIMIT = 4;
 const MAX_FOCUS = 3;
 const HEAVY_ATTACK_COST = 2;
 const MAX_GEAR = 6;
-const MAX_RUN_AGILITY_BONUS = 0.1;
 const SOUND_PREFERENCE_KEY = "well-of-whispers-sound-enabled";
 const PROFILE_SETTINGS_KEY = "well-of-whispers-profile-settings";
 const ELITE_TRAITS = {
@@ -270,7 +269,7 @@ const DUNGEON_EVENTS = [
   {
     minFloor: 2, weight: 10, title: "ПОГРУЖЕНИЕ ЗА СЕРДЕЧНЫМИ ОСКОЛКАМИ", icon: "♆",
     shardSource: "shard-dive",
-    text: "В затопленной нише пульсируют сердечные осколки. Глубокое погружение опасно и может обострить ловкость; у кромки тоже что-то блестит.",
+    text: "В затопленной нише пульсируют сердечные осколки. Глубокое погружение опасно; у кромки тоже что-то блестит. Постоянная награда ловкости пока недоступна: безопасная система роста характеристик не реализована.",
     actions: ["dive-deep", "dive-shallow"],
   },
   {
@@ -715,7 +714,6 @@ function createState() {
     runBossesDefeated: 0,
     runRewardClaimed: false,
     secretFragments: [],
-    agilityBonus: 0,
     extraLifeUsed: false,
     enemy: null,
     stance: "balanced",
@@ -836,6 +834,11 @@ function isValidMetaProgress(progress) {
         progress.heartShardReceipts,
         window.WellHeartShardModel.EVENT_SOURCES,
       )) &&
+    new Set([
+      ...(progress.heartShardReceipts || []),
+      ...(progress.homestead?.fishProcessingReceipts || []),
+    ].map((receipt) => receipt.id)).size ===
+      (progress.heartShardReceipts || []).length + (progress.homestead?.fishProcessingReceipts || []).length &&
     (progress.heartShards === undefined || (
       isIntegerBetween(progress.heartShards, 0, window.WellHeartShardModel.MAX_SHARDS) &&
       progress.heartShards === window.WellHeartShardModel.balance(
@@ -1347,8 +1350,6 @@ function isValidRun(run) {
       !saved.secretFragments.every((id) => SECRET_LORE.some((secret) => secret.id === id)) ||
       new Set(saved.secretFragments).size !== saved.secretFragments.length
     )) ||
-    (saved.agilityBonus !== undefined &&
-      (!Number.isFinite(saved.agilityBonus) || saved.agilityBonus < 0 || saved.agilityBonus > MAX_RUN_AGILITY_BONUS)) ||
     typeof saved.guarding !== "boolean" ||
     (saved.focus !== undefined && !isIntegerBetween(saved.focus, 0, MAX_FOCUS)) ||
     (saved.inventory !== undefined && (
@@ -1566,8 +1567,9 @@ function getCloudSaveSnapshot() {
 }
 
 function restoreCloudSave(snapshot) {
+  const mergedMeta = mergeMetaProgress(metaProgress, snapshot.meta);
   bestFloor = Math.max(bestFloor, snapshot.bestFloor);
-  metaProgress = mergeMetaProgress(metaProgress, snapshot.meta);
+  metaProgress = mergedMeta;
   persistTavernToIndexedDb(metaProgress.tavern).catch((error) => {
     console.warn("Не удалось восстановить резерв таверны из облачной копии.", error);
   });
@@ -1976,7 +1978,6 @@ function resumeGame() {
   if (state.runBossesDefeated === undefined) state.runBossesDefeated = 0;
   if (state.runRewardClaimed === undefined) state.runRewardClaimed = false;
   if (state.secretFragments === undefined) state.secretFragments = [];
-  if (state.agilityBonus === undefined) state.agilityBonus = 0;
   if (state.event.receiptId === undefined) state.event.receiptId = null;
   if (migratedClass) state.classId = "knight";
   if (legacyClass) {
@@ -2352,18 +2353,9 @@ function resolveDungeonEvent(action) {
     const gold = 4 + state.floor;
     addGold(gold);
     addEventEssence(1);
-    const previousAgilityBonus = state.agilityBonus;
-    state.agilityBonus = Math.min(MAX_RUN_AGILITY_BONUS,
-      (state.agilityBonus || 0) + MAX_RUN_AGILITY_BONUS);
     const reward = awardHeartShards("shard-dive", state.event.receiptId);
-    if (!reward.ok) state.agilityBonus = previousAgilityBonus;
-    const agilityText = reward.ok
-      ? previousAgilityBonus < MAX_RUN_AGILITY_BONUS
-        ? " Ловкость выросла на 0,10 до конца этого забега."
-        : " Ловкость уже достигла предела бонуса этого забега (+0,10)."
-      : "";
     finishDungeonEvent("ОСКОЛОК ИЗ ГЛУБИНЫ",
-      `Ты нырнул за сердечными осколками, потерял ${damage} здоровья и нашёл ${gold} монет. Лагерь получил 1 обычный осколок. ${heartShardRewardText(reward)}${agilityText}`,
+      `Ты нырнул за сердечными осколками, потерял ${damage} здоровья и нашёл ${gold} монет. Лагерь получил 1 обычный осколок. ${heartShardRewardText(reward)} Постоянная награда ловкости заблокирована до появления безопасной системы роста характеристик.`,
       "♆", "Погружение за осколком");
   } else if (action === "flower-harvest") {
     const damage = damageFromEvent(2, 4);
@@ -2672,7 +2664,7 @@ function attackEnemy(multiplier = 1, focusCost = 0, usedAbility = false) {
   runPveRound(multiplier, focusCost, usedAbility);
 }
 
-function getDungeonFighter(includeRunAgility = true) {
+function getDungeonFighter() {
   const ability = getCharacterClass().ability;
   const attack = getAttackPower() +
     Math.ceil(getAttackPower() * getClassStat("missingHealthDamage") * (1 - state.hp / state.maxHp)) +
@@ -2685,8 +2677,7 @@ function getDungeonFighter(includeRunAgility = true) {
     accuracy: Math.min(1, 0.9 + getRuneStat("accuracy") * 0.01),
     concentration: Math.min(1.5, (state.stance === "offensive" ? 0.5 : 0.35) +
       getRuneStat("concentration") * 0.01),
-    agility: Math.min(1, getDodgeChance() * 2 + (includeRunAgility ? state.agilityBonus || 0 : 0)),
-    evasion: Math.min(0.5, getDodgeChance()),
+    agility: Math.min(1, getDodgeChance() * 2), evasion: Math.min(0.5, getDodgeChance()),
     potions: state.potions, focus: state.focus, offhand: state.offhand,
     skillType: ability.type, skillDamage: ability.type === "guard" ? Math.ceil(state.maxHp * 0.25) : Math.ceil(attack * 0.8),
     skillCooldown: state.abilityCooldown, skillCooldownMax: 3,
@@ -4616,9 +4607,9 @@ function closeHomestead() {
 }
 
 async function handleHomesteadAction(action, data = {}) {
-  if (["cook-meal", "eat-meal"].includes(action) && !data.foodLockAcquired) {
+  if (["cook-meal", "eat-meal", "process-fish"].includes(action) && !data.foodLockAcquired) {
     if (!navigator.locks) {
-      homesteadMessage = "Браузер не поддерживает безопасную блокировку кухни. Еда не списана.";
+      homesteadMessage = "Браузер не поддерживает безопасную блокировку домашних ресурсов. Ничего не списано.";
       renderHomestead();
       return;
     }
@@ -4681,6 +4672,8 @@ async function handleHomesteadAction(action, data = {}) {
       result = model.processMaterials(current, Number(data.index), 1, now);
       message = result.ok ? `Переработано: ${result.output} ед. материала. Операции списаны из дневного лимита.` : "";
     } else if (action === "process-fish") {
+      latestHomesteadBalances();
+      current = metaProgress.homestead;
       result = model.processFish(current, heartShardReceiptId(), metaProgress.heartShards, now);
       message = result.ok
         ? `Переработана 1 рыба. Получен сердечный осколок; всего: ${result.heartShards}.`
@@ -6081,7 +6074,7 @@ async function initializeGameServices() {
   },
   });
   window.WellPvp.initialize({
-    getFighter: () => getDungeonFighter(false),
+    getFighter: getDungeonFighter,
     getBattleId: () => state.liveDuelId,
     canDuel: canRequestDungeonDuel,
     inDungeon: () => state.started && !state.gameOver,

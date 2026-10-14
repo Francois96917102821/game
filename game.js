@@ -630,6 +630,7 @@ let previousTownVisibility = false;
 let audioContext = null;
 let soundEnabled = readSoundPreference();
 let profileSettings = readProfileSettings();
+let soulSourceBusy = false;
 
 function readSoundPreference() {
   try {
@@ -758,6 +759,7 @@ function createMetaProgress(now = Date.now()) {
     runeDrops: [],
     runeUses: [],
     souls: window.WellSoulCraftingModel.createState(),
+    soulSources: window.WellSoulSourcesModel.createState(),
     harbor: window.WellExpeditionsModel.createState(),
     homestead: window.WellHomesteadModel.createState(now),
   };
@@ -796,6 +798,7 @@ function isValidMetaProgress(progress) {
     new Set(progress.secretsFound).size === progress.secretsFound.length &&
     isValidInboxReceipts(progress.groupInboxReceipts) &&
     (progress.souls === undefined || window.WellSoulCraftingModel.isValidState(progress.souls)) &&
+    (progress.soulSources === undefined || window.WellSoulSourcesModel.isValidState(progress.soulSources)) &&
     (progress.orderReputation === undefined || isIntegerBetween(progress.orderReputation, 0, 1000000000)) &&
     (progress.dungeonTrophies === undefined || (
       progress.dungeonTrophies && typeof progress.dungeonTrophies === "object" &&
@@ -829,6 +832,7 @@ function normalizeMetaProgress(progress) {
   normalized.homestead = window.WellHomesteadModel.withDefaults(progress?.homestead);
   normalized.orderReputation = progress?.orderReputation ?? 0;
   normalized.souls = window.WellSoulCraftingModel.withDefaults(progress?.souls);
+  normalized.soulSources = window.WellSoulSourcesModel.withDefaults(progress?.soulSources);
   normalized.dungeonTrophies = { ...(progress?.dungeonTrophies || {}) };
   normalized.dungeonVictories = (progress?.dungeonVictories || []).map((receipt) => ({
     ...receipt, trophies: [...receipt.trophies],
@@ -844,10 +848,23 @@ function mergeSoulCraftedGear(tavernState, soulState) {
   let addedGear = false;
   for (const transaction of soulState.transactions) {
     if (!transaction.gear) continue;
-    const gear = transaction.gear;
+    if (soulState.rejected?.includes(transaction.id)) {
+      tavern.stash = tavern.stash.filter((item) =>
+        !((item.id === transaction.gear.id || item.soulReceiptId === transaction.id) &&
+          item.name === transaction.gear.name && item.type === transaction.gear.type &&
+          item.bonus === transaction.gear.bonus));
+      if (!tavern.stash.some((item) => item.id === tavern.preparedGearId)) tavern.preparedGearId = null;
+      continue;
+    }
+    const gear = { ...transaction.gear, soulReceiptId: transaction.id };
+    if (tavern.stash.some((item) => item.soulReceiptId === transaction.id &&
+      item.type === gear.type && item.name === gear.name && item.bonus === gear.bonus)) continue;
     const existing = tavern.stash.find((item) => item.id === gear.id);
     if (existing && existing.type === gear.type && existing.name === gear.name &&
-      existing.bonus === gear.bonus) continue;
+      existing.bonus === gear.bonus && (!existing.soulReceiptId || existing.soulReceiptId === transaction.id)) {
+      existing.soulReceiptId = transaction.id;
+      continue;
+    }
     if (existing) {
       do {
         tavern.nextGearSequence += 1;
@@ -956,7 +973,11 @@ function mergeMetaProgress(left, right) {
   homestead.mailReceipts = mergedMailReceipts;
   tavern.nextGearSequence = Math.max(tavern.nextGearSequence,
     ...tavern.stash.map((item) => Number(item.id.slice(5))));
-  const souls = window.WellSoulCraftingModel.merge(first.souls, second.souls);
+  const soulSources = window.WellSoulSourcesModel.merge(first.soulSources, second.soulSources);
+  const souls = window.WellSoulCraftingModel.reconcileSources(
+    window.WellSoulCraftingModel.merge(first.souls, second.souls),
+    window.WellSoulSourcesModel.rewards(soulSources),
+  );
   const firstTicketReceipts = new Set(first.harbor.ticketPurchases.map((receipt) => receipt.id));
   const secondTicketReceipts = new Set(second.harbor.ticketPurchases.map((receipt) => receipt.id));
   const missingDebits = (sourceReceipts, otherHarbor) => otherHarbor.ticketPurchases
@@ -1001,6 +1022,7 @@ function mergeMetaProgress(left, right) {
       ...(second.groupInboxReceipts || []),
     ])],
     souls,
+    soulSources,
     tavern: mergedSoulGearTavern,
     harbor,
     homestead,
@@ -1034,6 +1056,7 @@ function persistMetaProgress() {
         runeDrops: dungeonMerged.runeDrops,
         runeUses: dungeonMerged.runeUses,
         souls: dungeonMerged.souls,
+        soulSources: dungeonMerged.soulSources,
       };
     }
     window.localStorage.setItem(META_SAVE_KEY, JSON.stringify(metaProgress));
@@ -1362,21 +1385,26 @@ function isValidRun(run) {
       typeof saved.enemy.name !== "string" || saved.enemy.name.length > 100 ||
       (saved.enemy.icon !== undefined && (typeof saved.enemy.icon !== "string" || saved.enemy.icon.length > 8)) ||
       (saved.enemy.skin !== undefined && !ENEMY_SKINS.has(saved.enemy.skin)) ||
-      !isIntegerBetween(saved.enemy.hp, 1, 1000000) ||
+      !isIntegerBetween(saved.enemy.hp, ["darkwood", "victor"].includes(saved.enemy.special) ? 0 : 1, 1000000) ||
       !isIntegerBetween(saved.enemy.maxHp, saved.enemy.hp, 1000000) ||
       !isIntegerBetween(saved.enemy.damage, 1, 1000000) ||
       !isIntegerBetween(saved.enemy.xp, 0, 1000000) ||
       !isIntegerBetween(saved.enemy.gold, 0, 1000000) ||
       typeof saved.enemy.boss !== "boolean" ||
-      saved.enemy.boss !== (saved.room === MAX_ROOMS) ||
+      (["darkwood", "victor"].includes(saved.enemy.special)
+        ? !saved.enemy.boss : saved.enemy.boss !== (saved.room === MAX_ROOMS)) ||
       (saved.enemy.elite !== undefined && typeof saved.enemy.elite !== "boolean") ||
       (saved.enemy.elite === true && saved.enemy.boss) ||
-      (saved.enemy.special != null && !["keeper", "mimic", "water", "worldeater", "captain"].includes(saved.enemy.special)) ||
+      (saved.enemy.special != null && !["keeper", "mimic", "water", "worldeater", "captain", "darkwood", "victor"].includes(saved.enemy.special)) ||
+      (["darkwood", "victor"].includes(saved.enemy.special) &&
+        (!Number.isFinite(saved.enemy.sourceRoll) || saved.enemy.sourceRoll < 0 || saved.enemy.sourceRoll >= 1 ||
+          !Number.isFinite(saved.enemy.sourceAt) || typeof saved.enemy.runeReceiptId !== "string")) ||
       (saved.enemy.runeReceiptId !== undefined && (typeof saved.enemy.runeReceiptId !== "string" ||
         !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(saved.enemy.runeReceiptId))) ||
       (saved.enemy.trait !== undefined && !Object.prototype.hasOwnProperty.call(ELITE_TRAITS, saved.enemy.trait)) ||
       (saved.enemy.fighter != null && !window.DungeonModel.isValidFighter(saved.enemy.fighter)) ||
-      saved.room === 0 || saved.waitingToDescend || saved.merchantAvailable === true
+      (saved.room === 0 && !["darkwood", "victor"].includes(saved.enemy.special)) ||
+      saved.waitingToDescend || saved.merchantAvailable === true
     ) return false;
   } else if (saved.waitingToDescend && saved.room !== MAX_ROOMS) {
     return false;
@@ -2070,18 +2098,21 @@ function addGold(amount) {
   return reward;
 }
 
-function addSoulDrop(soulId, source, playerLevel = state.level) {
+function addSoulDrop(soulId, source, playerLevel = state.level, receiptId = `drop-${mailboxRequestId()}`,
+  now = Date.now(), deferSave = false) {
   const model = window.WellSoulCraftingModel;
   const result = model.grant(
     metaProgress.souls,
     playerLevel,
     soulId,
-    `drop-${mailboxRequestId()}`,
+    receiptId,
     source,
+    now,
   );
   if (!result.ok) return false;
   const previous = metaProgress;
   metaProgress = { ...previous, souls: result.state };
+  if (deferSave) return true;
   if (persistMetaProgress()) return true;
   metaProgress = previous;
   return false;
@@ -2507,6 +2538,7 @@ function spawnEnemy(isBoss, isElite = false, eventEnemy = null) {
     accuracy: base.accuracy ?? 0.85,
     bleeding: 0,
     runeReceiptId: window.crypto.randomUUID(),
+    ...(base.sourceRoll === undefined ? {} : { sourceRoll: base.sourceRoll, sourceAt: base.sourceAt }),
   };
   if (isElite && !base.special) {
     const trait = Object.keys(ELITE_TRAITS)[randomInt(0, 7)];
@@ -2554,6 +2586,92 @@ function spawnSpecificEnemy(kind) {
   spawnEnemy(false, kind === "worldeater", { ...foe, special: kind });
 }
 
+function startSoulSourceBattle(kind) {
+  if (!canRequestDungeonDuel() || soulSourceBusy) return;
+  const foes = {
+    darkwood: { name: "Шелестоклык · страж Тёмного леса", icon: "♜", skin: "guardian",
+      hp: 28, damage: 5, boss: true },
+    victor: { name: "Гладиатор Виктор · арена треснувшей печати", icon: "⚔", skin: "stone",
+      hp: 24, damage: 5, boss: true, armor: 0.1 },
+  };
+  const foe = foes[kind];
+  if (!foe) throw new Error("Неизвестная вылазка.");
+  spawnEnemy(false, false, { ...foe, special: kind, xp: 0, gold: 0,
+    sourceRoll: Math.random(), sourceAt: Date.now() });
+  setEvent(kind === "darkwood" ? "ТЁМНЫЙ ЛЕС · ОТДЕЛЬНАЯ ВЫЛАЗКА" : "АРЕНА · PvE",
+    kind === "darkwood"
+      ? "Ты вышел из колодца на тропу чёрных крон. Шелестоклык хранит змеиную душу: шанс добычи 25%. Победи его и вернись в тот же зал."
+      : "Виктор принимает вызов без ставки. Победа даёт один трофей его печати; три трофея можно сдать за Проклятую душу. Это бой с NPC, не PvP.",
+    foe.icon, kind === "darkwood" ? "ТЁМНЫЙ ЛЕС" : "АРЕНА ВИКТОРА");
+  render();
+}
+
+async function saveSoulSourceAction(change) {
+  if (!navigator.locks) throw new Error("Безопасная блокировка недоступна. Награда или обмен не записаны.");
+  return navigator.locks.request("well-food", () => {
+    latestHomesteadBalances();
+    const previous = metaProgress;
+    try {
+      const next = change(previous.soulSources);
+      metaProgress = { ...previous, soulSources: next };
+      for (const reward of window.WellSoulSourcesModel.rewards(next)) {
+        if (!addSoulDrop(reward.soul, reward.source, reward.level, reward.id, reward.at, true)) {
+          throw new Error("Квитанция награды души не принята.");
+        }
+      }
+      if (!isValidMetaProgress(metaProgress) || !persistMetaProgress()) {
+        throw new Error("Не удалось записать трофеи и души. Действие не выполнено; повтори попытку.");
+      }
+    } catch (error) {
+      metaProgress = previous;
+      throw error;
+    }
+  });
+}
+
+async function finishSoulSourceBattle(enemy) {
+  if (soulSourceBusy || state.enemy !== enemy || enemy.hp > 0 || state.hp <= 0 ||
+    state.ghostDuel || state.liveDuelId || !enemy.boss) return;
+  soulSourceBusy = true;
+  try {
+    await saveSoulSourceAction((current) => window.WellSoulSourcesModel.victory(
+      current, enemy.special, enemy.runeReceiptId, state.level, enemy.sourceRoll, enemy.sourceAt));
+    state.enemy = null;
+    state.combatProgress = null;
+    const serpent = enemy.special === "darkwood" && enemy.sourceRoll < window.WellSoulSourcesModel.SERPENT_CHANCE;
+    setEvent("ВЫЛАЗКА ЗАВЕРШЕНА", enemy.special === "victor"
+      ? "Виктор признал поражение. Трофей Гладиатора Виктора сохранён. Ты вернулся в прежний зал."
+      : `Шелестоклык повержен. ${serpent ? "Душа змея сохранена." : "На этот раз змеиная душа не найдена."} Ты вернулся в прежний зал.`,
+    enemy.icon);
+    addJournal("Победа в вылазке", enemy.name, enemy.icon);
+  } catch (error) {
+    console.error("Награда вылазки не сохранена.", error);
+    setEvent("НАГРАДА НЕ СОХРАНЕНА", `${error.message} Нажми «Ударить», чтобы повторить запись без нового боя.`, enemy.icon);
+  } finally {
+    soulSourceBusy = false;
+    render();
+  }
+}
+
+async function exchangeVictorTrophies() {
+  if (soulSourceBusy || !canRequestDungeonDuel()) return;
+  soulSourceBusy = true;
+  try {
+    const id = window.crypto.randomUUID();
+    const at = Date.now();
+    await saveSoulSourceAction((current) => window.WellSoulSourcesModel.exchange(
+      current, id, metaProgress.tavern.characterLevel, at));
+    setEvent("ПЕЧАТИ СДАНЫ", "Арена приняла три трофея Виктора. Проклятая душа сохранена в запасе.", "☾");
+    addJournal("Обмен трофеев", "3 трофея Виктора → 1 Проклятая душа.", "☾");
+  } catch (error) {
+    console.error("Обмен трофеев не выполнен.", error);
+    setEvent("ОБМЕН НЕ ВЫПОЛНЕН", error.message, "☾");
+  } finally {
+    soulSourceBusy = false;
+    render();
+  }
+}
+
 function attackEnemy(multiplier = 1, focusCost = 0, usedAbility = false) {
   if (!state.enemy || state.gameOver || state.focus < focusCost) return;
   runPveRound(multiplier, focusCost, usedAbility);
@@ -2584,7 +2702,11 @@ function getDungeonFighter() {
 }
 
 function runPveRound(multiplier = 1, focusCost = 0, forcedSkill = false) {
-  if (!state.enemy || state.gameOver || dungeonDuelLocked()) return;
+  if (!state.enemy || state.gameOver || dungeonDuelLocked() || soulSourceBusy) return;
+  if (state.enemy.hp <= 0) {
+    defeatEnemy();
+    return;
+  }
   const enemy = state.enemy;
   let player = getDungeonFighter();
   if (focusCost) state.focus -= focusCost;
@@ -2793,6 +2915,9 @@ function useClassAbility() {
 
 function defeatEnemy() {
   const enemy = state.enemy;
+  if (["darkwood", "victor"].includes(enemy.special)) {
+    return finishSoulSourceBattle(enemy);
+  }
   const victoryLevel = state.level;
   const reputation = state.level * (enemy.special === "worldeater" ? 10 : 1);
   metaProgress.orderReputation = Math.min(1000000000, metaProgress.orderReputation + reputation);
@@ -4477,7 +4602,7 @@ function closeHomestead() {
 }
 
 async function handleHomesteadAction(action, data = {}) {
-  if (["cook-meal", "eat-meal"].includes(action) && !data.foodLockAcquired) {
+  if (["cook-meal", "eat-meal", "craft-soul"].includes(action) && !data.foodLockAcquired) {
     if (!navigator.locks) {
       homesteadMessage = "Браузер не поддерживает безопасную блокировку кухни. Еда не списана.";
       renderHomestead();
@@ -4599,6 +4724,7 @@ async function handleHomesteadAction(action, data = {}) {
         message = `${recipe.name} сохранён в постоянном запасе.`;
       }
     } else if (action === "craft-soul") {
+      latestHomesteadBalances();
       const soulModel = window.WellSoulCraftingModel;
       const recipe = soulModel.RECIPES[data.recipeId];
       if (!recipe) throw new Error("Рецепт R-экипировки не найден.");
@@ -4625,7 +4751,7 @@ async function handleHomesteadAction(action, data = {}) {
         homesteadMessage = result.reason;
         return;
       }
-      tavern.stash.push(result.gear);
+      tavern.stash.push({ ...result.gear, soulReceiptId: result.state.transactions.at(-1).id });
       tavern.nextGearSequence = nextSequence + 1;
       tavern.revision += 1;
       tavern.updatedAt = now;
@@ -5496,6 +5622,13 @@ function render() {
   const inGroupBattle = Boolean(coopBattle && ["waiting", "active"].includes(coopBattle.status));
   ui.combatActions.hidden = !state.enemy || state.gameOver || inGroupBattle;
   const dueling = dungeonDuelLocked();
+  $("soul-source-actions").hidden = !canRequestDungeonDuel();
+  $("victor-trophy-count").textContent =
+    `Трофеи Гладиатора Виктора: ${window.WellSoulSourcesModel.trophies(metaProgress.soulSources).length}. Курс: 3 → 1 Проклятая душа. Вылазки не дают золота, опыта или обычной добычи.`;
+  for (const button of $("soul-source-actions").querySelectorAll("button")) {
+    button.disabled = soulSourceBusy || !localMetaReadable ||
+      (button.id === "exchange-victor-button" && window.WellSoulSourcesModel.trophies(metaProgress.soulSources).length < 3);
+  }
   if (dueling) {
     ui.explore.hidden = true;
     ui.potion.hidden = true;
@@ -5699,6 +5832,9 @@ $("guard-button").addEventListener("click", () => {
 $("camouflage-run-button").addEventListener("click", useCamouflage);
 $("offhand-button").addEventListener("click", () => useCombatExtra("offhand"));
 $("escape-button").addEventListener("click", () => useCombatExtra("escape"));
+$("darkwood-button").addEventListener("click", () => startSoulSourceBattle("darkwood"));
+$("victor-button").addEventListener("click", () => startSoulSourceBattle("victor"));
+$("exchange-victor-button").addEventListener("click", exchangeVictorTrophies);
 $("ghost-panel").addEventListener("click", (event) => {
   const button = event.target.closest("[data-ghost-action]");
   if (button) ghostAction(button.dataset.ghostAction);

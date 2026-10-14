@@ -6,6 +6,8 @@ on:
       - "dungeon-model.js"
       - "rune-model.js"
       - "soul-crafting-model.js"
+      - "soul-sources-model.js"
+      - ".github/workflows/deploy-pages.yml"
       - "gold-economy-model.js"
       - "tavern-model.js"
       - "game.js"

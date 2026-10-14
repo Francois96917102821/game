@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="ru">
+<meta charset="utf-8">
+<title>Darkwood and Victor soul sources</title>
+<h1 id="result">RUNNING</h1>
+<pre id="log"></pre>
+<script src="../soul-crafting-model.js"></script>
+<script src="../soul-sources-model.js"></script>
+<script>
+"use strict";
+(async () => {
+  const log = document.getElementById("log");
+  const failures = [];
+  const model = window.WellSoulSourcesModel;
+  const souls = window.WellSoulCraftingModel;
+  const uuid = () => crypto.randomUUID();
+  const assert = (condition, message) => { if (!condition) throw new Error(message); };
+  async function check(name, work) {
+    try { await work(); log.textContent += `PASS ${name}\n`; }
+    catch (error) { failures.push(name); log.textContent += `FAIL ${name}: ${error.stack}\n`; }
+  }
+  const throws = (work) => { try { work(); return false; } catch { return true; } };
+  const stock = () => {
+    let state = model.createState();
+    for (let i = 0; i < 3; i++) state = model.victory(state, "victor", uuid(), 1, 0.5, i);
+    return state;
+  };
+  await check("exact 25% Darkwood gate and no other Serpent/Cursed drops", () => {
+    assert(model.rewards(model.victory(model.createState(), "darkwood", uuid(), 1, 0.24999)).length === 1, "drop below 25%");
+    assert(model.rewards(model.victory(model.createState(), "darkwood", uuid(), 1, 0.25)).length === 0, "no drop at 25%");
+    assert(model.rewards(model.victory(model.createState(), "victor", uuid(), 1, 0)).length === 0, "Victor cannot drop serpent");
+    for (const source of ["pve-death", "random-combat-drop", "pvp", "fishing"]) {
+      assert(!souls.grant(souls.createState(), 1, "serpent", uuid(), source).ok, source);
+      assert(!souls.grant(souls.createState(), 1, "cursed", uuid(), source).ok, source);
+    }
+    assert(throws(() => model.victory(model.createState(), "keeper", uuid(), 1, 0)), "no forged boss source");
+    assert(throws(() => model.victory(model.createState(), "darkwood", uuid(), 0, 0)), "level zero rejected");
+  });
+  await check("UUID victory replay, exchange, validation and conflicting payload", () => {
+    const id = uuid();
+    const a = model.victory(model.createState(), "victor", id, 1, 0.5, 1);
+    assert(model.trophies(model.victory(a, "victor", id, 1, 0.5, 1)).length === 1, "no duplicate trophy");
+    assert(throws(() => model.victory(a, "darkwood", id, 1, 0, 1)), "conflicting victory rejected");
+    const state = stock();
+    const exchangeId = uuid();
+    const spent = model.exchange(state, exchangeId, 1, 10);
+    assert(model.trophies(spent).length === 0 && model.rewards(spent)[0].soul === "cursed", "3 for 1");
+    assert(model.exchange(spent, exchangeId, 1, 10).exchanges.length === 1, "exchange replay");
+    assert(throws(() => model.exchange(spent, exchangeId, 1, 11)), "exchange payload conflict");
+    assert(throws(() => model.exchange(spent, uuid(), 1, 12)), "no overdraw");
+    const forged = structuredClone(spent);
+    forged.exchanges[0].trophies[1] = forged.exchanges[0].trophies[0];
+    assert(!model.isValidState(forged), "cannot spend same trophy twice");
+    const conflictingSoul = souls.grant(souls.createState(), 1, "time", id, "fishing", 1).state;
+    const otherSoul = souls.grant(souls.createState(), 1, "fire", id, "wandering-merchant", 1).state;
+    assert(throws(() => souls.merge(conflictingSoul, otherSoul)), "soul UUID conflict is explicit");
+  });
+  await check("merge/reload preserve rejected trophy and soul debits durably", () => {
+    const base = stock();
+    const first = model.exchange(base, uuid(), 1, 10);
+    const second = model.exchange(base, uuid(), 1, 11);
+    let merged = model.merge(first, second);
+    const rejected = second.exchanges[0].id;
+    assert(merged.rejected.includes(rejected) && model.rewards(merged).length === 1, "concurrent exchange loses");
+    const additional = model.victory(model.createState(), "victor", uuid(), 1, 0.5, 0);
+    merged = model.merge(JSON.parse(JSON.stringify(merged)), model.merge(second, additional));
+    assert(merged.rejected.includes(rejected) && model.trophies(merged).length === 1, "new credit cannot revive rejected exchange");
+    let soul = souls.grant(souls.createState(), 1, "cursed", rejected, "victor-trophies", 11).state;
+    soul = souls.transferOut(soul, 250, 250, "cursed", uuid(), 12).state;
+    soul = souls.reconcileSources(soul, model.rewards(merged));
+    assert(soul.balances.cursed === 0 && soul.rejected.length === 2 && souls.isValidState(soul), "invalid reward and dependent debit rejected");
+    const credit = souls.grant(souls.createState(), 1, "cursed", uuid(), "victor-trophies", 1).state;
+    const restored = souls.merge(JSON.parse(JSON.stringify(soul)), credit);
+    assert(restored.balances.cursed === 1 && restored.rejected.length === 2, "rejected debit never resurrects");
+  });
+
+  localStorage.clear();
+  const frames = [];
+  async function loadFrame() {
+    const frame = document.createElement("iframe");
+    frames.push(frame);
+    frame.style.width = "390px";
+    frame.style.height = "800px";
+    frame.src = `../index.html?source-test=${uuid()}`;
+    document.body.append(frame);
+    await new Promise((resolve) => frame.addEventListener("load", resolve, { once: true }));
+    await frame.contentWindow.eval("initializeTavernPersistence()");
+    return frame;
+  }
+  const frame = await loadFrame();
+  let app = frame.contentWindow;
+  let doc = app.document;
+  const snapshot = () => app.getCloudSaveSnapshot();
+  function prepare() {
+    app.startGameWithClass("knight");
+    app.eval("state.room=1; state.attack=100; state.hp=state.maxHp; state.event.actions=[];");
+    app.render();
+  }
+  async function beat(kind, roll = 0) {
+    app.eval("state.hp=state.maxHp; state.combatProgress=null;");
+    app.startSoulSourceBattle(kind);
+    app.eval(`state.enemy.sourceRoll=${roll};`);
+    const enemy = snapshot().run.state.enemy;
+    assert(enemy && enemy.special === kind && app.isValidRun(snapshot().run), "activity save is valid");
+    const random = app.Math.random;
+    app.Math.random = () => 0.1;
+    app.attackEnemy();
+    app.Math.random = random;
+    const start = Date.now();
+    while (snapshot().run.state.enemy && Date.now() - start < 3000) await new Promise((r) => setTimeout(r, 20));
+    assert(!snapshot().run.state.enemy, doc.getElementById("event-text").textContent);
+    return enemy;
+  }
+  await check("legacy saves, mobile UI and real PvE Darkwood reward", async () => {
+    const legacy = app.createMetaProgress();
+    delete legacy.soulSources;
+    delete legacy.souls;
+    assert(app.isValidMetaProgress(legacy), "legacy meta accepted");
+    assert(model.trophies(app.normalizeMetaProgress(legacy).soulSources).length === 0, "legacy defaults");
+    prepare();
+    assert(!doc.getElementById("soul-source-actions").hidden, "visible between rooms on mobile");
+    const before = snapshot();
+    const enemy = await beat("darkwood");
+    const after = snapshot();
+    assert(after.meta.souls.balances.serpent === 1, "Serpent awarded after round");
+    assert(after.meta.souls.transactions.find((entry) => entry.id === enemy.runeReceiptId).source === "darkwood-boss", "receipt source");
+    assert(after.run.state.room === before.run.state.room && after.run.state.floor === before.run.state.floor, "return to same room");
+    assert(after.run.state.gold === before.run.state.gold && after.run.state.xp === before.run.state.xp &&
+      after.meta.orderReputation === before.meta.orderReputation && after.run.state.runBossesDefeated === 0, "economy and well bosses unchanged");
+    await app.finishSoulSourceBattle(enemy);
+    assert(snapshot().meta.souls.balances.serpent === 1, "cannot reward old enemy again");
+    await beat("darkwood", 0.25);
+    assert(snapshot().meta.souls.balances.serpent === 1, "failed roll gives no reward");
+    app.spawnSpecificEnemy("keeper");
+    app.defeatEnemy();
+    assert(snapshot().meta.souls.balances.serpent === 1, "ordinary keeper has no serpent");
+    app.eval("state.enemy=null; state.event.actions=[]; state.ghostDuel={};");
+    app.startSoulSourceBattle("darkwood");
+    assert(!snapshot().run.state.enemy, "duel blocks activity");
+    app.eval("state.ghostDuel=null;");
+  });
+  await check("Victor trophy, exchange write failure, and stale cloud merge", async () => {
+    for (let i = 0; i < 3; i++) await beat("victor");
+    const before = snapshot();
+    assert(model.trophies(before.meta.soulSources).length === 3, "one trophy per PvE victory");
+    app.eval(`window.originalSetItem=Storage.prototype.setItem;
+      Storage.prototype.setItem=function(key,value) {
+        if(key==="well-of-whispers-camp-progress") throw new Error("simulated disk failure");
+        return window.originalSetItem.call(this,key,value);
+      };`);
+    await app.exchangeVictorTrophies();
+    app.eval("Storage.prototype.setItem=window.originalSetItem;");
+    assert(model.trophies(snapshot().meta.soulSources).length === 3 &&
+      snapshot().meta.souls.balances.cursed === 0, "failed write changes neither trophy nor soul");
+    await app.exchangeVictorTrophies();
+    const after = snapshot();
+    assert(after.meta.souls.balances.cursed === 1 && model.trophies(after.meta.soulSources).length === 0, "atomic exchange");
+    const merged = app.mergeMetaProgress(after.meta, before.meta);
+    assert(app.isValidMetaProgress(merged) && model.trophies(merged.soulSources).length === 0 &&
+      merged.souls.balances.cursed === 1, "stale cloud cannot refund trophies");
+    await app.exchangeVictorTrophies();
+    assert(snapshot().meta.souls.balances.cursed === 1, "repeat button cannot mint");
+  });
+  await check("failed victory survives save/reload and retries its original UUID", async () => {
+    app.startSoulSourceBattle("darkwood");
+    app.eval("state.enemy.sourceRoll=0;");
+    const original = snapshot().run.state.enemy;
+    const before = snapshot().meta.souls.balances.serpent;
+    app.eval(`window.originalSetItem=Storage.prototype.setItem;
+      Storage.prototype.setItem=function(key,value) {
+        if(key==="well-of-whispers-camp-progress") throw new Error("simulated victory failure");
+        return window.originalSetItem.call(this,key,value);
+      };`);
+    const random = app.Math.random;
+    app.Math.random = () => 0.1;
+    app.attackEnemy();
+    app.Math.random = random;
+    while (app.eval("soulSourceBusy")) await new Promise((r) => setTimeout(r, 20));
+    app.eval("Storage.prototype.setItem=window.originalSetItem;");
+    assert(snapshot().run.state.enemy.hp === 0 && app.isValidRun(snapshot().run), "pending defeated boss can be saved");
+    assert(snapshot().meta.souls.balances.serpent === before, "failed victory cannot mint");
+    const another = await loadFrame();
+    app = another.contentWindow;
+    doc = app.document;
+    app.eval("state=savedRun; savedRun=null;");
+    app.render();
+    assert(snapshot().run.state.enemy.runeReceiptId === original.runeReceiptId, "reload preserves victory UUID");
+    app.attackEnemy();
+    while (app.eval("soulSourceBusy")) await new Promise((r) => setTimeout(r, 20));
+    assert(!snapshot().run.state.enemy && snapshot().meta.souls.balances.serpent === before + 1, "retry rewards once without another round");
+    assert(snapshot().meta.souls.transactions.some((entry) => entry.id === original.runeReceiptId), "receipt preserved");
+  });
+  await check("reload and two tabs competing for the last three trophies", async () => {
+    for (let i = 0; i < 3; i++) await beat("victor");
+    const before = snapshot();
+    const another = await loadFrame();
+    const second = another.contentWindow;
+    second.eval("state = savedRun; savedRun=null;");
+    second.render();
+    assert(model.trophies(second.getCloudSaveSnapshot().meta.soulSources).length === 3, "reload restores ledger");
+    await Promise.all([app.exchangeVictorTrophies(), second.exchangeVictorTrophies()]);
+    const saved = JSON.parse(localStorage.getItem("well-of-whispers-camp-progress"));
+    assert(saved.souls.balances.cursed === before.meta.souls.balances.cursed + 1, "only one concurrent exchange pays");
+    assert(model.trophies(saved.soulSources).length === 0 && saved.soulSources.exchanges.length === 2, "one debit stored");
+    assert(app.isValidMetaProgress(saved), "full saved meta valid");
+    app.restoreCloudSave({ ...before, meta: app.mergeMetaProgress(saved, before.meta) });
+    assert(snapshot().meta.souls.balances.cursed === saved.souls.balances.cursed &&
+      model.trophies(snapshot().meta.soulSources).length === 0, "cloud restore preserves exchange");
+  });
+  await check("craft gear collisions remain immutable and deduplicate repeated merges", () => {
+    const first = app.createMetaProgress();
+    const second = app.createMetaProgress();
+    for (const meta of [first, second]) {
+      for (let i = 0; i < 8; i++) {
+        meta.souls = souls.grant(meta.souls, 150, "time", uuid(), "fishing", i).state;
+      }
+      const crafted = souls.craft(meta.souls, 150, "time-weapon", "gear-1", uuid(), 100);
+      meta.souls = crafted.state;
+      meta.tavern.stash.push(crafted.gear);
+      meta.tavern.nextGearSequence = 1;
+    }
+    const merged = app.mergeMetaProgress(first, second);
+    assert(merged.tavern.stash.length === 2 && app.isValidMetaProgress(merged), "independent crafted items both kept");
+    const again = app.mergeMetaProgress(merged, first);
+    assert(again.tavern.stash.length === 2 && again.souls.balances.time === 0, "repeat does not mint another item");
+    assert(again.souls.transactions.filter((entry) => entry.kind === "craft").every((entry) => entry.gear.id === "gear-1"),
+      "canonical UUID payload unchanged by stash remapping");
+  });
+  await check("deployment manifest includes and cache-busts every local script", async () => {
+    const html = await (await fetch("../index.html")).text();
+    const workflow = await (await fetch("../.github/workflows/deploy-pages.yml")).text();
+    const scripts = [...html.matchAll(/<script src="([^"]+\.js)"/g)].map((match) => match[1]);
+    for (const script of scripts) {
+      assert(workflow.includes(script), `${script} copied`);
+      assert(workflow.includes(`${script}?v=`), `${script} cache-busted`);
+    }
+    assert(scripts.indexOf("soul-sources-model.js") < scripts.indexOf("game.js"), "script order");
+  });
+  frames.forEach((entry) => entry.remove());
+  document.getElementById("result").dataset.result = failures.length ? "fail" : "pass";
+  document.getElementById("result").textContent = failures.length ? `${failures.length} FAILURES` : "PASS";
+})().catch((error) => {
+  document.getElementById("log").textContent += error.stack;
+  document.getElementById("result").dataset.result = "fail";
+});
+</script>
+</html>

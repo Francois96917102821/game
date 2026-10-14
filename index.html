@@ -185,6 +185,12 @@
             <button class="action-button" id="explore-button" type="button" disabled><span aria-hidden="true">⌕</span> Исследовать зал</button>
             <button class="action-button secondary-action" id="potion-button" type="button" disabled><span aria-hidden="true">⚗</span> Выпить зелье</button>
           </div>
+          <div class="event-actions" id="soul-source-actions" role="group" aria-label="Отдельные PvE-вылазки" hidden>
+            <button class="action-button secondary-action" id="darkwood-button" type="button">♜ Тёмный лес · Шелестоклык</button>
+            <button class="action-button secondary-action" id="victor-button" type="button">⚔ Арена Гладиатора Виктора</button>
+            <button class="action-button secondary-action" id="exchange-victor-button" type="button">☾ Сдать 3 трофея Виктора</button>
+            <p id="victor-trophy-count" aria-live="polite"></p>
+          </div>
           <div class="combat-actions" id="combat-actions" hidden>
             <div class="combat-focus">
               <div class="stat-label"><span>ЗАПАС СИЛЫ</span><span id="focus-value">0 / 3</span></div>
@@ -554,6 +560,7 @@
     <script src="expeditions-model.js"></script>
     <script src="homestead-model.js"></script>
     <script src="soul-crafting-model.js"></script>
+    <script src="soul-sources-model.js"></script>
     <script src="rune-model.js"></script>
     <script src="dungeon-model.js"></script>
     <script src="pvp-client.js"></script>

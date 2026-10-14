@@ -35,7 +35,10 @@ insert into auth.users (id)
 values
   ('11111111-1111-4111-8111-111111111111'),
   ('22222222-2222-4222-8222-222222222222'),
-  ('33333333-3333-4333-8333-333333333333')
+  ('33333333-3333-4333-8333-333333333333'),
+  ('44444444-4444-4444-8444-444444444444'),
+  ('55555555-5555-4555-8555-555555555555'),
+  ('66666666-6666-4666-8666-666666666666')
 on conflict (id) do nothing;
 
 set local role authenticated;
@@ -44,7 +47,9 @@ do $tests$
 declare
   v_result jsonb;
   v_group_id uuid;
+  v_stale_group_id uuid;
   v_battle_id uuid;
+  v_stale_battle_id uuid;
   v_invite_code text;
   v_updates jsonb;
   v_ack jsonb;
@@ -226,6 +231,11 @@ begin
   if v_result ->> 'status' <> 'active' or jsonb_array_length(v_result -> 'players') <> 2 then
     raise exception 'Joining a group battle should activate it for both players';
   end if;
+  if (public.join_player_group_battle(
+    v_battle_id, '{"hp":1,"max_hp":30,"potions":0,"attack":1,"defense":0,"focus":0,"heavy_multiplier":2.5}'::jsonb
+  ) -> 'players' -> 1 ->> 'hp') is distinct from '30' then
+    raise exception 'Retrying a completed join must keep the original participant snapshot';
+  end if;
   if public.get_player_group_battle(v_battle_id) ->> 'status' <> 'active' then
     raise exception 'Group members should be able to retrieve a fresh battle snapshot';
   end if;
@@ -316,6 +326,15 @@ begin
     raise exception 'The guard action should complete a round and trigger the boss response';
   end if;
   perform set_config('request.jwt.claim.sub', '11111111-1111-4111-8111-111111111111', true);
+  v_result := public.player_group_battle_action(
+    v_battle_id, 'potion', 'ffffffff-ffff-4fff-8fff-ffffffffffff'
+  );
+  if (v_result ->> 'round')::integer <> 2 or
+    (v_result -> 'players' -> 0 ->> 'potions')::integer <> 1 or
+    (select count(*) from jsonb_array_elements(v_result -> 'action_log') as log_item(value)
+      where value ->> 'type' = 'player' and value ->> 'action' = 'guard') <> 2 then
+    raise exception 'A retry after the next round must return current state without replaying or rewinding the action';
+  end if;
   v_result := public.leave_player_group_battle(v_battle_id);
   if v_result ->> 'status' <> 'abandoned' then
     raise exception 'Leaving a live battle should mark it abandoned';
@@ -649,6 +668,72 @@ begin
     where id = v_mail_id and status = 'delivered' and group_id = v_group_id
   ) then
     raise exception 'Dissolving a player group must not delete or mutate accepted mailbox escrow';
+  end if;
+
+  perform set_config('request.jwt.claim.sub', '44444444-4444-4444-8444-444444444444', true);
+  v_result := public.create_player_group('Stale owner', 5);
+  v_stale_group_id := (v_result -> 'group' ->> 'id')::uuid;
+  v_invite_code := v_result ->> 'invite_code';
+  perform set_config('request.jwt.claim.sub', '55555555-5555-4555-8555-555555555555', true);
+  perform public.accept_player_group_invite(v_invite_code, 'Offline partner', 5);
+  perform set_config('request.jwt.claim.sub', '44444444-4444-4444-8444-444444444444', true);
+  perform public.heartbeat_player_group('Stale owner', 5, true);
+  perform set_config('request.jwt.claim.sub', '55555555-5555-4555-8555-555555555555', true);
+  perform public.heartbeat_player_group('Offline partner', 5, true);
+  perform set_config('request.jwt.claim.sub', '44444444-4444-4444-8444-444444444444', true);
+  v_result := public.start_player_group_battle(
+    11, 'Страж отключения', '☠', 'guardian', 100, 100, 8, 40, 50,
+    '{"hp":40,"max_hp":40,"potions":1,"attack":25,"defense":2,"focus":0,"heavy_multiplier":2.5}'::jsonb
+  );
+  v_stale_battle_id := (v_result ->> 'id')::uuid;
+  perform set_config('request.jwt.claim.sub', '55555555-5555-4555-8555-555555555555', true);
+  v_result := public.join_player_group_battle(
+    v_stale_battle_id, '{"hp":30,"max_hp":30,"potions":1,"attack":20,"defense":1,"focus":0,"heavy_multiplier":2.5}'::jsonb
+  );
+  if v_result ->> 'status' <> 'active' then
+    raise exception 'The offline-partner scenario must start with an active two-player battle';
+  end if;
+  reset role;
+  update public.player_group_members
+  set heartbeat_at = now() - interval '76 seconds'
+  where user_id = '55555555-5555-4555-8555-555555555555';
+  set local role authenticated;
+  perform set_config('request.jwt.claim.sub', '44444444-4444-4444-8444-444444444444', true);
+  v_result := public.player_group_battle_action(
+    v_stale_battle_id, 'guard', 'abababab-abab-4bab-8bab-abababababab'
+  );
+  if v_result ->> 'status' <> 'abandoned' or exists (
+    select 1 from jsonb_array_elements(v_result -> 'action_log') as log_item(value)
+    where value ->> 'user_id' = '44444444-4444-4444-8444-444444444444'
+      and value ->> 'action' = 'guard'
+  ) then
+    raise exception 'An action must not proceed when the partner heartbeat is stale';
+  end if;
+  v_result := public.heartbeat_player_group('Stale owner', 5, true);
+  if not coalesce((v_result ->> 'partner_expired')::boolean, false) or
+    jsonb_array_length(v_result -> 'group' -> 'members') <> 1 or
+    exists (
+      select 1 from public.player_group_members
+      where group_id = v_stale_group_id and user_id = '55555555-5555-4555-8555-555555555555'
+    ) then
+    raise exception 'A heartbeat must free a partner seat after 75 seconds of inactivity';
+  end if;
+  v_result := public.create_player_group_invite();
+  v_invite_code := v_result ->> 'invite_code';
+  perform set_config('request.jwt.claim.sub', '55555555-5555-4555-8555-555555555555', true);
+  v_result := public.accept_player_group_invite(v_invite_code, 'Reconnected partner', 5);
+  if jsonb_array_length(v_result -> 'members') <> 2 then
+    raise exception 'A stale partner must be able to reconnect through a new invitation';
+  end if;
+  perform set_config('request.jwt.claim.sub', '66666666-6666-4666-8666-666666666666', true);
+  v_message := null;
+  begin
+    perform public.accept_player_group_invite(v_invite_code, 'Concurrent join', 5);
+  exception when others then
+    get stacked diagnostics v_message = message_text;
+  end;
+  if v_message is distinct from 'Код приглашения недействителен или истёк.' then
+    raise exception 'A consumed invitation must reject a competing join; got: %', coalesce(v_message, 'no error');
   end if;
 end
 $tests$;

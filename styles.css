@@ -352,6 +352,13 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--gold-light); ou
 .game-dialog h2 { margin: 7px 0 6px; font-size: 22px; }
 .dialog-intro { margin: 0 0 16px; color: #aeb2a5; font-size: 11px; line-height: 1.55; }
 .settings-dialog { width: min(480px, calc(100% - 28px)); }
+.profile-summary { padding: 12px; border: 1px solid var(--border); border-radius: 7px; background: #171b15; }
+.profile-summary h3 { margin: 0 0 7px; color: var(--gold-light); font-size: 13px; }
+.profile-summary-note { margin: 6px 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
+.profile-summary-values { display: grid; gap: 6px; margin: 10px 0; font-size: 11px; }
+.profile-summary-values > div { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: 10px; }
+.profile-summary-values dt { color: var(--muted); }
+.profile-summary-values dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
 .player-progress-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 14px 0 20px; }
 .player-progress-stats > div { display: grid; align-content: start; gap: 5px; min-height: 68px; border: 1px solid #393d31; border-radius: 7px; padding: 10px; background: #171b15; }
 .player-progress-stats strong { color: var(--gold-light); font: 500 18px "DM Mono", monospace; }

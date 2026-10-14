@@ -628,6 +628,9 @@ let selectedClassId = "knight";
 let selectedDistrict = "main";
 let previousTownVisibility = false;
 let audioContext = null;
+let audioResumePromise = null;
+let audioActivated = false;
+let ambientMusic = null;
 let soundEnabled = readSoundPreference();
 let profileSettings = readProfileSettings();
 
@@ -5614,30 +5617,143 @@ const SOUND_EFFECTS = {
   toggle: [[330, 0.1]],
 };
 
-function playSound(effectName) {
-  if (!soundEnabled) return;
+const AMBIENT_CHORDS = [
+  [130.81, 164.81, 196],
+  [110, 130.81, 164.81],
+  [87.31, 110, 130.81],
+  [98, 123.47, 146.83],
+];
+
+function resumeAudioContext(context) {
+  if (context.state === "running") return Promise.resolve();
+  if (!audioResumePromise) {
+    audioResumePromise = context.resume().finally(() => {
+      audioResumePromise = null;
+    });
+  }
+  return audioResumePromise;
+}
+
+function startAmbientMusic(context) {
+  if (ambientMusic || !soundEnabled || !audioActivated || document.hidden || context.state !== "running") return;
+
+  const musicGain = context.createGain();
+  const oscillators = [];
+  const startedOscillators = new Set();
+  const now = context.currentTime;
+  let chordIndex = 0;
+  musicGain.gain.setValueAtTime(0, now);
+  musicGain.gain.linearRampToValueAtTime(0.012, now + 2);
+  musicGain.connect(context.destination);
+
+  try {
+    for (const frequency of AMBIENT_CHORDS[chordIndex]) {
+      const oscillator = context.createOscillator();
+      oscillator.type = "sine";
+      oscillator.frequency.value = frequency;
+      oscillator.connect(musicGain);
+      oscillators.push(oscillator);
+      oscillator.start(now);
+      startedOscillators.add(oscillator);
+    }
+  } catch (error) {
+    for (const oscillator of oscillators) {
+      if (startedOscillators.has(oscillator)) oscillator.stop();
+      oscillator.disconnect();
+    }
+    musicGain.disconnect();
+    throw error;
+  }
+
+  const interval = window.setInterval(() => {
+    chordIndex = (chordIndex + 1) % AMBIENT_CHORDS.length;
+    const changeTime = context.currentTime;
+    AMBIENT_CHORDS[chordIndex].forEach((frequency, index) => {
+      oscillators[index].frequency.setTargetAtTime(frequency, changeTime, 1.8);
+    });
+  }, 7000);
+
+  ambientMusic = { context, interval, musicGain, oscillators };
+}
+
+function stopAmbientMusic(immediate = false) {
+  if (!ambientMusic) return;
+  const music = ambientMusic;
+  ambientMusic = null;
+  window.clearInterval(music.interval);
+
+  if (immediate || music.context.state !== "running") {
+    for (const oscillator of music.oscillators) {
+      oscillator.stop();
+      oscillator.disconnect();
+    }
+    music.musicGain.disconnect();
+    return;
+  }
+
+  const stopTime = music.context.currentTime + 0.7;
+  music.musicGain.gain.cancelScheduledValues(music.context.currentTime);
+  music.musicGain.gain.setValueAtTime(music.musicGain.gain.value, music.context.currentTime);
+  music.musicGain.gain.linearRampToValueAtTime(0, stopTime);
+  let remaining = music.oscillators.length;
+  for (const oscillator of music.oscillators) {
+    oscillator.addEventListener("ended", () => {
+      oscillator.disconnect();
+      remaining -= 1;
+      if (!remaining) music.musicGain.disconnect();
+    }, { once: true });
+    oscillator.stop(stopTime);
+  }
+}
+
+function activateAudio() {
+  if (!soundEnabled || document.hidden) return;
   try {
     const AudioContextConstructor = window.AudioContext;
     if (!AudioContextConstructor) throw new Error("Web Audio API не поддерживается этим браузером.");
     audioContext ||= new AudioContextConstructor();
+    const context = audioContext;
+    audioActivated = true;
+    resumeAudioContext(context).then(() => {
+      if (audioContext === context && audioActivated && soundEnabled && !document.hidden) {
+        startAmbientMusic(context);
+      }
+    }).catch((error) => {
+      console.warn("Не удалось запустить звук.", error);
+    });
+  } catch (error) {
+    console.warn("Звук недоступен.", error);
+  }
+}
+
+function playSound(effectName) {
+  if (!soundEnabled || !audioActivated || document.hidden) return;
+  try {
+    const context = audioContext;
+    if (!context) return;
     const play = () => {
-      const startTime = audioContext.currentTime;
+      if (!soundEnabled || !audioActivated || document.hidden || audioContext !== context || context.state !== "running") return;
+      const startTime = context.currentTime;
       for (const [frequency, duration, delay = 0] of SOUND_EFFECTS[effectName] || []) {
-        const oscillator = audioContext.createOscillator();
-        const gain = audioContext.createGain();
+        const oscillator = context.createOscillator();
+        const gain = context.createGain();
         const noteStart = startTime + delay;
         oscillator.frequency.value = frequency;
         oscillator.type = "sine";
         gain.gain.setValueAtTime(0.035, noteStart);
         gain.gain.exponentialRampToValueAtTime(0.001, noteStart + duration);
         oscillator.connect(gain);
-        gain.connect(audioContext.destination);
+        gain.connect(context.destination);
+        oscillator.addEventListener("ended", () => {
+          oscillator.disconnect();
+          gain.disconnect();
+        }, { once: true });
         oscillator.start(noteStart);
         oscillator.stop(noteStart + duration);
       }
     };
-    if (audioContext.state === "suspended") {
-      audioContext.resume().then(play).catch((error) => {
+    if (context.state !== "running") {
+      resumeAudioContext(context).then(play).catch((error) => {
         console.warn("Не удалось запустить звуковой эффект.", error);
       });
       return;
@@ -5651,8 +5767,10 @@ function playSound(effectName) {
 function renderSoundToggle() {
   const button = $("sound-toggle");
   button.setAttribute("aria-pressed", String(soundEnabled));
-  button.setAttribute("aria-label", soundEnabled ? "Выключить звук" : "Включить звук");
-  button.title = soundEnabled ? "Звук включён" : "Звук выключен";
+  button.setAttribute("aria-label", soundEnabled
+    ? "Выключить звуковые эффекты и фоновую музыку"
+    : "Включить звуковые эффекты и фоновую музыку");
+  button.title = soundEnabled ? "Звуковые эффекты и фоновая музыка включены" : "Звуковые эффекты и фоновая музыка выключены";
   $("sound-toggle-label").textContent = soundEnabled ? "Звук: вкл." : "Звук: выкл.";
   $("settings-sound").checked = soundEnabled;
 }
@@ -5660,6 +5778,12 @@ function renderSoundToggle() {
 function setSoundEnabled(enabled) {
   soundEnabled = enabled;
   renderSoundToggle();
+  if (soundEnabled) {
+    activateAudio();
+  } else {
+    audioActivated = false;
+    stopAmbientMusic();
+  }
   try {
     window.localStorage.setItem(SOUND_PREFERENCE_KEY, String(soundEnabled));
     return true;
@@ -5668,6 +5792,27 @@ function setSoundEnabled(enabled) {
     return false;
   }
 }
+
+function activateAudioFromGesture(event) {
+  const target = event.target;
+  if (!soundEnabled || !(target instanceof Element) || target.closest("#sound-toggle, #settings-sound")) return;
+  activateAudio();
+}
+
+document.addEventListener("pointerdown", activateAudioFromGesture, true);
+document.addEventListener("keydown", activateAudioFromGesture, true);
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    stopAmbientMusic(true);
+    if (audioContext && audioContext.state !== "suspended" && audioContext.state !== "closed") {
+      audioContext.suspend().catch((error) => {
+        console.warn("Не удалось приостановить звук в фоновой вкладке.", error);
+      });
+    }
+  } else if (soundEnabled && audioActivated) {
+    activateAudio();
+  }
+});
 
 ui.startButton.addEventListener("click", openClassDialog);
 ui.resumeButton.addEventListener("click", resumeGame);

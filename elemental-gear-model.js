@@ -236,17 +236,24 @@
   function merge(left, right) {
     const first = withDefaults(left);
     const second = withDefaults(right);
+    if (!isValidState(first) || !isValidState(second)) {
+      throw new Error("Стихийный запас повреждён; слияние не выполнено.");
+    }
     const base = Object.fromEntries(RESOURCE_IDS.map((id) => [
       id, Math.max(first.base[id], second.base[id]),
     ]));
     const byId = new Map();
     for (const transaction of [...first.transactions, ...second.transactions]) {
       const existing = byId.get(transaction.id);
-      if (!existing || JSON.stringify(transaction) < JSON.stringify(existing)) {
-        byId.set(transaction.id, transaction);
+      if (existing && JSON.stringify(transaction) !== JSON.stringify(existing)) {
+        throw new Error("Конфликт стихийной квитанции: один номер содержит разные операции. Слияние не выполнено.");
       }
+      if (!existing) byId.set(transaction.id, transaction);
     }
     const result = replay(base, [...byId.values()]);
+    if (result.transactions.length !== byId.size) {
+      throw new Error("Конфликт стихийных ресурсов: параллельные операции расходуют один запас. Слияние не выполнено.");
+    }
     return { base, balances: result.balances, transactions: result.transactions };
   }
 

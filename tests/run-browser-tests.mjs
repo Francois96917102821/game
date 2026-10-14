@@ -22,18 +22,19 @@ for (const test of tests) {
   let socket;
   try {
     let port;
-    for (let attempt = 0; attempt < 100; attempt += 1) {
+    for (let attempt = 0; attempt < 600; attempt += 1) {
       if (launchError) throw launchError;
+      if (browser.exitCode !== null) throw new Error(`Chrome exited during startup (${browser.exitCode}).`);
       try {
         port = Number((await readFile(join(profile, "DevToolsActivePort"), "utf8")).split("\n")[0]);
         break;
       } catch (error) {
-        if (error.code !== "ENOENT") throw error;
+        if (!["ENOENT", "EBUSY"].includes(error.code)) throw error;
         await delay(100);
       }
     }
     if (!port) throw new Error("Chrome did not start its debugging endpoint.");
-    const url = `http://127.0.0.1:8765/tests/${test}.test.html`;
+    const url = `${process.env.BASE_URL || "http://127.0.0.1:8765"}/tests/${test}.test.html`;
     const response = await fetch(`http://127.0.0.1:${port}/json/new?${encodeURIComponent(url)}`, { method: "PUT" });
     if (!response.ok) throw new Error(`Chrome target creation failed: ${response.status}`);
     const target = await response.json();

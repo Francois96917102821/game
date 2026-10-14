@@ -99,6 +99,45 @@
         "neither the API nor a forged transaction can create gear or spend resources");
       });
 
+      check("offline last-material conflicts reject atomically across successive merges and reload", () => {
+        let stock = grant(model.createState(), "emberglass", "ore-careful", 1);
+        stock = grant(stock, "primalWater", "grove-drink", 2);
+        const left = model.createEssence(stock, 30, "emberglass", "craft-a", () => 0.5, 3).state;
+        const right = model.createEssence(stock, 30, "emberglass", "craft-b", () => 0.5, 100).state;
+        const original = JSON.stringify(left);
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          let error;
+          try { model.merge(JSON.parse(original), right); } catch (caught) { error = caught; }
+          assert(error?.message.includes("Конфликт стихийных ресурсов"),
+            "incompatible valid saves throw instead of dropping a receipt");
+          assert(JSON.stringify(left) === original, "rejected merge cannot change local state");
+        }
+        const reloaded = JSON.parse(original);
+        assert(model.isValidState(reloaded) && reloaded.transactions.some((entry) => entry.id === "craft-a"),
+          "reload retains the original complete ledger after rejection");
+        const stale = model.merge(reloaded, stock);
+        assert(stale.balances.emberEssence === 1 && stale.balances.emberglass === 0 &&
+          model.merge(stale, reloaded).balances.emberEssence === 1,
+          "compatible successive merges preserve the single debit");
+        let newStock = grant(reloaded, "emberglass", "ore-careful", 10);
+        newStock = grant(newStock, "primalWater", "grove-drink", 11);
+        // A later explicit merge can accept both still-present receipts using new stock;
+        // the earlier failed merge never claimed to accept or discard the remote operation.
+        const accepted = model.merge(newStock, right);
+        assert(accepted.transactions.some((entry) => entry.id === "craft-b") &&
+          accepted.balances.emberEssence === 2, "later success explicitly accounts for both receipts");
+      });
+
+      check("same UUID with mismatched payload throws without choosing a winner", () => {
+        const left = model.grant(model.createState(), 30, "emberglass", "same-id", "ore-careful", 1).state;
+        const right = model.grant(model.createState(), 30, "primalWater", "same-id", "grove-drink", 1).state;
+        const before = JSON.stringify(left);
+        let error;
+        try { model.merge(left, right); } catch (caught) { error = caught; }
+        assert(error?.message.includes("Конфликт стихийной квитанции") && JSON.stringify(left) === before,
+          "payload mismatch rejects the entire merge and preserves local input");
+      });
+
       async function testCraftingUiAndWalletReconciliation() {
         let elemental = model.createState();
         elemental = grant(elemental, "emberglass", "ore-careful", 30);
@@ -157,6 +196,11 @@
           "level 30 enables essence but does not unlock gear recipes");
         const stale = JSON.parse(game.localStorage.getItem("well-of-whispers-camp-progress"));
         essenceButton.click();
+        for (let attempt = 0; attempt < 100; attempt += 1) {
+          const pending = JSON.parse(game.localStorage.getItem("well-of-whispers-camp-progress"));
+          if (pending.elemental.transactions.some((entry) => entry.kind === "essence")) break;
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
         let saved = JSON.parse(game.localStorage.getItem("well-of-whispers-camp-progress"));
         assert(saved.elemental.balances.emberEssence >= 1 && saved.elemental.balances.emberglass === 0 &&
           saved.elemental.balances.primalWater === 0, "UI persists essence inputs and output together");
@@ -171,8 +215,58 @@
           merged.elemental.balances.emberglass === 0 &&
           merged.elemental.balances.primalWater === 0 && game.isValidMetaProgress(merged),
         "stale merge cannot restore materials already converted to essence");
+        const seed = JSON.parse(JSON.stringify(stale));
+        game.localStorage.setItem("well-of-whispers-camp-progress", JSON.stringify(seed));
+        const secondFrame = document.createElement("iframe");
+        secondFrame.title = "Second elemental crafting tab";
+        secondFrame.src = "../index.html?elemental-crafting-test=second-tab";
+        const firstReload = new Promise((resolve) => frame.addEventListener("load", resolve, { once: true }));
+        const secondLoad = new Promise((resolve) => secondFrame.addEventListener("load", resolve, { once: true }));
+        frame.src = "../index.html?elemental-crafting-test=first-tab";
+        document.body.append(secondFrame);
+        await Promise.all([firstReload, secondLoad]);
+        game = frame.contentWindow;
+        const otherGame = secondFrame.contentWindow;
+        game.confirm = otherGame.confirm = () => true;
+        game.Math.random = otherGame.Math.random = () => 0.5;
+        await Promise.all([
+          game.handleHomesteadAction("make-elemental-essence", { materialId: "emberglass" }),
+          otherGame.handleHomesteadAction("make-elemental-essence", { materialId: "emberglass" }),
+        ]);
+        const afterTabs = JSON.parse(game.localStorage.getItem("well-of-whispers-camp-progress"));
+        assert(afterTabs.elemental.balances.emberEssence === 1 &&
+          afterTabs.elemental.transactions.filter((entry) => entry.kind === "essence").length === 1 &&
+          afterTabs.elemental.balances.emberglass === 0 && afterTabs.elemental.balances.primalWater === 0 &&
+          afterTabs.tavern.gold === seed.tavern.gold && afterTabs.essence === seed.essence,
+          "two tabs lock and reread full meta before consuming the last material exactly once");
+        const reloadTabs = new Promise((resolve) => frame.addEventListener("load", resolve, { once: true }));
+        frame.src = "../index.html?elemental-crafting-test=tab-reload";
+        await reloadTabs;
+        const afterReload = JSON.parse(frame.contentWindow.localStorage.getItem("well-of-whispers-camp-progress"));
+        assert(afterReload.elemental.balances.emberEssence === 1 &&
+          afterReload.elemental.transactions.filter((entry) => entry.kind === "essence").length === 1,
+          "reload does not retry or multiply the two-tab conversion");
+        game = frame.contentWindow;
+        const localCraft = JSON.parse(JSON.stringify(seed));
+        const remoteCraft = JSON.parse(JSON.stringify(seed));
+        localCraft.elemental = model.createEssence(seed.elemental, 30, "emberglass",
+          "offline-local", () => 0.5, 40).state;
+        remoteCraft.elemental = model.createEssence(seed.elemental, 30, "emberglass",
+          "offline-remote", () => 0.5, 100).state;
+        game.eval(`metaProgress = ${JSON.stringify(localCraft)};`);
+        const memoryBefore = game.eval("JSON.stringify(metaProgress)");
+        const diskBefore = JSON.stringify(remoteCraft);
+        game.localStorage.setItem("well-of-whispers-camp-progress", diskBefore);
+        assert(game.persistMetaProgress() === false &&
+          game.eval("JSON.stringify(metaProgress)") === memoryBefore &&
+          game.localStorage.getItem("well-of-whispers-camp-progress") === diskBefore,
+          "persist rejects conflicting full meta before changing memory or disk");
+        assert(game.persistMetaProgress() === false &&
+          game.localStorage.getItem("well-of-whispers-camp-progress") === diskBefore,
+          "retry cannot silently remove or accept a rejected offline debit");
+        secondFrame.remove();
         frame.remove();
-        output.textContent += "PASS UI level gate, safe essence conversion and unavailable recipes\n";
+        output.textContent += "PASS UI level gate, safe essence conversion, two-tab lock/reload and unavailable recipes\n";
       }
 
       testCraftingUiAndWalletReconciliation().catch((error) => {

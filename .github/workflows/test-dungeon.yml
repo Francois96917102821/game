@@ -6,6 +6,7 @@ on:
       - "dungeon-model.js"
       - "rune-model.js"
       - "soul-crafting-model.js"
+      - "elemental-gear-model.js"
       - "gold-economy-model.js"
       - "tavern-model.js"
       - "game.js"
@@ -14,6 +15,8 @@ on:
       - "styles.css"
       - "tests/*.html"
       - "tests/run-browser-tests.mjs"
+      - "tests/pages-artifact.test.mjs"
+      - ".github/workflows/deploy-pages.yml"
       - ".github/workflows/test-dungeon.yml"
   workflow_dispatch:
 
@@ -46,3 +49,5 @@ jobs:
             sleep 1
           done
           node tests/run-browser-tests.mjs
+      - name: Check Pages artifact assets without deployment
+        run: node tests/pages-artifact.test.mjs

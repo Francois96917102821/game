@@ -4551,6 +4551,15 @@ function closeHomestead() {
 }
 
 async function handleHomesteadAction(action, data = {}) {
+  if (action === "make-elemental-essence" && !data.elementalLockAcquired) {
+    if (!navigator.locks) {
+      homesteadMessage = "Браузер не поддерживает безопасную блокировку ремесла. Материалы не списаны.";
+      renderHomestead();
+      return;
+    }
+    return navigator.locks.request("well-elemental-crafting", () =>
+      handleHomesteadAction(action, { ...data, elementalLockAcquired: true }));
+  }
   if (["cook-meal", "eat-meal"].includes(action) && !data.foodLockAcquired) {
     if (!navigator.locks) {
       homesteadMessage = "Браузер не поддерживает безопасную блокировку кухни. Еда не списана.";

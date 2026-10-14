@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="ru">
+<meta charset="utf-8">
+<title>Player groups reliability tests</title>
+<h1 id="result">RUNNING</h1>
+<pre id="log"></pre>
+<script>
+"use strict";
+(async () => {
+  const result = document.getElementById("result");
+  const log = document.getElementById("log");
+  const ownId = "77777777-7777-4777-8777-777777777777";
+  const partnerId = "88888888-8888-4888-8888-888888888888";
+  const groupId = "99999999-9999-4999-8999-999999999999";
+  const battleId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const actionPrefix = "well-of-whispers-pending-group-battle-action:";
+  const activePrefix = "well-of-whispers-active-group-battle:";
+  let battle = null;
+  let actionRequests = [];
+  let committedActions = new Set();
+  let loseFirstActionResponse = true;
+
+  function assert(condition, message) {
+    if (!condition) throw new Error(message);
+  }
+
+  function clone(value) {
+    return JSON.parse(JSON.stringify(value));
+  }
+
+  function waitFor(predicate, message, timeout = 6000) {
+    return new Promise((resolve, reject) => {
+      const started = Date.now();
+      const poll = () => {
+        if (predicate()) resolve();
+        else if (Date.now() - started >= timeout) reject(new Error(message));
+        else setTimeout(poll, 20);
+      };
+      poll();
+    });
+  }
+
+  function member(userId, nickname) {
+    return { user_id: userId, nickname, level: 5, in_dungeon: true };
+  }
+
+  function makeBattle(status) {
+    return {
+      id: battleId,
+      group_id: groupId,
+      floor: 6,
+      status,
+      round: 1,
+      boss: { name: "Страж", icon: "☠", skin: "guardian", hp: 90, max_hp: 90, damage: 8 },
+      players: [
+        { user_id: ownId, nickname: "Тест", hp: 30, max_hp: 30, potions: 1, focus: 2, acted: false },
+        { user_id: partnerId, nickname: "Напарник", hp: 30, max_hp: 30, potions: 1, focus: 2, acted: false },
+      ],
+      action_log: [],
+      xp: 40,
+      gold: 50,
+    };
+  }
+
+  async function groupRpc(name, args) {
+    if (name === "heartbeat_player_group") {
+      return { group: { id: groupId, members: [member(ownId, "Тест"), member(partnerId, "Напарник")] } };
+    }
+    if (name === "consume_player_group_inbox") return [];
+    if (name === "start_player_group_battle") {
+      battle = makeBattle("waiting");
+      return clone(battle);
+    }
+    if (name === "get_player_group_battle") {
+      if (battle?.status === "waiting") battle.status = "active";
+      return clone(battle);
+    }
+    if (name === "player_group_battle_action") {
+      actionRequests.push(clone(args));
+      if (loseFirstActionResponse) {
+        loseFirstActionResponse = false;
+        throw new Error("Simulated connection loss before the server receives the action");
+      }
+      if (!committedActions.has(args.p_request_id)) {
+        committedActions.add(args.p_request_id);
+        battle.players[0].acted = true;
+        battle.action_log.push({
+          round: battle.round, type: "player", user_id: ownId, action: args.p_action, damage: 5,
+        });
+      }
+      return clone(battle);
+    }
+    throw new Error(`Unexpected RPC ${name}`);
+  }
+
+  const markup = `
+    <dialog id="group-dialog"></dialog>
+    <button id="group-open-button"></button>
+    <p id="group-status"></p><input id="group-nickname" value="Тест">
+    <button id="group-create-button"></button><input id="group-accept-code">
+    <button id="group-accept-button"></button><section id="group-empty-panel"></section>
+    <section id="group-roster-panel"></section><div id="group-members"></div>
+    <p id="group-activity"></p><button id="group-invite-button"></button>
+    <input id="group-invite-code"><small id="group-invite-expiry"></small>
+    <button id="group-copy-invite-button"></button><button id="group-disband-button"></button>
+    <input id="group-notifications" type="checkbox"><div id="group-notice"></div>
+    <span id="group-notice-text"></span><button id="group-battle-invite-button"></button>
+    <button id="coop-start-button"></button><section id="coop-battle-panel"></section>
+    <span id="coop-boss-name"></span><span id="coop-boss-icon"></span>
+    <span id="coop-boss-hp"></span><div id="coop-boss-health"></div>
+    <div id="coop-players"></div><p id="coop-turn-message"></p><div id="coop-log"></div>
+    <button id="coop-attack-button"></button><button id="coop-heavy-button"></button>
+    <button id="coop-potion-button"></button><button id="coop-guard-button"></button>
+    <button id="coop-retry-button"></button><button id="coop-leave-button"></button>
+    <script src="${new URL("../player-groups.js", location.href).href}"><\/script>`;
+
+  async function mountClient() {
+    const frame = document.createElement("iframe");
+    frame.srcdoc = markup;
+    document.body.append(frame);
+    await new Promise((resolve) => frame.addEventListener("load", resolve, { once: true }));
+    const app = frame.contentWindow;
+    app.WellPvp = { isBusy: () => false };
+    app.WellCloudSave = {
+      isConfigured: () => true,
+      groupRpc,
+      onAuthChange(listener) {
+        listener({ id: ownId, email: "test@example.invalid" });
+      },
+    };
+    app.WellPlayerGroups.initialize({
+      getLevel: () => 5,
+      isInDungeon: () => true,
+      getBattlePlayer: () => ({
+        hp: 30, max_hp: 30, potions: 1, attack: 10, defense: 2, focus: 2, heavy_multiplier: 2.5,
+      }),
+      getBossEncounter: () => ({
+        floor: 6, name: "Страж", icon: "☠", skin: "guardian",
+        hp: 90, max_hp: 90, damage: 8, xp: 40, gold: 50,
+      }),
+      onBattleUpdate: () => {},
+      onSharedGold: () => true,
+      onSharedEssence: () => true,
+      onUnsharedReward: () => {},
+    });
+    await waitFor(
+      () => app.WellPlayerGroups.getMailboxContext().fresh,
+      "group heartbeat did not restore the online two-player group",
+    );
+    return { app, frame };
+  }
+
+  for (const key of [`${actionPrefix}${ownId}`, `${activePrefix}${ownId}`]) {
+    localStorage.removeItem(key);
+  }
+
+  try {
+    let client = await mountClient();
+    await waitFor(
+      () => !client.app.document.getElementById("coop-start-button").hidden,
+      "battle start button did not become available",
+    );
+    client.app.document.getElementById("coop-start-button").click();
+    await waitFor(() => battle?.status === "waiting", "battle invitation was not created");
+    await waitFor(
+      () => client.app.WellPlayerGroups.getBattle()?.status === "active",
+      "battle did not reconnect after the partner joined",
+    );
+    const attack = client.app.document.getElementById("coop-attack-button");
+    assert(!attack.disabled, "active battle did not enable the player's action");
+    attack.click();
+    attack.click();
+    await waitFor(
+      () => client.app.document.getElementById("coop-retry-button").hidden === false,
+      "failed action did not expose a retry control",
+    );
+    assert(actionRequests.length === 1, "rapid duplicate clicks sent more than one action request");
+    const pending = JSON.parse(localStorage.getItem(`${actionPrefix}${ownId}`));
+    assert(pending?.battleId === battleId && pending.action === "attack" && pending.requestId,
+      "unconfirmed action was not saved with its idempotency UUID");
+    client.frame.remove();
+
+    client = await mountClient();
+    await waitFor(
+      () => client.app.WellPlayerGroups.getBattle()?.id === battleId,
+      "saved group battle was not restored after reload",
+    );
+    const retry = client.app.document.getElementById("coop-retry-button");
+    assert(!retry.hidden && !retry.disabled, "saved action could not be retried after reload");
+    retry.click();
+    await waitFor(() => committedActions.size === 1, "retry did not commit the action");
+    assert(actionRequests.length === 2 &&
+      actionRequests[0].p_request_id === actionRequests[1].p_request_id,
+    "retry did not reuse the original request UUID");
+    await waitFor(
+      () => client.app.WellPlayerGroups.getBattle().players[0].acted,
+      "successful retry did not render the server's accepted action",
+    );
+    assert(client.app.WellPlayerGroups.getBattle().players[0].acted,
+      "successful retry did not render the server's accepted action");
+    assert(retry.hidden, "accepted action remained in the local retry queue");
+    log.textContent += "PASS offline retry preserves request UUID across reload and commits once\n";
+
+    client.frame.remove();
+    client = await mountClient();
+    await waitFor(
+      () => client.app.WellPlayerGroups.getBattle()?.id === battleId,
+      "active battle could not be restored after a second reload",
+    );
+    assert(client.app.WellPlayerGroups.getBattle().players[0].acted,
+      "reloaded battle lost the server-owned action state");
+    log.textContent += "PASS server battle state reconnects after page reload\n";
+    client.frame.remove();
+    result.dataset.result = "pass";
+    result.textContent = "PASS";
+  } catch (error) {
+    result.dataset.result = "fail";
+    result.textContent = "FAIL";
+    log.textContent += error.stack;
+    throw error;
+  }
+})().catch((error) => console.error(error));
+</script>
+</html>

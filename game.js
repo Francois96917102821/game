@@ -720,6 +720,7 @@ function createState() {
     abilityDodge: false,
     focus: 0,
     equipment: { weapon: null, armor: null },
+    elementalLoadout: [],
     inventory: [],
     gearSequence: 0,
     tavernGearIds: [],
@@ -1260,6 +1261,8 @@ function isValidRun(run) {
     (saved.offhand !== undefined && !["shield", "torch", "staff"].includes(saved.offhand)) ||
     (saved.extraActionUsed !== undefined && typeof saved.extraActionUsed !== "boolean") ||
     (saved.combatProgress != null && !window.DungeonModel.isValidFighter(saved.combatProgress)) ||
+    (saved.elementalLoadout !== undefined &&
+      !window.WellElementalGearModel.isValidLoadout(saved.elementalLoadout)) ||
     (saved.liveDuelId != null && (typeof saved.liveDuelId !== "string" ||
       !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(saved.liveDuelId))) ||
     (saved.ghostDuel != null && (
@@ -1763,6 +1766,7 @@ function startGameWithClass(classId) {
   savedRun = null;
   state.started = true;
   state.classId = characterClass.id;
+  state.elementalLoadout = window.WellElementalGearModel.equipped(metaProgress.elemental);
   state.gearSequence = metaProgress.tavern.nextGearSequence;
   state.tavernGearIds = [];
   const preparedGear = metaProgress.tavern.stash.find((item) => item.id === metaProgress.tavern.preparedGearId);
@@ -2629,7 +2633,8 @@ function runPveRound(multiplier = 1, focusCost = 0, forcedSkill = false) {
     poisonDamage: Math.ceil(enemy.maxHp * getClassStat("damageOverTime")),
     skillType: "blast", skillCooldownMax: enemy.trait === "experienced" ? 0 : 2,
   });
-  const result = window.DungeonModel.pveRound(player, foe);
+  const result = window.DungeonModel.pveRound(player, foe, Math.random,
+    window.WellElementalGearModel.combatEffects(state.elementalLoadout || []));
   state.hp = result.actor.hp;
   state.extraLifeUsed = result.actor.revivalUsed;
   state.abilityCooldown = Math.min(3, result.actor.skillCooldown || 0);
@@ -3721,7 +3726,10 @@ function renderHomestead() {
     .join(" · ");
   const elementalCrafting = homeSection(
     "Стихийное снаряжение",
-    `Материалы и эссенции доступны с ${elementalModel.CRAFT_LEVEL}-го уровня. ${elementalCounts}`,
+    `С ${elementalModel.CRAFT_LEVEL}-го уровня. Решение координатора: отдельные стихийные слоты, ` +
+      `только PvE; оружие +${elementalModel.COMBAT_BONUS * 100}% урона, броня −${elementalModel.COMBAT_BONUS * 100}% входящего урона. ` +
+      `Общий потолок каждого эффекта ${elementalModel.COMBAT_CAP * 100}%. Характеристики и PvP не меняются. ` +
+      `Выбор фиксируется в начале нового спуска. ${elementalCounts}`,
   );
   for (const [materialId, material] of Object.entries(elementalModel.MATERIALS)) {
     if (!material.essence) continue;
@@ -3736,13 +3744,27 @@ function renderHomestead() {
     ));
   }
   for (const recipe of Object.values(elementalModel.RECIPES)) {
-    const attributeNames = { strength: "Сила", agility: "Ловкость", endurance: "Выносливость" };
-    const tradeoff = `${attributeNames[recipe.advantage]} +100% к росту / ` +
-      `${attributeNames[recipe.drawback]} −50% к росту`;
+    const price = elementalModel.cost(recipe.id);
+    const priceText = Object.entries(price).map(([id, amount]) =>
+      `${amount} × ${(elementalModel.ESSENCES[id] || elementalModel.MATERIALS[id]).name}`).join(", ");
     elementalCrafting.append(homeCard(
       `${recipe.name} · ${recipe.type === "weapon" ? "оружие" : "броня"}`,
-      `${tradeoff}. ${elementalModel.GEAR_CRAFTING_BLOCKED_REASON} Полный рецепт и цена не подтверждены.`,
-      [homesteadButton("Недоступно", "craft-elemental-gear", { recipeId: recipe.id }, true)],
+      `Цена (допущение координатора): ${priceText}. ` +
+        (recipe.type === "weapon" ? "Стихийный урон" : "Стихийная защита") +
+        ` ${elementalModel.COMBAT_BONUS * 100}%, только PvE.`,
+      [homesteadButton("Создать", "craft-elemental-gear", { recipeId: recipe.id },
+        elementalLevel < elementalModel.CRAFT_LEVEL ||
+        Object.entries(price).some(([id, amount]) => elementalState.balances[id] < amount))],
+    ));
+  }
+  const selectedElemental = new Set(elementalModel.preparedGear(elementalState).map((gear) => gear.id));
+  for (const gear of elementalModel.inventory(elementalState)) {
+    const recipe = elementalModel.RECIPES[gear.recipeId];
+    const selected = selectedElemental.has(gear.id);
+    elementalCrafting.append(homeCard(
+      recipe.name, selected ? "Подготовлено к новому спуску." : "В постоянном стихийном запасе.",
+      [homesteadButton(selected ? "Снять" : "Подготовить", "equip-elemental-gear",
+        { slot: recipe.type, gearId: selected ? "" : gear.id })],
     ));
   }
   ui.homesteadContent.append(elementalCrafting);
@@ -4551,7 +4573,7 @@ function closeHomestead() {
 }
 
 async function handleHomesteadAction(action, data = {}) {
-  if (action === "make-elemental-essence" && !data.elementalLockAcquired) {
+  if (["make-elemental-essence", "craft-elemental-gear", "equip-elemental-gear"].includes(action) && !data.elementalLockAcquired) {
     if (!navigator.locks) {
       homesteadMessage = "Браузер не поддерживает безопасную блокировку ремесла. Материалы не списаны.";
       renderHomestead();
@@ -4748,10 +4770,25 @@ async function handleHomesteadAction(action, data = {}) {
       homesteadMessage = `${result.essence.name} создана${result.critical ? " в критическом результате: получено 2" : ""}.`;
       render();
       return;
-    } else if (action === "craft-elemental-gear") {
+    } else if (["craft-elemental-gear", "equip-elemental-gear"].includes(action)) {
+      latestHomesteadBalances();
+      const previous = metaProgress;
       const model = window.WellElementalGearModel;
-      const result = model.craft(metaProgress.tavern.characterLevel, data.recipeId);
-      homesteadMessage = result.reason;
+      const result = action === "craft-elemental-gear"
+        ? model.craft(previous.elemental, previous.tavern.characterLevel, data.recipeId, homesteadReceiptId())
+        : model.equip(previous.elemental, data.slot, data.gearId || null, homesteadReceiptId());
+      if (!result.ok) {
+        homesteadMessage = result.reason;
+        return;
+      }
+      metaProgress = { ...previous, elemental: result.state };
+      if (!persistMetaProgress()) {
+        metaProgress = previous;
+        throw new Error("Не удалось сохранить стихийную экипировку. Действие не выполнено.");
+      }
+      homesteadMessage = action === "craft-elemental-gear"
+        ? "Стихийный предмет создан в постоянном запасе. Материалы списаны."
+        : "Стихийная экипировка изменена только для новых спусков.";
       render();
       return;
     } else if (action === "cook-meal") {

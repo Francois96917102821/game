@@ -143,7 +143,11 @@
     if (fighter.turns === 1 && fighter.firstTurnBarrier) fighter.barrier = positive(fighter.barrier) + fighter.firstTurnBarrier;
   }
 
-  function strike(actor, target, rng, log, label, multiplier = 1, allowShadow = false) {
+  function elementalDamage(amount, bonus = 0, reduction = 0) {
+    return amount + Math.floor(amount * bonus) - Math.floor(amount * reduction);
+  }
+
+  function strike(actor, target, rng, log, label, multiplier = 1, allowShadow = false, bonus = 0, reduction = 0) {
     if (allowShadow && target.shadowEvade) {
       target.shadowEvade = false;
       log.push(`${label}: shadow evaded`);
@@ -156,8 +160,8 @@
     const critical = actor.criticalChance > 0 && sample(rng) < actor.criticalChance;
     const guarded = target.guarded ? 0.5 : 1;
     target.guarded = false;
-    const amount = Math.max(1, Math.round((actor.attack + positive(actor.barrierAttack) * positive(actor.barrier)) *
-      multiplier * number(actor.damageMultiplier, 1) * (critical ? 2 : 1) * (1 - target.armor) * guarded));
+    const amount = elementalDamage(Math.max(1, Math.round((actor.attack + positive(actor.barrierAttack) * positive(actor.barrier)) *
+      multiplier * number(actor.damageMultiplier, 1) * (critical ? 2 : 1) * (1 - target.armor) * guarded)), bonus, reduction);
     const dealt = damage(target, amount);
     log.push(`${label}: hit ${amount}${critical ? " critical" : ""}`);
     if (actor.lifesteal) heal(actor, dealt * actor.lifesteal);
@@ -167,10 +171,10 @@
     }
   }
 
-  function periodic(actor, target, log, label, pvp = false) {
+  function periodic(actor, target, log, label, pvp = false, reduction = 0) {
     heal(actor, actor.regeneration);
     const source = pvp ? target : actor;
-    const amount = source.bleeding + source.infection * 2 + positive(source.poisonDamage);
+    const amount = elementalDamage(source.bleeding + source.infection * 2 + positive(source.poisonDamage), 0, reduction);
     if (amount > 0) {
       damage(source, amount);
       log.push(`${label}: periodic ${amount}`);
@@ -262,7 +266,7 @@
     return actor;
   }
 
-  function autoSkill(actor, target, rng, log, label) {
+  function autoSkill(actor, target, rng, log, label, bonus = 0, reduction = 0) {
     if (!actor.skillType || actor.skillCooldown > 0 ||
       sample(rng) >= clamp(0, 1, actor.concentration)) return;
     actor.skillCooldown = number(actor.skillCooldownMax, 3);
@@ -271,14 +275,19 @@
       log.push(`${label}: guard skill`);
     } else {
       if (actor.skillType === "shadow") actor.shadowEvade = true;
-      const amount = Math.max(1, Math.round(number(actor.skillDamage, actor.attack) * (1 - target.armor)));
+      const amount = elementalDamage(Math.max(1, Math.round(number(actor.skillDamage, actor.attack) * (1 - target.armor))), bonus, reduction);
       damage(target, amount);
       log.push(`${label}: ${actor.skillType} skill ${amount}`);
     }
   }
 
-  function pveRound(player, enemy, rng = Math.random) {
+  function pveRound(player, enemy, rng = Math.random, effects = {}) {
     if (typeof rng !== "function") throw new Error("RNG must be a function.");
+    const bonus = effects.outgoingDamage === undefined ? 0 : effects.outgoingDamage;
+    const reduction = effects.incomingReduction === undefined ? 0 : effects.incomingReduction;
+    if (![bonus, reduction].every((value) => Number.isFinite(value) && value >= 0 && value <= 1)) {
+      throw new Error("Invalid PvE damage effects.");
+    }
     const original = createFighter(player);
     const target = createFighter(enemy);
     if (original.hp <= 0 || target.hp <= 0) throw new Error("Combat is already finished.");
@@ -286,16 +295,16 @@
     const log = [];
     tick(actor);
     tick(target);
-    autoSkill(actor, target, rng, log, "actor");
+    autoSkill(actor, target, rng, log, "actor", bonus);
     if (target.hp <= 0) {
       for (const key of ["armor", "accuracy", "concentration"]) actor[key] = original[key];
       return result(actor, target, log, rng, false);
     }
-    autoSkill(target, actor, rng, log, "target");
-    strike(target, actor, rng, log, "target", 1, true);
+    autoSkill(target, actor, rng, log, "target", 0, reduction);
+    strike(target, actor, rng, log, "target", 1, true, 0, reduction);
     // Both hits belong to this round even if the enemy's strike was fatal.
-    strike(actor, target, rng, log, "actor", 1, true);
-    periodic(actor, target, log, "actor");
+    strike(actor, target, rng, log, "actor", 1, true, bonus);
+    periodic(actor, target, log, "actor", false, reduction);
     periodic(target, actor, log, "target");
     // Encounter modifiers are temporary, never compounded into the saved player.
     for (const key of ["armor", "accuracy", "concentration"]) actor[key] = original[key];

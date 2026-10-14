@@ -28,6 +28,10 @@
     const EventConstructor = app().Event;
     return new EventConstructor("change", { bubbles: true });
   }
+  function visibilityEvent() {
+    const EventConstructor = app().Event;
+    return new EventConstructor("visibilitychange");
+  }
   const audioContexts = [];
   class FakeAudioParam {
     constructor() { this.value = 0; }
@@ -161,11 +165,11 @@
     let hidden = false;
     Object.defineProperty(app().document, "hidden", { configurable: true, get: () => hidden });
     hidden = true;
-    app().document.dispatchEvent(new app().Event("visibilitychange"));
+    app().document.dispatchEvent(visibilityEvent());
     assert(context.state === "suspended", "hidden tabs suspend the shared audio context");
     assert(activeMusic().length === 0, "hidden tabs stop and dispose ambient voices");
     hidden = false;
-    app().document.dispatchEvent(new app().Event("visibilitychange"));
+    app().document.dispatchEvent(visibilityEvent());
     await new Promise((resolve) => setTimeout(resolve, 0));
     assert(context.state === "running", "returning to a visible tab resumes previously opted-in audio");
     assert(activeMusic().length === 3, "returning to the tab starts one fresh ambient loop");
@@ -193,7 +197,7 @@
     assert(element("settings-sound").checked, "enabled sound preference is restored after reload");
     assert(element("sound-toggle").getAttribute("aria-pressed") === "true", "restored preference synchronizes the game control");
     assert(audioContexts.length === contextCount, "a restored preference does not create or resume audio on load");
-    app().document.dispatchEvent(new app().Event("visibilitychange"));
+    app().document.dispatchEvent(visibilityEvent());
     await new Promise((resolve) => setTimeout(resolve, 0));
     assert(audioContexts.length === contextCount, "visibility alone cannot unlock audio after reload");
     element("sound-toggle").click();
@@ -201,6 +205,7 @@
     assert(app().getComputedStyle(element("sound-toggle").querySelector(".sound-icon-wave")).display === "none",
       "button opt-out updates the sound icon");
     assert(app().localStorage.getItem("well-of-whispers-sound-enabled") === "false", "sound opt-out is persisted");
+    element("settings-open-button").click();
   });
 
   frame.style.width = "360px";

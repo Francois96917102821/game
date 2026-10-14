@@ -5771,7 +5771,7 @@ function renderSoundToggle() {
     ? "Выключить звуковые эффекты и фоновую музыку"
     : "Включить звуковые эффекты и фоновую музыку");
   button.title = soundEnabled ? "Звуковые эффекты и фоновая музыка включены" : "Звуковые эффекты и фоновая музыка выключены";
-  $("sound-toggle-label").textContent = soundEnabled ? "Звук + музыка: вкл." : "Звук + музыка: выкл.";
+  $("sound-toggle-label").textContent = soundEnabled ? "Звук: вкл." : "Звук: выкл.";
   $("settings-sound").checked = soundEnabled;
 }
 

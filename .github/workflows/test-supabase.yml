@@ -88,3 +88,11 @@ jobs:
           PGPASSWORD: local-test-only
           PGDATABASE: game_groups_test
         run: psql -X -v ON_ERROR_STOP=1 -f supabase/tests/items.sql
+      - name: Test server-authoritative guild expeditions
+        env:
+          PGHOST: localhost
+          PGPORT: "5432"
+          PGUSER: postgres
+          PGPASSWORD: local-test-only
+          PGDATABASE: game_groups_test
+        run: psql -X -v ON_ERROR_STOP=1 -f supabase/tests/expeditions.sql

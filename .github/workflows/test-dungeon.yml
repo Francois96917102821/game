@@ -4,6 +4,8 @@ on:
   pull_request:
     paths:
       - "dungeon-model.js"
+      - "heart-shard-model.js"
+      - "homestead-model.js"
       - "rune-model.js"
       - "soul-crafting-model.js"
       - "gold-economy-model.js"

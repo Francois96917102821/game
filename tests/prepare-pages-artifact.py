@@ -23,6 +23,7 @@ ASSETS = (
     "dungeon-model.js",
     "pvp-client.js",
     "guild-client.js",
+    "class-model.js",
 )
 SCRIPT_ASSETS = tuple(asset for asset in ASSETS if asset.endswith(".js") and asset != "game-art.svg")
 DEPLOY_SHA = os.environ.get("DEPLOY_SHA", "local")

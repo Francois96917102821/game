@@ -7,6 +7,7 @@ on:
       - "player-progress-model.js"
       - "tests/prepare-pages-artifact.py"
       - "tests/pages-artifact.test.html"
+      - "class-model.js"
       - "rune-model.js"
       - "attribute-model.js"
       - "soul-crafting-model.js"

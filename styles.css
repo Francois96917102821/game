@@ -44,6 +44,8 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--gold-light); ou
 .icon-button { width: 36px; height: 36px; border: 1px solid var(--border); border-radius: 50%; background: transparent; color: var(--muted); cursor: pointer; }
 .icon-button[aria-pressed="true"] { color: var(--gold-light); border-color: #76613d; }
 .sound-toggle { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 38px; border: 1px solid var(--border); border-radius: 20px; padding: 7px 11px; background: #171a16; color: #aeb2a5; cursor: pointer; font-size: 11px; }
+.sound-toggle-icon { width: 16px; height: 16px; flex: 0 0 16px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; }
+.sound-toggle[aria-pressed="false"] .sound-icon-wave, .sound-toggle[aria-pressed="true"] .sound-icon-muted { display: none; }
 .sound-toggle[aria-pressed="true"] { border-color: #76613d; color: var(--gold-light); background: #211e16; }
 .sound-toggle:hover { border-color: #76613d; }
 .cloud-status-button { display: inline-flex; align-items: center; gap: 7px; max-width: 230px; border: 1px solid #414638; border-radius: 18px; padding: 8px 11px; background: #1b2019; color: #bfc6ac; cursor: pointer; }

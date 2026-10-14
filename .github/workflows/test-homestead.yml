@@ -5,6 +5,7 @@ on:
     paths:
       - "homestead-model.js"
       - "class-model.js"
+      - "city-model.js"
       - "tavern-model.js"
       - "cloud-save.js"
       - "game.js"

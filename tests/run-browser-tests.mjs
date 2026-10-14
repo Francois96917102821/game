@@ -6,7 +6,7 @@ import { setTimeout as delay } from "node:timers/promises";
 
 const availableTests = ["dungeon", "dungeon-integration", "gold-economy", "runes", "attributes", "pvp-client",
   "guild-integration", "tavern", "expeditions", "homestead", "soul-crafting", "food", "settings",
-  "player-progress", "player-groups", "system-compatibility", "pages-artifact", "classes", "trophy-buyback"];
+  "player-progress", "player-groups", "system-compatibility", "pages-artifact", "classes", "trophy-buyback", "city"];
 const tests = process.argv.length > 2 ? process.argv.slice(2) : availableTests;
 if (tests.some((test) => !availableTests.includes(test))) throw new Error("Unknown browser test.");
 let failed = false;

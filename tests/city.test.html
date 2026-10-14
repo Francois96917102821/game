@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>City catalog parity and integration</title>
+<h1 id="result">RUNNING</h1>
+<pre id="log"></pre>
+<script src="../city-model.js"></script>
+<script>
+"use strict";
+(async () => {
+  const log = document.getElementById("log");
+  const failures = [];
+  function assert(condition, message) {
+    if (!condition) throw new Error(message);
+  }
+  function equal(actual, expected, message) {
+    assert(JSON.stringify(actual) === JSON.stringify(expected), message);
+  }
+  async function check(name, work) {
+    try { await work(); log.textContent += `PASS ${name}\n`; }
+    catch (error) { failures.push(`${name}: ${error.stack}`); }
+  }
+  const model = window.WellCityModel;
+  const catalog = model.CITY_DISTRICTS;
+  const original = JSON.stringify(catalog);
+  await check("standalone catalog has byte-for-byte parity with the combined guild catalog", async () => {
+    // Captured from the combined CITY_DISTRICTS before applying PR #35's extraction.
+    const bytes = new TextEncoder().encode(original);
+    const digest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))]
+      .map((byte) => byte.toString(16).padStart(2, "0")).join("");
+    assert(bytes.length === 4819, "catalog byte length changed");
+    assert(digest === "cf147833f962426a6b3e39dc15477156c62f03b02b528af36899b8926f88b22a",
+      "catalog content, property order or service order changed");
+    equal(Object.keys(catalog), ["main", "port", "upper"], "district ordering changed");
+    equal(Object.values(catalog).map((district) => district.services.length), [6, 4, 4], "service count changed");
+    assert(catalog.main.services[3].action === "guild" && catalog.main.services[3].status === "ready" &&
+      catalog.upper.services[2].action === "guild" && catalog.upper.services[2].status === "ready",
+      "guild hall entry points were lost during extraction");
+    assert(Object.isFrozen(model) && !Object.isFrozen(catalog), "existing table mutability changed");
+  });
+
+  localStorage.clear();
+  const frame = document.createElement("iframe");
+  frame.title = "Game under test";
+  frame.src = "../index.html?city-test=1";
+  const loaded = new Promise((resolve) => frame.addEventListener("load", resolve, { once: true }));
+  document.body.append(frame);
+  await loaded;
+  const app = frame.contentWindow;
+  let doc = frame.contentDocument;
+  function selectDistrict(id) {
+    doc.querySelector(`[data-district="${id}"]`).click();
+  }
+  function checkDistrict(id, locked = false, hasSavedRun = false) {
+    const district = catalog[id];
+    assert(doc.getElementById("district-title").textContent === district.title, "title changed");
+    assert(doc.getElementById("district-kicker").textContent === district.kicker, "kicker changed");
+    assert(doc.getElementById("district-description").textContent === district.description, "description changed");
+    const cards = [...doc.querySelectorAll("#city-services .service-card")];
+    assert(cards.length === district.services.length, "rendered service count changed");
+    district.services.forEach((service, index) => {
+      const card = cards[index];
+      assert(card.classList.contains(`service-${locked ? "locked" : service.status}`), "status class changed");
+      assert(card.querySelector("h4").textContent === service.name, "service name changed");
+      assert(card.querySelector("p").textContent === service.description, "service description changed");
+      assert(card.querySelector(".service-icon").textContent === service.icon, "icon changed");
+      assert(card.querySelector(".service-status").textContent === (locked ? "ЗАКРЫТО" : service.statusLabel),
+        "status label changed");
+      const buttons = [...card.querySelectorAll("[data-city-action]")];
+      equal(buttons.map((button) => button.dataset.cityAction),
+        locked || !service.action ? [] : service.action === "well" && hasSavedRun
+          ? ["well", "new-run"] : [service.action], "service actions changed");
+      if (buttons.length) {
+        assert(buttons[0].textContent === (service.actionLabel ||
+          (hasSavedRun ? "Продолжить сохранённый спуск" : "Выбрать класс и начать спуск")), "action label changed");
+      }
+    });
+    assert(doc.querySelector(`[data-district="${id}"]`).getAttribute("aria-pressed") === "true",
+      "active tab changed");
+    assert(doc.getElementById("district-back-button").hidden === (id === "main"), "back navigation changed");
+  }
+  await check("classic script order preserves the original global catalog alias and render API", () => {
+    assert(app.eval("CITY_DISTRICTS === window.WellCityModel.CITY_DISTRICTS"), "catalog was duplicated");
+    assert(typeof app.renderCity === "function" && typeof app.createCityServiceCard === "function", "API changed");
+    assert(!doc.getElementById("city-hub").hidden, "city did not render");
+    checkDistrict("main");
+  });
+  await check("all district cards and locked upper district retain their read-only behavior", () => {
+    const before = localStorage.getItem("well-of-whispers-active-run");
+    selectDistrict("port");
+    checkDistrict("port");
+    selectDistrict("upper");
+    checkDistrict("upper", true);
+    assert(!doc.getElementById("district-lock-note").hidden, "upper district unexpectedly unlocked");
+    doc.getElementById("district-back-button").click();
+    checkDistrict("main");
+    assert(localStorage.getItem("well-of-whispers-active-run") === before, "navigation changed the run save");
+    assert(app.eval("JSON.stringify(CITY_DISTRICTS)") === original, "rendering mutated the catalog");
+  });
+  app.startGameWithClass("knight");
+  const snapshot = app.getCloudSaveSnapshot();
+  const next = JSON.parse(JSON.stringify(snapshot));
+  Object.assign(next.run.state, { level: 3, xp: 0, advancedClassId: "paladin", pendingClassLevels: [] });
+  assert(app.isValidRun(next.run), "fixture rejected by existing save validation");
+  app.restoreCloudSave(next);
+  const reloaded = new Promise((resolve) => frame.addEventListener("load", resolve, { once: true }));
+  app.location.reload();
+  await reloaded;
+  doc = frame.contentDocument;
+  await check("unchanged saved class path unlocks the upper district after reload", () => {
+    const reloadedApp = frame.contentWindow;
+    selectDistrict("upper");
+    checkDistrict("upper");
+    assert(doc.getElementById("district-lock-note").hidden, "saved advanced class did not unlock upper district");
+    selectDistrict("main");
+    checkDistrict("main", false, true);
+    const restored = reloadedApp.getCloudSaveSnapshot();
+    assert(restored.version === snapshot.version && restored.run.version === snapshot.run.version &&
+      restored.meta.version === snapshot.meta.version, "save versions changed");
+    assert(restored.run.state.advancedClassId === "paladin" && reloadedApp.isValidRun(restored.run), "save path changed");
+    assert(reloadedApp.eval("JSON.stringify(CITY_DISTRICTS)") === original, "reload changed catalog bytes");
+  });
+  document.getElementById("result").dataset.result = failures.length ? "fail" : "pass";
+  document.getElementById("result").textContent = failures.length ? "FAIL" : "PASS";
+  if (failures.length) log.textContent += failures.join("\n");
+})().catch((error) => {
+  document.getElementById("result").dataset.result = "fail";
+  document.getElementById("result").textContent = "FAIL";
+  document.getElementById("log").textContent += `${error.stack}\n`;
+});
+</script>

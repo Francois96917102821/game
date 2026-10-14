@@ -5,6 +5,7 @@ on:
     paths:
       - "expeditions-model.js"
       - "class-model.js"
+      - "city-model.js"
       - "game.js"
       - "index.html"
       - "styles.css"

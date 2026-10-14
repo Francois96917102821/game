@@ -8,6 +8,7 @@ on:
       - "tests/prepare-pages-artifact.py"
       - "tests/pages-artifact.test.html"
       - "class-model.js"
+      - "city-model.js"
       - "rune-model.js"
       - "attribute-model.js"
       - "soul-crafting-model.js"

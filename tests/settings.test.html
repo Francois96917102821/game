@@ -18,11 +18,80 @@
     try { work(); log.textContent += `PASS ${name}\n`; }
     catch (error) { failures.push(`${name}: ${error.stack}`); }
   }
+  async function checkAsync(name, work) {
+    try { await work(); log.textContent += `PASS ${name}\n`; }
+    catch (error) { failures.push(`${name}: ${error.stack}`); }
+  }
   function app() { return frame.contentWindow; }
   function element(id) { return app().document.getElementById(id); }
   function changeEvent() {
     const EventConstructor = app().Event;
     return new EventConstructor("change", { bubbles: true });
+  }
+  function visibilityEvent() {
+    const EventConstructor = app().Event;
+    return new EventConstructor("visibilitychange");
+  }
+  const audioContexts = [];
+  class FakeAudioParam {
+    constructor() { this.value = 0; }
+    setValueAtTime(value) { this.value = value; }
+    linearRampToValueAtTime(value) { this.value = value; }
+    exponentialRampToValueAtTime(value) { this.value = value; }
+    setTargetAtTime(value) { this.value = value; }
+    cancelScheduledValues() {}
+  }
+  class FakeAudioNode {
+    connect(destination) { this.destination = destination; }
+    disconnect() { this.disconnected = true; }
+  }
+  class FakeGain extends FakeAudioNode {
+    constructor() { super(); this.gain = new FakeAudioParam(); }
+  }
+  class FakeOscillator extends FakeAudioNode {
+    constructor(context) {
+      super();
+      this.context = context;
+      this.frequency = new FakeAudioParam();
+      this.listeners = [];
+    }
+    start() { this.context.oscillators.push(this); }
+    stop(time) {
+      this.stopTime = time;
+      setTimeout(() => {
+        this.stopped = true;
+        for (const listener of this.listeners) listener();
+        this.listeners = [];
+      }, Math.max(0, ((time ?? this.context.currentTime) - this.context.currentTime) * 1000));
+    }
+    addEventListener(type, listener) {
+      if (type === "ended") this.listeners.push(listener);
+    }
+  }
+  class FakeAudioContext {
+    constructor() {
+      this.state = "suspended";
+      this.currentTime = 0;
+      this.destination = {};
+      this.oscillators = [];
+      this.resumeCalls = 0;
+      audioContexts.push(this);
+    }
+    createGain() { return new FakeGain(); }
+    createOscillator() { return new FakeOscillator(this); }
+    resume() { this.resumeCalls += 1; this.state = "running"; return Promise.resolve(); }
+    suspend() { this.state = "suspended"; return Promise.resolve(); }
+  }
+  function installFakeAudio() { app().AudioContext = FakeAudioContext; }
+  function waitForFrameReload() {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("Game reload timed out.")), 10000);
+      frame.addEventListener("load", () => {
+        clearTimeout(timer);
+        resolve();
+      }, { once: true });
+      app().location.reload();
+    });
   }
   await new Promise((resolve, reject) => {
     if (frame.contentDocument?.getElementById("settings-open-button")) {
@@ -76,7 +145,43 @@
     assert(app().localStorage.getItem("well-of-whispers-profile-settings").includes('"reducedMotion":true'),
       "display preference is persisted");
   });
-  check("sound toggles from settings and the existing game control", () => {
+  await checkAsync("sound remains idle by default and starts a synthesized loop only after opt-in", async () => {
+    installFakeAudio();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert(audioContexts.length === 0, "the disabled default creates no audio context");
+    const sound = element("settings-sound");
+    sound.checked = true;
+    sound.dispatchEvent(changeEvent());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert(audioContexts.length === 1, "explicit opt-in creates one shared audio context");
+    const context = audioContexts[0];
+    const activeMusic = () => context.oscillators.filter((oscillator) =>
+      oscillator.destination instanceof FakeGain
+      && oscillator.destination.gain.value === 0.012
+      && !oscillator.disconnected);
+    assert(activeMusic().length === 3, "opt-in starts three quiet synthesized ambient voices");
+    assert(context.state === "running", "audio starts only after the preference interaction");
+
+    let hidden = false;
+    Object.defineProperty(app().document, "hidden", { configurable: true, get: () => hidden });
+    hidden = true;
+    app().document.dispatchEvent(visibilityEvent());
+    assert(context.state === "suspended", "hidden tabs suspend the shared audio context");
+    assert(activeMusic().length === 0, "hidden tabs stop and dispose ambient voices");
+    hidden = false;
+    app().document.dispatchEvent(visibilityEvent());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert(context.state === "running", "returning to a visible tab resumes previously opted-in audio");
+    assert(activeMusic().length === 3, "returning to the tab starts one fresh ambient loop");
+
+    sound.checked = false;
+    sound.dispatchEvent(changeEvent());
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    assert(activeMusic().length === 0, "opting out fades and disposes every ambient voice");
+    assert(element("sound-toggle").getAttribute("aria-pressed") === "false", "opt-out synchronizes the game control");
+  });
+  await checkAsync("sound preference persists without autoplay and both controls mute effects and music", async () => {
+    installFakeAudio();
     const sound = element("settings-sound");
     sound.checked = true;
     sound.dispatchEvent(changeEvent());
@@ -86,11 +191,21 @@
     assert(app().getComputedStyle(element("sound-toggle").querySelector(".sound-icon-muted")).display === "none",
       "enabled sound icon hides its mute mark");
     assert(app().localStorage.getItem("well-of-whispers-sound-enabled") === "true", "sound opt-in is persisted");
+    const contextCount = audioContexts.length;
+    await waitForFrameReload();
+    installFakeAudio();
+    assert(element("settings-sound").checked, "enabled sound preference is restored after reload");
+    assert(element("sound-toggle").getAttribute("aria-pressed") === "true", "restored preference synchronizes the game control");
+    assert(audioContexts.length === contextCount, "a restored preference does not create or resume audio on load");
+    app().document.dispatchEvent(visibilityEvent());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert(audioContexts.length === contextCount, "visibility alone cannot unlock audio after reload");
     element("sound-toggle").click();
-    assert(sound.checked === false, "existing sound button remains synchronized");
+    assert(element("settings-sound").checked === false, "existing sound button remains synchronized");
     assert(app().getComputedStyle(element("sound-toggle").querySelector(".sound-icon-wave")).display === "none",
       "button opt-out updates the sound icon");
     assert(app().localStorage.getItem("well-of-whispers-sound-enabled") === "false", "sound opt-out is persisted");
+    element("settings-open-button").click();
   });
 
   frame.style.width = "360px";
@@ -103,14 +218,7 @@
     }
   });
 
-  await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("Game reload timed out.")), 10000);
-    frame.addEventListener("load", () => {
-      clearTimeout(timer);
-      resolve();
-    }, { once: true });
-    frame.contentWindow.location.reload();
-  });
+  await waitForFrameReload();
   check("profile, display and sound choices survive reload", () => {
     assert(element("player-name").textContent === "Ада Лавлейс", "profile name restored");
     assert(app().document.body.dataset.reduceMotion === "true", "reduced motion restored");

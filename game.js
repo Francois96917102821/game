@@ -16,6 +16,7 @@ const MAX_FOCUS = 3;
 const HEAVY_ATTACK_COST = 2;
 const MAX_GEAR = 6;
 const SOUND_PREFERENCE_KEY = "well-of-whispers-sound-enabled";
+const PROFILE_SETTINGS_KEY = "well-of-whispers-profile-settings";
 const ELITE_TRAITS = {
   curse: "Проклинающий", ghost: "Призрачный", warlike: "Воинственный",
   experienced: "Опытный", punisher: "Карающий", wounded: "Раненый",
@@ -631,6 +632,7 @@ let selectedDistrict = "main";
 let previousTownVisibility = false;
 let audioContext = null;
 let soundEnabled = readSoundPreference();
+let profileSettings = readProfileSettings();
 
 function readSoundPreference() {
   try {
@@ -639,6 +641,48 @@ function readSoundPreference() {
     console.warn("Не удалось прочитать настройку звука.", error);
     return false;
   }
+}
+
+function normalizeDisplayName(value) {
+  if (typeof value !== "string") return "";
+  return Array.from(value.trim().replace(/\s+/gu, " ")).slice(0, 24).join("");
+}
+
+function readProfileSettings() {
+  try {
+    const stored = JSON.parse(window.localStorage.getItem(PROFILE_SETTINGS_KEY) || "null");
+    if (!stored || typeof stored !== "object" || Array.isArray(stored)) {
+      return { displayName: "Искатель", reducedMotion: false, highContrast: false };
+    }
+    return {
+      displayName: normalizeDisplayName(stored.displayName) || "Искатель",
+      reducedMotion: stored.reducedMotion === true,
+      highContrast: stored.highContrast === true,
+    };
+  } catch (error) {
+    console.warn("Не удалось прочитать профиль и настройки.", error);
+    return { displayName: "Искатель", reducedMotion: false, highContrast: false };
+  }
+}
+
+function applyProfileSettings() {
+  document.body.dataset.reduceMotion = String(profileSettings.reducedMotion);
+  document.body.dataset.highContrast = String(profileSettings.highContrast);
+  $("settings-reduced-motion").checked = profileSettings.reducedMotion;
+  $("settings-high-contrast").checked = profileSettings.highContrast;
+}
+
+function persistProfileSettings(nextSettings) {
+  try {
+    window.localStorage.setItem(PROFILE_SETTINGS_KEY, JSON.stringify(nextSettings));
+  } catch (error) {
+    console.warn("Не удалось сохранить профиль и настройки.", error);
+    return false;
+  }
+  profileSettings = nextSettings;
+  applyProfileSettings();
+  $("player-name").textContent = profileSettings.displayName;
+  return true;
 }
 
 function createState() {
@@ -1765,8 +1809,8 @@ function startGameWithClass(classId) {
   metaProgress.tavern.revision += 1;
   metaProgress.tavern.updatedAt = Date.now();
   persistMetaProgress();
-  $("player-name").textContent = characterClass.name;
-  $("player-subtitle").textContent = characterClass.role;
+  $("player-name").textContent = profileSettings.displayName;
+  $("player-subtitle").textContent = `${characterClass.name} · ${characterClass.role}`;
   $("portrait-figure").replaceChildren(createArtIcon(`hero-${characterClass.id}`, characterClass.name, "portrait-art"));
   state.potions = Math.min(getPotionLimit(), 2 + getUpgradeLevel("supplies"));
   addJournal("Спуск начался", "Ты переступил порог колодца. Обратного пути пока нет.", "↓");
@@ -5411,8 +5455,10 @@ function render() {
   const theme = getFloorTheme();
   const characterClass = state.classId ? getSelectedClassNodes().slice(-1)[0] : null;
   ui.level.textContent = `УР. ${state.level}`;
-  $("player-name").textContent = characterClass ? characterClass.name : "Искатель";
-  $("player-subtitle").textContent = characterClass ? characterClass.role : "Последний из наземных";
+  $("player-name").textContent = profileSettings.displayName;
+  $("player-subtitle").textContent = characterClass
+    ? `${characterClass.name} · ${characterClass.role}`
+    : "Последний из наземных";
   const baseClassId = getBaseClassId(characterClass?.id);
   $("portrait-figure").replaceChildren(createArtIcon(
     `hero-${baseClassId}`,
@@ -5658,6 +5704,19 @@ function renderSoundToggle() {
   button.setAttribute("aria-label", soundEnabled ? "Выключить звук" : "Включить звук");
   button.title = soundEnabled ? "Звук включён" : "Звук выключен";
   $("sound-toggle-label").textContent = soundEnabled ? "Звук: вкл." : "Звук: выкл.";
+  $("settings-sound").checked = soundEnabled;
+}
+
+function setSoundEnabled(enabled) {
+  soundEnabled = enabled;
+  renderSoundToggle();
+  try {
+    window.localStorage.setItem(SOUND_PREFERENCE_KEY, String(soundEnabled));
+    return true;
+  } catch (error) {
+    console.warn("Не удалось сохранить настройку звука.", error);
+    return false;
+  }
 }
 
 ui.startButton.addEventListener("click", openClassDialog);
@@ -5739,17 +5798,54 @@ $("rune-list").addEventListener("click", (event) => {
   if (button) useEnhancementRune(button.dataset.runeType);
 });
 $("sound-toggle").addEventListener("click", (event) => {
-  soundEnabled = !soundEnabled;
-  renderSoundToggle();
-  try {
-    window.localStorage.setItem(SOUND_PREFERENCE_KEY, String(soundEnabled));
-  } catch (error) {
-    console.warn("Не удалось сохранить настройку звука.", error);
-  }
+  setSoundEnabled(!soundEnabled);
   if (soundEnabled) playSound("toggle");
 });
 
+const settingsDialog = $("settings-dialog");
+$("settings-open-button").addEventListener("click", () => {
+  $("settings-status").textContent = "";
+  $("profile-display-name").value = profileSettings.displayName;
+  settingsDialog.showModal();
+});
+$("profile-settings-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const displayName = normalizeDisplayName($("profile-display-name").value);
+  if (!displayName) {
+    $("settings-status").textContent = "Введи имя из одного или нескольких символов.";
+    $("profile-display-name").focus();
+    return;
+  }
+  if (persistProfileSettings({ ...profileSettings, displayName })) {
+    $("profile-display-name").value = displayName;
+    $("settings-status").textContent = "Имя путника сохранено в этом браузере.";
+  } else {
+    $("settings-status").textContent = "Не удалось сохранить имя. Проверь доступность хранилища браузера.";
+  }
+});
+$("settings-sound").addEventListener("change", (event) => {
+  const saved = setSoundEnabled(event.currentTarget.checked);
+  if (soundEnabled) playSound("toggle");
+  $("settings-status").textContent = saved
+    ? "Настройка звука сохранена."
+    : "Звук изменён до закрытия страницы, но не сохранён в браузере.";
+});
+for (const [inputId, settingKey, label] of [
+  ["settings-reduced-motion", "reducedMotion", "анимации"],
+  ["settings-high-contrast", "highContrast", "контраста"],
+]) {
+  $(inputId).addEventListener("change", (event) => {
+    const nextSettings = { ...profileSettings, [settingKey]: event.currentTarget.checked };
+    const saved = persistProfileSettings(nextSettings);
+    if (!saved) event.currentTarget.checked = profileSettings[settingKey];
+    $("settings-status").textContent = saved
+      ? `Настройка ${label} сохранена.`
+      : `Не удалось сохранить настройку ${label}. Проверь доступность хранилища браузера.`;
+  });
+}
+
 renderSoundToggle();
+applyProfileSettings();
 render();
 ui.districtTabs.addEventListener("click", (event) => {
   const tab = event.target.closest("button[data-district]");

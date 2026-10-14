@@ -24,7 +24,7 @@
   document.body.append(frame);
   await new Promise((resolve) => frame.addEventListener("load", resolve, { once: true }));
   const app = frame.contentWindow;
-  await app.gameServicesReady;
+  await app.eval("gameServicesReady");
 
   check("old meta saves initialize guild transaction ledgers", () => {
     const old = app.createMetaProgress();

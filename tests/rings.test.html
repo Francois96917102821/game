@@ -70,6 +70,14 @@ const id = (n) => `aaaaaaaa-aaaa-4aaa-8aaa-${String(n).padStart(12, "0")}`;
     meta.tavern.equippedRingId = gearId;
     return meta;
   }
+  await check("rune panel explains the active ring bonus without obsolete slot disclaimer", () => {
+    const rule = doc.getElementById("rune-ring-rule");
+    assert(rule && rule.textContent ===
+      "Экипированное кольцо даёт ×2 руны одного выбранного типа за PvE-победу, включая совместный бой, в одной квитанции и не больше остатка лимита по уровню. Шанс и тип не меняются; при остатке 1 выдаётся одна руна, при заполненном лимите — ни одной. В PvP бонус не действует.",
+      "rune panel must document the active multiplier, single type/receipt, remaining cap and PvP exclusion");
+    assert(!doc.querySelector(".rune-meta").textContent.includes("Кольца рун в экипировке пока нет"),
+      "obsolete missing-slot disclaimer contradicts the equipped ring");
+  });
   await check("old save and cloud fields migrate empty without changing existing gear", () => {
     const old = app.createMetaProgress();
     delete old.tavern.equippedRingId;

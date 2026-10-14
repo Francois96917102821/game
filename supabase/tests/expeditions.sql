@@ -101,6 +101,18 @@ begin
 end
 $privileges$;
 
+do $catalog$
+begin
+  if (select sum(weight) from public.guild_expedition_rewards) <> 30 or
+    (select sum(weight) from public.guild_expedition_rewards where gear is not null) <> 6 or
+    (select count(*) from public.guild_expedition_rewards where gear is not null) <> 2 or
+    exists (select 1 from public.guild_expedition_rewards
+      where gear is not null and (not public.item_is_ordinary_gear(gear) or (gear ->> 'bonus')::integer <> 1)) then
+    raise exception 'Expected a 20 percent low-level ordinary gear catalog';
+  end if;
+end
+$catalog$;
+
 set role authenticated;
 do $start$
 declare v_first jsonb; v_id uuid;
@@ -156,6 +168,9 @@ rollback;
 update public.guild_expeditions
 set started_at = started_at - interval '2 hours', ready_at = ready_at - interval '2 hours';
 
+-- Force individual outcomes administratively, never via the client RPC.
+update public.guild_expedition_rewards set weight = case when reward_id = 4 then 1 else 0 end;
+
 create function public.expedition_test_fail_ledger()
 returns trigger language plpgsql as $$
 begin
@@ -178,13 +193,48 @@ begin
   if exists (select 1 from public.guild_expeditions where claimed_at is not null) or
     exists (select 1 from public.wallet_funding_receipts where source_kind = 'guild_expedition') or
     exists (select 1 from public.wallet_balances where user_id = '71111111-1111-4111-8111-111111111111') or
-    exists (select 1 from public.wallet_transactions where actor_id = '71111111-1111-4111-8111-111111111111') then
+    exists (select 1 from public.wallet_transactions where actor_id = '71111111-1111-4111-8111-111111111111') or
+    exists (select 1 from public.item_issuance_receipts where source_kind = 'guild_expedition') or
+    exists (select 1 from public.player_items where owner_id = '71111111-1111-4111-8111-111111111111') then
     raise exception 'Failed claim left expedition, receipt, balance or transaction changes';
   end if;
 end
 $rollback$;
 drop trigger expedition_test_fail_ledger on public.wallet_ledger_entries;
 drop function public.expedition_test_fail_ledger();
+
+create function public.expedition_test_fail_item()
+returns trigger language plpgsql as $$
+begin
+  if new.owner_id = '71111111-1111-4111-8111-111111111111' then
+    raise exception 'Injected expedition custody failure.';
+  end if;
+  return new;
+end;
+$$;
+create trigger expedition_test_fail_item before insert on public.player_items
+for each row execute function public.expedition_test_fail_item();
+set role authenticated;
+select public.expedition_test_reject(
+  format('select public.guild_expedition_claim(%L)', public.guild_expedition_get_owned() -> 'expeditions' -> 0 ->> 'id'),
+  'P0001', 'Injected expedition custody failure.');
+reset role;
+do $item_rollback$
+begin
+  if exists (select 1 from public.guild_expeditions where claimed_at is not null or claim_response is not null) or
+    exists (select 1 from public.wallet_funding_receipts where source_kind = 'guild_expedition') or
+    exists (select 1 from public.wallet_balances where user_id = '71111111-1111-4111-8111-111111111111') or
+    exists (select 1 from public.wallet_transactions where actor_id = '71111111-1111-4111-8111-111111111111') or
+    exists (select 1 from public.wallet_ledger_entries where user_id = '71111111-1111-4111-8111-111111111111') or
+    exists (select 1 from public.item_issuance_receipts where source_kind = 'guild_expedition') or
+    exists (select 1 from public.player_items where owner_id = '71111111-1111-4111-8111-111111111111') then
+    raise exception 'Custody failure did not roll back gold, item receipt, asset and claim';
+  end if;
+end
+$item_rollback$;
+drop trigger expedition_test_fail_item on public.player_items;
+drop function public.expedition_test_fail_item();
+update public.guild_expedition_rewards set weight = case when reward_id = 1 then 1 else 0 end;
 
 set role authenticated;
 do $claim$
@@ -197,7 +247,9 @@ begin
   end if;
   v_start := public.guild_expedition_start('b1111111-1111-4111-8111-111111111111');
   v_claim := public.guild_expedition_claim(v_id);
-  if public.guild_expedition_claim(v_id) <> v_claim or
+  if v_claim -> 'item' is distinct from 'null'::jsonb or
+    public.item_get_owned() <> '[]'::jsonb or
+    public.guild_expedition_claim(v_id) <> v_claim or
     public.guild_expedition_start('b1111111-1111-4111-8111-111111111111') <> v_start or
     public.guild_expedition_get_owned() -> 'expeditions' <> jsonb_build_array(v_claim) or
     public.wallet_get_balances() ->> 'gold' <> v_claim ->> 'gold' or
@@ -207,6 +259,45 @@ begin
 end
 $claim$;
 reset role;
+
+-- Model a pre-item claim's exact shape, then prove schema reapplication does not
+-- backfill items, alter its response, or re-credit its gold.
+update public.guild_expeditions set claim_response = claim_response - 'item'
+where user_id = '71111111-1111-4111-8111-111111111111';
+create temporary table expedition_legacy_snapshot as
+select id, claim_response from public.guild_expeditions where claimed_at is not null;
+\ir ../schema.sql
+\ir ../schema.sql
+set role authenticated;
+do $legacy$
+begin
+  perform set_config('request.jwt.claim.sub', '71111111-1111-4111-8111-111111111111', true);
+  if public.guild_expedition_get_owned() -> 'expeditions' -> 0 ? 'item' or
+    public.item_get_owned() <> '[]'::jsonb or
+    public.wallet_get_balances() ->> 'gold' <> '15' then
+    raise exception 'Reapplication changed legacy claim or assets';
+  end if;
+end
+$legacy$;
+reset role;
+do $legacy_retry$
+declare v_e record;
+begin
+  for v_e in select * from expedition_legacy_snapshot loop
+    perform set_config('request.jwt.claim.sub', '71111111-1111-4111-8111-111111111111', true);
+    set local role authenticated;
+    if public.guild_expedition_claim(v_e.id) is distinct from v_e.claim_response then
+      raise exception 'Legacy retry changed saved response';
+    end if;
+    reset role;
+  end loop;
+  if exists (select 1 from public.item_issuance_receipts where source_kind = 'guild_expedition') then
+    raise exception 'Legacy claim received a retroactive item';
+  end if;
+end
+$legacy_retry$;
+drop table expedition_legacy_snapshot;
+update public.guild_expedition_rewards set weight = case when reward_id = 5 then 1 else 0 end;
 
 -- Three committed starts on the current UTC day block a fourth, not an exact retry.
 -- Claimed fixtures reuse real claims and receipts, preserving storage constraints.
@@ -246,6 +337,8 @@ begin
   reset role;
 end
 $daily$;
+
+update public.guild_expedition_rewards set weight = case when reward_id = 4 then 1 else 0 end;
 
 -- Separate top-level transactions prevent parent assertions retaining locks
 -- when the next dblink case acquires its gate.
@@ -296,6 +389,17 @@ begin
     (select count(*) from public.wallet_funding_receipts where source_kind = 'guild_expedition' and source_ref = v_id::text) <> 1 then
     raise exception 'Concurrent claims must mint exactly one receipt';
   end if;
+  if p_case = 1 then
+    if v_a::jsonb -> 'item' ->> 'item_id' is distinct from
+        md5('guild-expedition-item:' || v_id::text)::uuid::text or
+      (select count(*) from public.item_issuance_receipts
+        where source_kind = 'guild_expedition' and source_ref = v_id::text) <> 1 or
+      (select count(*) from public.player_items
+        where item_id = (v_a::jsonb -> 'item' ->> 'item_id')::uuid
+          and owner_id = '72222222-2222-4222-8222-222222222222') <> 1 then
+      raise exception 'Concurrent claims must issue exactly one deterministic item to caller';
+    end if;
+  end if;
   if p_case > 1 and
     (select count(*) from public.guild_expeditions where user_id = '72222222-2222-4222-8222-222222222222' and claimed_at is null) <> 1 then
     raise exception 'Concurrent starts must create exactly one expedition';
@@ -311,6 +415,61 @@ select public.expedition_test_concurrency(2);
 delete from public.guild_expeditions where user_id = '72222222-2222-4222-8222-222222222222' and claimed_at is null;
 select public.expedition_test_concurrency(3);
 drop function public.expedition_test_concurrency(integer);
+
+update public.guild_expedition_rewards set weight = case when reward_id <= 3 then 8 else 3 end;
+\ir ../schema.sql
+
+do $item_accounting$
+declare v_e record; v_item jsonb; v_owned jsonb;
+begin
+  for v_e in
+    select e.*, r.gear from public.guild_expeditions e
+    join public.guild_expedition_rewards r using (reward_id)
+    where e.claimed_at is not null
+  loop
+    v_item := v_e.claim_response -> 'item';
+    if v_e.gear is null then
+      if coalesce(v_item, 'null'::jsonb) <> 'null'::jsonb or exists (
+        select 1 from public.item_issuance_receipts
+        where source_kind = 'guild_expedition' and source_ref = v_e.id::text
+      ) then raise exception 'Gold-only expedition minted an item'; end if;
+    else
+      if v_item is null or v_item = 'null'::jsonb or
+        not public.item_is_ordinary_gear(v_item -> 'gear') or
+        v_item -> 'gear' is distinct from v_e.gear or
+        v_item ->> 'owner_id' is distinct from v_e.user_id::text or
+        v_item ->> 'custody_state' is distinct from 'owned' or
+        v_item ->> 'item_id' is distinct from md5('guild-expedition-item:' || v_e.id::text)::uuid::text or
+        (select count(*) from public.item_issuance_receipts
+          where source_kind = 'guild_expedition' and source_ref = v_e.id::text
+            and item_id = (v_item ->> 'item_id')::uuid
+            and issued_owner_id = v_e.user_id and gear = v_e.gear) <> 1 then
+        raise exception 'Item must match catalog, allowlist, caller and immutable receipt';
+      end if;
+      perform set_config('request.jwt.claim.sub', v_e.user_id::text, true);
+      set local role authenticated;
+      v_owned := public.item_get_owned();
+      if not v_owned @> jsonb_build_array(v_item) or
+        not (public.guild_expedition_get_owned() -> 'expeditions') @> jsonb_build_array(v_e.claim_response) or
+        public.guild_expedition_claim(v_e.id) is distinct from v_e.claim_response then
+        raise exception 'Own reads or repeated claim lost the item';
+      end if;
+      perform set_config('request.jwt.claim.sub', '71111111-1111-4111-8111-111111111111', true);
+      if public.item_get_owned() @> jsonb_build_array(v_item) then
+        raise exception 'Another account can see expedition item';
+      end if;
+      perform public.expedition_test_reject(format('select public.guild_expedition_claim(%L)', v_e.id),
+        'P0001', 'Expedition not found.');
+      reset role;
+    end if;
+  end loop;
+  if (select count(*) from public.item_issuance_receipts where source_kind = 'guild_expedition') <> 4 or
+    (select count(*) from public.player_items where owner_id in (
+      '72222222-2222-4222-8222-222222222222', '73333333-3333-4333-8333-333333333333')) <> 4 then
+    raise exception 'Expected exactly four items across deterministic weapon and armor outcomes';
+  end if;
+end
+$item_accounting$;
 
 do $accounting$
 declare v_e record; v_count integer; v_sum bigint; v_balance bigint;

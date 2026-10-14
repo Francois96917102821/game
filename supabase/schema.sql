@@ -2871,11 +2871,24 @@ grant execute on function public.item_get_owned() to authenticated;
 
 -- Independent of writable saves, client combat stats, and local inventory.
 create table if not exists public.guild_expedition_rewards (
-  reward_id smallint primary key check (reward_id between 1 and 3),
+  reward_id smallint primary key check (reward_id between 1 and 5),
   gold bigint not null check (gold in (15, 20, 25))
 );
+alter table public.guild_expedition_rewards
+  drop constraint if exists guild_expedition_rewards_reward_id_check;
+alter table public.guild_expedition_rewards
+  add constraint guild_expedition_rewards_reward_id_check check (reward_id between 1 and 5);
+alter table public.guild_expedition_rewards
+  add column if not exists weight integer not null default 8 check (weight between 0 and 1000);
+alter table public.guild_expedition_rewards
+  add column if not exists gear jsonb check (gear is null or public.item_is_ordinary_gear(gear));
 insert into public.guild_expedition_rewards (reward_id, gold)
 values (1, 15), (2, 20), (3, 25)
+on conflict (reward_id) do nothing;
+insert into public.guild_expedition_rewards (reward_id, gold, weight, gear)
+values
+  (4, 20, 3, '{"id":"gear-1","type":"weapon","name":"Клинок каменного эха","bonus":1}'),
+  (5, 20, 3, '{"id":"gear-2","type":"armor","name":"Плащ колодезного стража","bonus":1}')
 on conflict (reward_id) do nothing;
 
 create table if not exists public.guild_expeditions (
@@ -2969,7 +2982,11 @@ declare
   v_user_id uuid := auth.uid();
   v_expedition public.guild_expeditions%rowtype;
   v_reward public.guild_expedition_rewards%rowtype;
-  v_reward_id smallint;
+  v_total_weight integer;
+  v_draw integer;
+  v_entropy bytea;
+  v_item_id uuid;
+  v_item jsonb := 'null'::jsonb;
   v_receipt_id uuid;
   v_funding jsonb;
   v_response jsonb;
@@ -2982,17 +2999,45 @@ begin
   if v_expedition.claimed_at is not null then return v_expedition.claim_response; end if;
   v_now := clock_timestamp();
   if v_now < v_expedition.ready_at then raise exception 'Expedition is not ready.'; end if;
-  -- UUID entropy is server-generated, independent of the request UUID or setseed().
-  v_reward_id := 1 + get_byte(uuid_send(gen_random_uuid()), 0) % 3;
-  select * into strict v_reward from public.guild_expedition_rewards where reward_id = v_reward_id;
+  -- Keep the weighted catalog stable throughout selection and issuance.
+  lock table public.guild_expedition_rewards in share mode;
+  select sum(weight) into v_total_weight from public.guild_expedition_rewards;
+  if v_total_weight is null or v_total_weight <= 0 then
+    raise exception 'Expedition reward catalog has no enabled outcomes.';
+  end if;
+  -- Rejection sampling avoids modulo bias; these UUID bytes are random, not version bits.
+  loop
+    v_entropy := uuid_send(gen_random_uuid());
+    v_draw := get_byte(v_entropy, 0) * 256 + get_byte(v_entropy, 1);
+    exit when v_draw < (65536 / v_total_weight) * v_total_weight;
+  end loop;
+  v_draw := v_draw % v_total_weight;
+  select reward_id, gold, weight, gear into strict v_reward
+  from (
+    select r.*, sum(r.weight) over (order by r.reward_id) as upper_weight
+    from public.guild_expedition_rewards r
+  ) weighted
+  where upper_weight > v_draw
+  order by reward_id limit 1;
   v_receipt_id := public.wallet_register_funding_receipt(
     v_user_id, 'gold', v_reward.gold, 'guild_expedition', v_expedition.id::text
   );
   v_funding := public.wallet_claim_funding_receipts();
+  if v_reward.gear is not null then
+    -- Namespaced stable asset identity, independent of client UUIDs and retries.
+    v_item_id := md5('guild-expedition-item:' || v_expedition.id::text)::uuid;
+    v_item_id := public.item_register_issuance(
+      v_item_id, v_user_id, v_reward.gear, 'guild_expedition', v_expedition.id::text
+    );
+    v_item := jsonb_build_object(
+      'item_id', v_item_id, 'owner_id', v_user_id,
+      'custody_state', 'owned', 'gear', v_reward.gear
+    );
+  end if;
   v_response := jsonb_build_object(
     'id', v_expedition.id, 'status', 'claimed', 'claimed_at', v_now,
     'reward_id', v_reward.reward_id, 'gold', v_reward.gold,
-    'receipt_id', v_receipt_id, 'balances', v_funding -> 'balances'
+    'receipt_id', v_receipt_id, 'balances', v_funding -> 'balances', 'item', v_item
   );
   update public.guild_expeditions
   set claimed_at = v_now, reward_id = v_reward.reward_id,

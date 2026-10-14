@@ -221,18 +221,21 @@ $rollback_check$;
 drop trigger item_test_fail_insert on public.player_items;
 drop function public.item_test_fail_insert();
 
-do $concurrency$
+-- Each case is a separate top-level transaction: assertions acquire read locks
+-- that must be released before the next connection takes the exclusive gate.
+set statement_timeout = '30s';
+create function public.item_test_concurrency(v_case integer)
+returns void language plpgsql as $concurrency$
 declare
   v_connection text := format(
     'host=127.0.0.1 port=%s dbname=%s user=postgres password=local-test-only',
     current_setting('port'), current_database());
-  v_item uuid; v_query text; v_a text; v_b text; v_case integer;
+  v_item uuid; v_query text; v_a text; v_b text;
   v_deadline timestamptz; v_error text;
 begin
-  perform dblink_connect('item_blocker', v_connection);
-  perform dblink_connect('item_a', v_connection || ' application_name=item_test_a options=''-c role=service_role''');
-  perform dblink_connect('item_b', v_connection || ' application_name=item_test_b options=''-c role=service_role''');
-  for v_case in 1..3 loop
+  perform dblink_connect('item_blocker', v_connection || ' options=''-c lock_timeout=10s -c statement_timeout=15s''');
+  perform dblink_connect('item_a', v_connection || ' application_name=item_test_a options=''-c role=service_role -c lock_timeout=10s -c statement_timeout=15s''');
+  perform dblink_connect('item_b', v_connection || ' application_name=item_test_b options=''-c role=service_role -c lock_timeout=10s -c statement_timeout=15s''');
     v_item := case v_case
       when 1 then 'a4444444-4444-4444-8444-444444444444'::uuid
       when 2 then 'a5555555-5555-4555-8555-555555555555'::uuid
@@ -282,12 +285,16 @@ begin
     -- Drain the empty trailing result before reusing each connection.
     perform * from dblink_get_result('item_a', false) as result(value text);
     perform * from dblink_get_result('item_b', false) as result(value text);
-  end loop;
   perform dblink_disconnect('item_a');
   perform dblink_disconnect('item_b');
   perform dblink_disconnect('item_blocker');
 end
 $concurrency$;
+select public.item_test_concurrency(1);
+select public.item_test_concurrency(2);
+select public.item_test_concurrency(3);
+drop function public.item_test_concurrency(integer);
+reset statement_timeout;
 
 delete from public.player_items where owner_id in (
   '61111111-1111-4111-8111-111111111111', '62222222-2222-4222-8222-222222222222');

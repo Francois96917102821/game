@@ -31,18 +31,19 @@
   let live = null;
   const requests = [];
   let loseResponse = true;
+  let staleResult = false;
   let cachedAction = null;
   app.WellPlayerGroups.getPvpContext = () => ({ userId: own, groupId: id, active: true, members: [] });
   app.WellCloudSave.groupRpc = async (rpc, args) => {
     requests.push({ rpc, args: JSON.parse(JSON.stringify(args)) });
-    if (rpc === "pvp_find") return null;
+    if (rpc === "pvp_find") return { id, status: "waiting", turn: 1 };
     if (rpc === "pvp_start") {
       const p = args.p_player;
       live = {
-        id, status: "active", current_user_id: own, turn: 1,
+        id, status: "active", current_user_id: other, turn: 1,
         deadline_at: new Date(Date.now() + 40000).toISOString(),
-        players: [{ ...p, user_id: own, nickname: "Тест", shield_cooldown: 0, torch_cooldown: 0, staff_cooldown: 0 },
-          { ...p, user_id: other, nickname: "Напарник", shield_cooldown: 0, torch_cooldown: 0, staff_cooldown: 0 }],
+        players: [{ ...p, user_id: other, nickname: "Напарник", shield_cooldown: 0, torch_cooldown: 0, staff_cooldown: 0 },
+          { ...p, user_id: own, nickname: "Тест", shield_cooldown: 0, torch_cooldown: 0, staff_cooldown: 0 }],
         log: [],
       };
       return JSON.parse(JSON.stringify(live));
@@ -52,53 +53,61 @@
         assert(cachedAction.request === args.p_request_id, "retry changed UUID");
         return JSON.parse(JSON.stringify(cachedAction.result));
       }
-      assert(args.p_expected_turn === 1 && args.p_action === "attack", "client action payload");
-      live.turn = 2;
+      assert(args.p_expected_turn === 2 && args.p_action === "attack", "client action payload");
+      live.turn = 3;
       live.current_user_id = other;
-      live.players[1].hp -= 5;
+      live.players[0].hp -= 5;
       cachedAction = { request: args.p_request_id, result: JSON.parse(JSON.stringify(live)) };
       if (loseResponse) { loseResponse = false; throw new Error("Connection lost after commit"); }
       return JSON.parse(JSON.stringify(live));
     }
-    if (rpc === "pvp_get") return JSON.parse(JSON.stringify(live));
-    if (rpc === "pvp_leave") {
-      live.status = "finished";
-      live.winner_id = other;
-      live.reason = "surrender";
-      return JSON.parse(JSON.stringify(live));
-    }
+    if (rpc === "pvp_get") return JSON.parse(JSON.stringify(staleResult
+      ? { ...live, status: "finished", reason: "stale", winner_id: null, current_user_id: null, deadline_at: null }
+      : live));
     throw new Error("Unknown mock RPC");
   };
-  await app.WellPvp.refresh();
   const before = app.getCloudSaveSnapshot();
-  await app.WellPvp.start(false);
+  await app.WellPvp.refresh();
   assert(requests.some((entry) => entry.rpc === "pvp_start" && entry.args.p_request_id &&
-    entry.args.p_player.hp > 0), "start snapshot/request missing");
+    entry.args.p_player.hp > 0), "forced event did not auto-submit a fighter snapshot");
+  assert(!doc.getElementById("pvp-join-button") && !doc.getElementById("pvp-leave-button"),
+    "forced event exposes a join, decline, or cancel control");
+  assert(!doc.getElementById("pvp-panel").hidden, "forced event panel is hidden");
   assert(app.getCloudSaveSnapshot().run.state.liveDuelId === id, "active duel not persisted");
   assert(doc.getElementById("explore-button").hidden, "dungeon not locked");
-  log("real-duel RPC snapshot, request UUID and persisted dungeon lock");
+  log("discovered forced PvP event auto-joins without consent or cancel controls");
+  live.turn = 2;
+  live.current_user_id = own;
+  await app.WellPvp.refresh();
   doc.querySelector('[data-pvp-action="attack"]').click();
   await new Promise((resolve) => setTimeout(resolve, 1));
   assert(!doc.getElementById("pvp-retry-button").hidden, "network retry unavailable");
-  assert(JSON.parse(localStorage.getItem(`well-of-whispers-pvp:${own}`)).args.p_expected_turn === 1, "pending turn not persisted");
+  assert(doc.getElementById("pvp-status").textContent.includes("Connection lost after commit"),
+    "lost-action error was not shown to the player");
+  assert(JSON.parse(localStorage.getItem(`well-of-whispers-pvp:${own}`)).args.p_expected_turn === 2, "pending turn not persisted");
   doc.getElementById("pvp-retry-button").click();
   await new Promise((resolve) => setTimeout(resolve, 1));
   assert(localStorage.getItem(`well-of-whispers-pvp:${own}`) === "null", "accepted pending action not cleared");
   assert(requests.filter((entry) => entry.rpc === "pvp_action").length === 2, "retry not sent");
   assert(doc.querySelector('[data-pvp-action="attack"]').disabled, "opponent turn lets us act");
-  log("lost committed reply reuses UUID without duplicate action and enforces turn UI");
-  live.players[0].shield_cooldown = 2;
+  log("lost committed reply shows actionable error, reuses UUID and enforces turn UI");
+  live.players[1].shield_cooldown = 2;
   await app.WellPvp.refresh();
   assert(app.getCloudSaveSnapshot().run.state.combatProgress.cooldowns.shield === 2, "server cooldown keys not mapped");
   log("server scalar cooldown fields map to saved fighter state");
   const after = app.getCloudSaveSnapshot();
   assert(after.run.state.gold === before.run.state.gold && after.meta.essence === before.meta.essence &&
     after.meta.orderReputation === before.meta.orderReputation, "PvP minted rewards");
-  doc.getElementById("pvp-leave-button").click();
-  await new Promise((resolve) => setTimeout(resolve, 1));
-  assert(!app.getCloudSaveSnapshot().run, "surrender did not end run");
-  assert(app.getCloudSaveSnapshot().meta.essence === before.meta.essence, "PvP defeat awarded shards");
-  log("surrender persists defeat without currency rewards");
+  assert(app.getCloudSaveSnapshot().run.state.liveDuelId === id, "active PvP encounter was cancelled");
+  assert(app.getCloudSaveSnapshot().meta.essence === before.meta.essence, "PvP awarded shards");
+  log("PvP grants no rewards and remains active without a cancel action");
+  staleResult = true;
+  await app.WellPvp.refresh();
+  const settled = app.getCloudSaveSnapshot();
+  assert(settled.run && settled.run.state.liveDuelId === null, "stale encounter incorrectly ended or locked the run");
+  assert(doc.getElementById("pvp-turn").textContent.includes("событие закрыто"), "stale result shown as a loss");
+  assert(doc.getElementById("event-text").textContent.includes("Забег продолжается"), "stale result did not explain no-loss recovery");
+  log("stale event closes without ending the run, claiming a loss, or granting rewards");
   document.getElementById("result").dataset.result = "pass";
   document.getElementById("result").textContent = "PASS";
 })().catch((error) => {

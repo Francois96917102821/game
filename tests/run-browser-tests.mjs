@@ -17,14 +17,21 @@ for (const test of tests) {
     "--headless", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage",
     "--disable-extensions", "--no-first-run", "--remote-debugging-port=0",
     `--user-data-dir=${profile}`, "about:blank",
-  ], { stdio: "ignore" });
+  ], { stdio: ["ignore", "ignore", "pipe"] });
+  let browserLog = "";
+  browser.stderr.on("data", (data) => {
+    browserLog = (browserLog + data.toString()).slice(-8000);
+  });
   let launchError;
   browser.on("error", (error) => { launchError = error; });
   let socket;
   try {
     let port;
-    for (let attempt = 0; attempt < 100; attempt += 1) {
+    for (let attempt = 0; attempt < 300; attempt += 1) {
       if (launchError) throw launchError;
+      if (browser.exitCode !== null || browser.signalCode !== null) {
+        throw new Error(`Chrome exited before startup (${browser.exitCode ?? browser.signalCode}).\n${browserLog}`);
+      }
       try {
         port = Number((await readFile(join(profile, "DevToolsActivePort"), "utf8")).split("\n")[0]);
         break;
@@ -33,7 +40,7 @@ for (const test of tests) {
         await delay(100);
       }
     }
-    if (!port) throw new Error("Chrome did not start its debugging endpoint.");
+    if (!port) throw new Error(`Chrome did not start its debugging endpoint within 30 seconds.\n${browserLog}`);
     const url = `${baseUrl}/tests/${test}.test.html`;
     const response = await fetch(`http://127.0.0.1:${port}/json/new?${encodeURIComponent(url)}`, { method: "PUT" });
     if (!response.ok) throw new Error(`Chrome target creation failed: ${response.status}`);

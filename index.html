@@ -28,7 +28,13 @@
 
       <section class="game-layout" aria-label="Игровое поле">
         <aside class="side-panel character-panel">
-          <div class="panel-heading"><span>ПУТНИК</span><span class="level-badge" id="level-badge">УР. 1</span></div>
+          <div class="panel-heading">
+            <span>ПУТНИК</span>
+            <button class="settings-open-button" id="settings-open-button" type="button" aria-haspopup="dialog" aria-controls="settings-dialog">
+              Настройки
+            </button>
+            <span class="level-badge" id="level-badge">УР. 1</span>
+          </div>
           <div class="portrait">
             <div class="portrait-glow" aria-hidden="true"></div>
             <span class="portrait-figure" id="portrait-figure"></span>
@@ -421,6 +427,38 @@
       <div class="class-options" id="class-options" role="group" aria-label="Доступные классы"></div>
       <div class="class-details" id="class-details" aria-live="polite"></div>
       <button class="primary-button dialog-confirm" id="choose-class-button" type="button">Начать спуск этим классом <span aria-hidden="true">↓</span></button>
+    </dialog>
+    <dialog class="game-dialog settings-dialog" id="settings-dialog" aria-labelledby="settings-dialog-title">
+      <form method="dialog" class="dialog-close-form">
+        <button class="dialog-close" aria-label="Закрыть профиль и настройки">×</button>
+      </form>
+      <span class="eyebrow">ПУТНИК · ЭТОТ БРАУЗЕР</span>
+      <h2 id="settings-dialog-title">Профиль и настройки</h2>
+      <p class="dialog-intro">Имя и предпочтения сохраняются только в этом браузере. Класс и игровой прогресс не меняются.</p>
+      <form class="profile-settings-form" id="profile-settings-form">
+        <label for="profile-display-name">Имя путника</label>
+        <div class="profile-name-row">
+          <input id="profile-display-name" name="displayName" type="text" maxlength="24" autocomplete="nickname" aria-describedby="profile-name-help">
+          <button class="primary-button" type="submit">Сохранить</button>
+        </div>
+        <small id="profile-name-help">До 24 символов. Имя отображается в панели героя.</small>
+      </form>
+      <fieldset class="settings-options">
+        <legend>Игра и отображение</legend>
+        <label class="settings-option" for="settings-sound">
+          <input id="settings-sound" type="checkbox">
+          <span><strong>Звуковые эффекты</strong><small>Включаются только после твоего действия.</small></span>
+        </label>
+        <label class="settings-option" for="settings-reduced-motion">
+          <input id="settings-reduced-motion" type="checkbox">
+          <span><strong>Уменьшить анимацию</strong><small>Отключает переходы и движение интерфейса.</small></span>
+        </label>
+        <label class="settings-option" for="settings-high-contrast">
+          <input id="settings-high-contrast" type="checkbox">
+          <span><strong>Повысить контраст текста</strong><small>Делает подписи и границы заметнее.</small></span>
+        </label>
+      </fieldset>
+      <p class="settings-status" id="settings-status" role="status" aria-live="polite"></p>
     </dialog>
     <dialog class="game-dialog subclass-dialog" id="subclass-dialog" aria-labelledby="subclass-dialog-title">
       <span class="eyebrow" id="subclass-level">УРОВЕНЬ 3</span>

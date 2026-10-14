@@ -247,7 +247,7 @@ update public.auction_listings set created_at = created_at - interval '49 hours'
   expires_at = expires_at - interval '49 hours' where item_id = 'd0000000-0000-4000-8000-000000000003';
 
 do $expired_and_rollback$
-declare v_id uuid; v_before jsonb; v_after jsonb;
+declare v_id uuid;
 begin
   select id into v_id from public.auction_listings where item_id = 'd0000000-0000-4000-8000-000000000003';
   perform set_config('request.jwt.claim.sub','82222222-2222-4222-8222-222222222222',true);
@@ -267,6 +267,36 @@ begin
 end
 $expired_and_rollback$;
 
+do $insufficient_rollback$
+declare v_id uuid; v_before jsonb; v_after jsonb;
+begin
+  select id into v_id from public.auction_listings where item_id = 'd0000000-0000-4000-8000-000000000004';
+  select jsonb_build_object(
+    'balances', (select jsonb_agg(to_jsonb(b) order by user_id,currency) from public.wallet_balances b),
+    'listing', (select to_jsonb(l) from public.auction_listings l where id = v_id),
+    'item', (select to_jsonb(i) from public.player_items i where item_id = 'd0000000-0000-4000-8000-000000000004'),
+    'transactions', (select count(*) from public.wallet_transactions),
+    'ledger', (select count(*) from public.wallet_ledger_entries),
+    'receipts', (select count(*) from public.auction_request_receipts)
+  ) into v_before;
+  perform set_config('request.jwt.claim.sub','86666666-6666-4666-8666-666666666666',true);
+  set local role authenticated;
+  perform public.auction_test_reject(format(
+    'select public.auction_buy(''e0000000-0000-4000-8000-000000000097'',%L,107)',v_id),
+    'P0001','Insufficient gold.');
+  reset role;
+  select jsonb_build_object(
+    'balances', (select jsonb_agg(to_jsonb(b) order by user_id,currency) from public.wallet_balances b),
+    'listing', (select to_jsonb(l) from public.auction_listings l where id = v_id),
+    'item', (select to_jsonb(i) from public.player_items i where item_id = 'd0000000-0000-4000-8000-000000000004'),
+    'transactions', (select count(*) from public.wallet_transactions),
+    'ledger', (select count(*) from public.wallet_ledger_entries),
+    'receipts', (select count(*) from public.auction_request_receipts)
+  ) into v_after;
+  if v_after is distinct from v_before then raise exception 'Insufficient gold did not fully roll back'; end if;
+end
+$insufficient_rollback$;
+
 -- Fail the final receipt write after balances, ledger, custody and listing changed.
 create function public.auction_test_fail_receipt()
 returns trigger language plpgsql as $$
@@ -283,14 +313,14 @@ do $rollback$
 declare v_id uuid; v_before jsonb; v_after jsonb;
 begin
   select id into v_id from public.auction_listings where item_id = 'd0000000-0000-4000-8000-000000000004';
-  select jsonb_agg(to_jsonb(b) order by user_id) into v_before from public.wallet_balances b;
+  select jsonb_agg(to_jsonb(b) order by user_id,currency) into v_before from public.wallet_balances b;
   perform set_config('request.jwt.claim.sub','82222222-2222-4222-8222-222222222222',true);
   set local role authenticated;
   perform public.auction_test_reject(format(
     'select public.auction_buy(''e0000000-0000-4000-8000-000000000098'',%L,107)',v_id),
     'P0001','Injected auction receipt failure.');
   reset role;
-  select jsonb_agg(to_jsonb(b) order by user_id) into v_after from public.wallet_balances b;
+  select jsonb_agg(to_jsonb(b) order by user_id,currency) into v_after from public.wallet_balances b;
   if v_after <> v_before or exists (
     select 1 from public.wallet_transactions where request_id = 'e0000000-0000-4000-8000-000000000098'
   ) or not exists (
@@ -436,6 +466,26 @@ select public.auction_test_concurrency(5);
 select public.auction_test_concurrency(6);
 drop function public.auction_test_concurrency(integer);
 
+do $expired_slots$
+declare v_id uuid; v_item uuid;
+begin
+  select id into v_id from public.auction_listings
+  where seller_id = '85555555-5555-4555-8555-555555555555' and status = 'active' order by id limit 1;
+  update public.auction_listings set created_at = created_at - interval '49 hours',
+    expires_at = expires_at - interval '49 hours' where id = v_id;
+  select item_id into strict v_item from public.player_items
+  where owner_id = '85555555-5555-4555-8555-555555555555' and custody_state = 'owned';
+  perform set_config('request.jwt.claim.sub','85555555-5555-4555-8555-555555555555',true);
+  set local role authenticated;
+  perform public.auction_test_reject(format(
+    'select public.auction_list_item(gen_random_uuid(),%L,107)',v_item),
+    'P0001','Auction listing limit reached; cancel expired listings first.');
+  perform public.auction_cancel(gen_random_uuid(),v_id);
+  perform public.auction_list_item(gen_random_uuid(),v_item,107);
+  reset role;
+end
+$expired_slots$;
+
 do $accounting$
 declare v_sale record; v_balance record; v_total bigint; v_count integer;
 begin
@@ -445,7 +495,7 @@ begin
   loop
     select count(*),sum(amount) into v_count,v_total from public.wallet_ledger_entries
     where transaction_id = v_sale.transaction_id;
-    if v_total <> 0 or v_count <> case when public.auction_fee(v_sale.price) = 0 then 2 else 3 end or
+    if v_total <> 0 or v_count <> (case when public.auction_fee(v_sale.price) = 0 then 2 else 3 end) or
       v_sale.kind <> 'auction' or v_sale.currency <> 'gold' or v_sale.actor_id <> v_sale.buyer_id or
       v_sale.payload ->> 'fee_sink' <> 'burn' or not exists (
         select 1 from public.wallet_ledger_entries where transaction_id = v_sale.transaction_id
@@ -462,6 +512,12 @@ begin
           and request_id = v_sale.request_id and response = v_sale.result
       ) then raise exception 'Auction transaction, receipt and balanced burn ledger disagree'; end if;
   end loop;
+  if (select count(*) from public.wallet_transactions where kind = 'auction') <>
+    (select count(*) from public.auction_listings where status = 'sold') or exists (
+      select 1 from public.auction_request_receipts r where r.payload ->> 'rpc' = 'auction_buy'
+        and not exists (select 1 from public.wallet_transactions t where t.kind = 'auction'
+          and t.actor_id = r.user_id and t.request_id = r.request_id and t.result = r.response)
+    ) then raise exception 'Duplicate/orphan auction transaction or buy receipt'; end if;
   for v_balance in select * from public.wallet_balances where user_id::text like '8%' loop
     select coalesce(sum(amount),0) into v_total from public.wallet_ledger_entries
     where user_id = v_balance.user_id and currency = v_balance.currency and account_type = 'player';

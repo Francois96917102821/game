@@ -3035,3 +3035,290 @@ revoke all on function public.guild_expedition_get_owned() from public, anon, au
 grant execute on function public.guild_expedition_start(uuid, text) to authenticated;
 grant execute on function public.guild_expedition_claim(uuid) to authenticated;
 grant execute on function public.guild_expedition_get_owned() to authenticated;
+
+-- Fixed-price server asset auction; never reads saves or legacy mailbox gear.
+alter table public.player_items drop constraint if exists player_items_custody_state_check;
+alter table public.player_items add constraint player_items_custody_state_check
+  check (custody_state in ('owned', 'auction_escrow'));
+alter table public.wallet_transactions drop constraint if exists wallet_transactions_kind_check;
+alter table public.wallet_transactions add constraint wallet_transactions_kind_check
+  check (kind in ('transfer', 'funding', 'auction'));
+create unique index if not exists wallet_auction_request_idx
+  on public.wallet_transactions(actor_id, request_id) where kind = 'auction';
+
+create table if not exists public.auction_listings (
+  id uuid primary key default gen_random_uuid(),
+  seller_id uuid not null references auth.users(id),
+  item_id uuid not null references public.player_items(item_id),
+  price bigint not null check (price between 1 and 1000000),
+  status text not null default 'active' check (status in ('active', 'cancelled', 'sold')),
+  created_at timestamptz not null,
+  expires_at timestamptz not null,
+  closed_at timestamptz,
+  buyer_id uuid references auth.users(id),
+  transaction_id uuid unique references public.wallet_transactions(id),
+  check (expires_at = created_at + interval '48 hours'),
+  check ((status = 'active') = (closed_at is null)),
+  check (
+    (status = 'sold' and buyer_id is not null and buyer_id <> seller_id and transaction_id is not null) or
+    (status <> 'sold' and buyer_id is null and transaction_id is null)
+  )
+);
+create unique index if not exists auction_one_escrow_idx
+  on public.auction_listings(item_id) where status = 'active';
+create index if not exists auction_browse_idx
+  on public.auction_listings(id) where status = 'active';
+create index if not exists auction_seller_idx on public.auction_listings(seller_id, id);
+create table if not exists public.auction_request_receipts (
+  user_id uuid not null references auth.users(id),
+  request_id uuid not null,
+  payload jsonb not null,
+  response jsonb not null,
+  created_at timestamptz not null default now(),
+  primary key (user_id, request_id)
+);
+alter table public.auction_listings enable row level security;
+alter table public.auction_request_receipts enable row level security;
+revoke all on public.auction_listings, public.auction_request_receipts
+  from public, anon, authenticated, service_role;
+
+-- Coordinator decision: 5% floor fee. Treasury ledger entries are a permanent
+-- non-spendable sink, not a player balance; no withdrawal/mint RPC uses them.
+create or replace function public.auction_fee(p_price bigint)
+returns bigint language sql immutable set search_path = ''
+as $$ select (p_price * 500) / 10000; $$;
+
+-- One request namespace across all auction mutations, before any asset locks.
+create or replace function public.auction_request_begin(p_request_id uuid, p_payload jsonb)
+returns jsonb language plpgsql security definer
+set search_path = '' set row_security = off
+as $$
+declare
+  v_user uuid := auth.uid();
+  v_receipt public.auction_request_receipts%rowtype;
+begin
+  if v_user is null then raise exception 'Authentication required.'; end if;
+  if p_request_id is null then raise exception 'Request UUID required.'; end if;
+  perform pg_catalog.pg_advisory_xact_lock(
+    pg_catalog.hashtextextended('auction-request:' || v_user::text || ':' || p_request_id::text, 0)
+  );
+  select * into v_receipt from public.auction_request_receipts
+  where user_id = v_user and request_id = p_request_id;
+  if found then
+    if v_receipt.payload is distinct from p_payload then
+      raise exception 'Request UUID was already used with a different payload.';
+    end if;
+    return v_receipt.response;
+  end if;
+  return null;
+end;
+$$;
+
+create or replace function public.auction_list_item(p_request_id uuid, p_item_id uuid, p_price bigint)
+returns jsonb language plpgsql security definer
+set search_path = '' set row_security = off
+as $$
+declare
+  v_user uuid := auth.uid();
+  v_payload jsonb := jsonb_build_object('rpc', 'auction_list_item', 'item_id', p_item_id, 'price', p_price);
+  v_response jsonb;
+  v_item public.player_items%rowtype;
+  v_id uuid := gen_random_uuid();
+  v_now timestamptz;
+begin
+  v_response := public.auction_request_begin(p_request_id, v_payload);
+  if v_response is not null then return v_response; end if;
+  if p_item_id is null or p_price is null or p_price not between 1 and 1000000 then
+    raise exception 'Invalid auction item or price.';
+  end if;
+  -- Serialize different list requests for the same seller before counting slots.
+  perform pg_catalog.pg_advisory_xact_lock(
+    pg_catalog.hashtextextended('auction-seller:' || v_user::text, 0)
+  );
+  if (select count(*) from public.auction_listings where seller_id = v_user and status = 'active') >= 10 then
+    raise exception 'Auction listing limit reached; cancel expired listings first.';
+  end if;
+  select * into v_item from public.player_items where item_id = p_item_id for update;
+  if not found or v_item.owner_id <> v_user or v_item.custody_state <> 'owned' or not exists (
+    select 1 from public.item_issuance_receipts
+    where item_id = p_item_id and public.item_is_ordinary_gear(gear)
+  ) then raise exception 'Item is not owned ordinary gear available for listing.'; end if;
+  v_now := clock_timestamp();
+  update public.player_items set custody_state = 'auction_escrow' where item_id = p_item_id;
+  insert into public.auction_listings(id, seller_id, item_id, price, created_at, expires_at)
+  values (v_id, v_user, p_item_id, p_price, v_now, v_now + interval '48 hours');
+  v_response := jsonb_build_object('id', v_id, 'item_id', p_item_id, 'price', p_price,
+    'status', 'active', 'created_at', v_now, 'expires_at', v_now + interval '48 hours');
+  insert into public.auction_request_receipts(user_id, request_id, payload, response)
+  values (v_user, p_request_id, v_payload, v_response);
+  return v_response;
+end;
+$$;
+
+create or replace function public.auction_cancel(p_request_id uuid, p_listing_id uuid)
+returns jsonb language plpgsql security definer
+set search_path = '' set row_security = off
+as $$
+declare
+  v_user uuid := auth.uid();
+  v_payload jsonb := jsonb_build_object('rpc', 'auction_cancel', 'listing_id', p_listing_id);
+  v_response jsonb;
+  v_listing public.auction_listings%rowtype;
+  v_item public.player_items%rowtype;
+begin
+  v_response := public.auction_request_begin(p_request_id, v_payload);
+  if v_response is not null then return v_response; end if;
+  select * into v_listing from public.auction_listings where id = p_listing_id for update;
+  if not found or v_listing.seller_id <> v_user then raise exception 'Listing unavailable to seller.'; end if;
+  if v_listing.status <> 'active' then raise exception 'Listing is not active.'; end if;
+  select * into strict v_item from public.player_items where item_id = v_listing.item_id for update;
+  if v_item.owner_id <> v_user or v_item.custody_state <> 'auction_escrow' then
+    raise exception 'Auction custody invariant violated.';
+  end if;
+  update public.player_items set custody_state = 'owned' where item_id = v_item.item_id;
+  update public.auction_listings set status = 'cancelled', closed_at = clock_timestamp()
+  where id = p_listing_id returning * into v_listing;
+  v_response := jsonb_build_object('id', p_listing_id, 'item_id', v_item.item_id,
+    'status', 'cancelled', 'closed_at', v_listing.closed_at);
+  insert into public.auction_request_receipts(user_id, request_id, payload, response)
+  values (v_user, p_request_id, v_payload, v_response);
+  return v_response;
+end;
+$$;
+
+create or replace function public.auction_buy(p_request_id uuid, p_listing_id uuid, p_expected_price bigint)
+returns jsonb language plpgsql security definer
+set search_path = '' set row_security = off
+as $$
+declare
+  v_user uuid := auth.uid();
+  v_payload jsonb := jsonb_build_object('rpc', 'auction_buy', 'listing_id', p_listing_id,
+    'expected_price', p_expected_price);
+  v_response jsonb;
+  v_listing public.auction_listings%rowtype;
+  v_item public.player_items%rowtype;
+  v_account uuid;
+  v_buyer_balance bigint;
+  v_seller_balance bigint;
+  v_fee bigint;
+  v_net bigint;
+  v_transaction uuid;
+  v_now timestamptz;
+begin
+  v_response := public.auction_request_begin(p_request_id, v_payload);
+  if v_response is not null then return v_response; end if;
+  -- Mutations lock listing -> item -> wallet accounts ordered by UUID.
+  -- Wallet locks/creation match wallet_transfer; no wallet RPC locks assets.
+  select * into v_listing from public.auction_listings where id = p_listing_id for update;
+  if not found then raise exception 'Listing not found.'; end if;
+  if v_listing.seller_id = v_user then raise exception 'Cannot buy your own listing.'; end if;
+  if v_listing.status <> 'active' then raise exception 'Listing is not active.'; end if;
+  if v_listing.expires_at <= clock_timestamp() then raise exception 'Listing expired.'; end if;
+  if p_expected_price is distinct from v_listing.price then raise exception 'Listing price does not match.'; end if;
+  select * into strict v_item from public.player_items where item_id = v_listing.item_id for update;
+  if v_item.owner_id <> v_listing.seller_id or v_item.custody_state <> 'auction_escrow' then
+    raise exception 'Auction custody invariant violated.';
+  end if;
+  for v_account in select account_id from unnest(array[v_user, v_listing.seller_id]) as a(account_id)
+    order by account_id
+  loop
+    insert into public.wallet_balances(user_id, currency) values (v_account, 'gold')
+    on conflict (user_id, currency) do nothing;
+  end loop;
+  perform 1 from public.wallet_balances
+  where currency = 'gold' and user_id in (v_user, v_listing.seller_id)
+  order by user_id for update;
+  -- Recheck wall time after potentially waiting for item/account locks.
+  v_now := clock_timestamp();
+  if v_listing.expires_at <= v_now then raise exception 'Listing expired.'; end if;
+  select balance into v_buyer_balance from public.wallet_balances where user_id = v_user and currency = 'gold';
+  select balance into v_seller_balance from public.wallet_balances
+  where user_id = v_listing.seller_id and currency = 'gold';
+  if v_buyer_balance < v_listing.price then raise exception 'Insufficient gold.'; end if;
+  v_fee := public.auction_fee(v_listing.price);
+  v_net := v_listing.price - v_fee;
+  if v_seller_balance > 1000000000000 - v_net then raise exception 'Seller balance limit reached.'; end if;
+  insert into public.wallet_transactions(actor_id, request_id, kind, currency, payload)
+  values (v_user, p_request_id, 'auction', 'gold', v_payload || jsonb_build_object(
+    'seller_id', v_listing.seller_id, 'item_id', v_item.item_id, 'price', v_listing.price, 'fee_sink', 'burn'))
+  returning id into v_transaction;
+  update public.wallet_balances set balance = balance - v_listing.price, updated_at = v_now
+  where user_id = v_user and currency = 'gold';
+  update public.wallet_balances set balance = balance + v_net, updated_at = v_now
+  where user_id = v_listing.seller_id and currency = 'gold';
+  insert into public.wallet_ledger_entries(transaction_id, currency, account_type, user_id, amount)
+  values (v_transaction, 'gold', 'player', v_user, -v_listing.price),
+    (v_transaction, 'gold', 'player', v_listing.seller_id, v_net);
+  -- Zero fees have no entry: the existing ledger forbids zero amounts.
+  if v_fee > 0 then
+    insert into public.wallet_ledger_entries(transaction_id, currency, account_type, user_id, amount)
+    values (v_transaction, 'gold', 'treasury', null, v_fee);
+  end if;
+  update public.player_items set owner_id = v_user, custody_state = 'owned' where item_id = v_item.item_id;
+  update public.auction_listings set status = 'sold', buyer_id = v_user,
+    closed_at = v_now, transaction_id = v_transaction where id = p_listing_id;
+  v_response := jsonb_build_object('id', p_listing_id, 'item_id', v_item.item_id, 'status', 'sold',
+    'transaction_id', v_transaction, 'price', v_listing.price, 'fee', v_fee, 'received', v_net,
+    'balance', v_buyer_balance - v_listing.price, 'closed_at', v_now);
+  update public.wallet_transactions set result = v_response where id = v_transaction;
+  insert into public.auction_request_receipts(user_id, request_id, payload, response)
+  values (v_user, p_request_id, v_payload, v_response);
+  return v_response;
+end;
+$$;
+
+create or replace function public.auction_browse(p_after_id uuid default null, p_limit integer default 20)
+returns jsonb language plpgsql security definer
+set search_path = '' set row_security = off
+as $$
+declare v_now timestamptz := clock_timestamp();
+begin
+  if auth.uid() is null then raise exception 'Authentication required.'; end if;
+  if p_limit is null or p_limit not between 1 and 100 then raise exception 'Invalid page size.'; end if;
+  return jsonb_build_object('server_now', v_now, 'listings', (
+    select coalesce(jsonb_agg(jsonb_build_object(
+      'id', l.id, 'item_id', l.item_id, 'gear', r.gear, 'price', l.price,
+      'expires_at', l.expires_at
+    ) order by l.id), '[]'::jsonb)
+    from (select * from public.auction_listings
+      where status = 'active' and expires_at > v_now and (p_after_id is null or id > p_after_id)
+      order by id limit p_limit) l
+    join public.item_issuance_receipts r using (item_id)
+  ));
+end;
+$$;
+
+create or replace function public.auction_get_mine(p_after_id uuid default null, p_limit integer default 20)
+returns jsonb language plpgsql security definer
+set search_path = '' set row_security = off
+as $$
+declare v_user uuid := auth.uid(); v_now timestamptz := clock_timestamp();
+begin
+  if v_user is null then raise exception 'Authentication required.'; end if;
+  if p_limit is null or p_limit not between 1 and 100 then raise exception 'Invalid page size.'; end if;
+  return jsonb_build_object('server_now', v_now, 'listings', (
+    select coalesce(jsonb_agg(jsonb_build_object(
+      'id', l.id, 'item_id', l.item_id, 'gear', r.gear, 'price', l.price,
+      'status', case when l.status = 'active' and l.expires_at <= v_now then 'expired' else l.status end,
+      'created_at', l.created_at, 'expires_at', l.expires_at, 'closed_at', l.closed_at,
+      'transaction_id', l.transaction_id
+    ) order by l.id), '[]'::jsonb)
+    from (select * from public.auction_listings where seller_id = v_user
+      and (p_after_id is null or id > p_after_id) order by id limit p_limit) l
+    join public.item_issuance_receipts r using (item_id)
+  ));
+end;
+$$;
+
+revoke all on function public.auction_fee(bigint) from public, anon, authenticated, service_role;
+revoke all on function public.auction_request_begin(uuid, jsonb) from public, anon, authenticated, service_role;
+revoke all on function public.auction_list_item(uuid, uuid, bigint) from public, anon, authenticated, service_role;
+revoke all on function public.auction_cancel(uuid, uuid) from public, anon, authenticated, service_role;
+revoke all on function public.auction_buy(uuid, uuid, bigint) from public, anon, authenticated, service_role;
+revoke all on function public.auction_browse(uuid, integer) from public, anon, authenticated, service_role;
+revoke all on function public.auction_get_mine(uuid, integer) from public, anon, authenticated, service_role;
+grant execute on function public.auction_list_item(uuid, uuid, bigint) to authenticated;
+grant execute on function public.auction_cancel(uuid, uuid) to authenticated;
+grant execute on function public.auction_buy(uuid, uuid, bigint) to authenticated;
+grant execute on function public.auction_browse(uuid, integer) to authenticated;
+grant execute on function public.auction_get_mine(uuid, integer) to authenticated;

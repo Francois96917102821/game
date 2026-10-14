@@ -24,6 +24,9 @@
   }
   function app() { return frame.contentWindow; }
   function element(id) { return app().document.getElementById(id); }
+  function profileValue(key) {
+    return element("settings-dialog").querySelector(`[data-profile-value="${key}"]`);
+  }
   function changeEvent() {
     const EventConstructor = app().Event;
     return new EventConstructor("change", { bubbles: true });
@@ -105,6 +108,7 @@
     }, { once: true });
     frame.addEventListener("error", reject, { once: true });
   });
+  await app().eval("gameServicesReady");
 
   check("settings entry is labeled and sound stays opt-in", () => {
     assert(element("settings-open-button").getAttribute("aria-haspopup") === "dialog", "settings entry opens a dialog");
@@ -117,6 +121,18 @@
     element("settings-open-button").click();
     assert(element("settings-dialog").open, "settings dialog opens");
   });
+  check("profile has an honest empty state and no fabricated hero", () => {
+    assert(profileValue("name").textContent === "Искатель", "local name is displayed");
+    assert(profileValue("class").textContent === app().eval("CLASS_BY_ID.get(selectedClassId).name"),
+      "selected class is shown without starting a run");
+    assert(element("profile-summary-empty").textContent.includes("Героя ещё нет"), "no-run state is explicit");
+    for (const key of ["progress", "floor", "health", "combat", "inventory"]) {
+      assert(!profileValue(key), `no-run profile does not invent ${key}`);
+    }
+    assert(element("profile-summary-equipment").hidden, "no equipment is fabricated");
+    assert(element("settings-dialog").textContent.includes("не имя учётной записи"),
+      "nickname is not presented as authenticated identity");
+  });
   check("profile name is normalized and remains separate from class", () => {
     const input = element("profile-display-name");
     input.value = "  Ада   Лавлейс  ";
@@ -125,6 +141,7 @@
     assert(element("player-subtitle").textContent === "Последний из наземных", "profile editing does not select a class");
     assert(app().localStorage.getItem("well-of-whispers-profile-settings").includes('"displayName":"Ада Лавлейс"'),
       "profile name is persisted locally");
+    assert(profileValue("name").textContent === "Ада Лавлейс", "open summary updates after saving name");
   });
   const motion = element("settings-reduced-motion");
   element("profile-display-name").value = "Черновик имени";
@@ -208,6 +225,76 @@
     element("settings-open-button").click();
   });
 
+  check("untrusted nickname is rendered as text in the profile", () => {
+    element("profile-display-name").value = "<b>Путник</b>";
+    element("profile-settings-form").requestSubmit();
+    assert(profileValue("name").textContent === "<b>Путник</b>", "markup stays literal");
+    assert(profileValue("name").children.length === 0, "nickname creates no HTML elements");
+    element("profile-display-name").value = "Ада Лавлейс";
+    element("profile-settings-form").requestSubmit();
+  });
+  element("settings-dialog").close();
+  element("start-button").click();
+  element("choose-class-button").click();
+  element("settings-open-button").click();
+  check("live run uses current hero data and shared effective combat values", () => {
+    assert(profileValue("run").textContent === "Текущий · Исследование", "run is current, not saved");
+    assert(profileValue("progress").textContent === "1 · 0 / 20", "initial level and XP are exact");
+    assert(profileValue("floor").textContent === "1 · 0 / 6", "floor and room are exact");
+    assert(profileValue("health").textContent === element("health-value").textContent, "health matches sidebar");
+    assert(profileValue("combat").textContent === app().eval("`${getAttackPower()}–${getAttackPower()+3} · ${getArmorDefense()}`"),
+      "effective combat values match gameplay");
+    assert(profileValue("weapon").textContent === "Нет" && profileValue("armor").textContent === "Нет",
+      "empty equipment slots are explicit");
+    assert(profileValue("inventory").textContent === "0 / 6", "inventory capacity is exact");
+    assert(element("profile-summary-empty").textContent === "", "no-run message is removed");
+  });
+  app().eval("gainXp(25);state.floor=2;state.inventory.push(createGear('weapon'),createGear('armor'));render();");
+  check("open profile refreshes progression and inventory", () => {
+    assert(profileValue("progress").textContent === "2 · 5 / 40", "real leveling refreshes XP target");
+    assert(profileValue("floor").textContent === "2 · 0 / 6", "floor refreshes");
+    assert(profileValue("inventory").textContent === "2 / 6", "new gear updates occupancy");
+  });
+  app().eval("equipGear(state.inventory[0].id);equipGear(state.inventory[0].id);");
+  check("equipment actions refresh profile and sidebar together", () => {
+    assert(profileValue("weapon").textContent === element("equipped-weapon").textContent, "weapon matches sidebar");
+    assert(profileValue("armor").textContent === element("equipped-armor").textContent, "armor matches sidebar");
+    assert(profileValue("weapon").textContent.endsWith(" · +1"), "real weapon bonus is shown");
+    assert(profileValue("armor").textContent.endsWith(" · +1"), "real armor bonus is shown");
+    assert(profileValue("inventory").textContent === "0 / 6", "equipping consumes inventory slots");
+    assert(profileValue("combat").textContent === app().eval("`${getAttackPower()}–${getAttackPower()+3} · ${getArmorDefense()}`"),
+      "equipped effective values refresh");
+  });
+  element("settings-dialog").close();
+  app().eval("metaProgress.homestead.mealBuff={stat:'attack',expiresAt:Date.now()+60000};render();");
+  element("settings-open-button").click();
+  check("reopening refreshes effective temporary values without calling them permanent", () => {
+    assert(profileValue("combat").textContent === app().eval("`${getAttackPower()}–${getAttackPower()+3} · ${getArmorDefense()}`"),
+      "temporary attack buff uses existing effective helper");
+    assert(element("settings-dialog").textContent.includes("не постоянные бонусы"), "temporary limitation is explicit");
+  });
+  app().eval("metaProgress.homestead.mealBuff=null;render();");
+
+  frame.style.width = "390px";
+  await new Promise((resolve) => app().requestAnimationFrame(resolve));
+  check("390px profile has no horizontal overflow and retains labeled keyboard controls", () => {
+    const dialog = element("settings-dialog");
+    assert(dialog.scrollWidth === dialog.clientWidth, "profile has no horizontal overflow");
+    assert(dialog.getBoundingClientRect().left >= 0 && dialog.getBoundingClientRect().right <= 390,
+      "dialog fits mobile viewport");
+    element("profile-display-name").focus();
+    assert(app().document.activeElement === element("profile-display-name"), "name is focusable");
+    assert(app().document.querySelector('label[for="profile-display-name"]'), "name keeps its explicit label");
+    const closeForm = dialog.querySelector('form[method="dialog"]');
+    closeForm.querySelector("button").focus();
+    assert(app().document.activeElement.getAttribute("aria-label") === "Закрыть профиль и настройки",
+      "close action is labeled and focusable");
+    closeForm.requestSubmit();
+    assert(!dialog.open, "native dialog form closes settings");
+    element("settings-open-button").focus();
+    element("settings-open-button").click();
+    assert(dialog.open, "settings reopen after closing");
+  });
   frame.style.width = "360px";
   check("mobile settings remain reachable with touch-sized controls", () => {
     assert(app().matchMedia("(max-width: 700px)").matches, "game uses its mobile layout");
@@ -219,11 +306,37 @@
   });
 
   await waitForFrameReload();
+  await app().eval("gameServicesReady");
+  check("reload profile reads saved hero before resume and refreshes after resume", () => {
+    element("settings-open-button").click();
+    assert(profileValue("run").textContent === "Сохранённый · Исследование", "saved-run state is distinguished");
+    assert(profileValue("progress").textContent === "2 · 5 / 40", "saved progression restored");
+    assert(profileValue("floor").textContent === "2 · 0 / 6", "saved floor restored");
+    assert(profileValue("weapon").textContent.endsWith(" · +1"), "saved weapon restored");
+    assert(profileValue("armor").textContent.endsWith(" · +1"), "saved armor restored");
+    assert(profileValue("inventory").textContent === "0 / 6", "saved occupancy restored");
+    assert(profileValue("combat").textContent === app().eval("`${getAttackPower(savedRun)}–${getAttackPower(savedRun)+3} · ${getArmorDefense(savedRun)}`"),
+      "saved hero, not the default state, supplies combat values");
+    element("settings-dialog").close();
+    element("resume-button").click();
+    element("settings-open-button").click();
+    assert(profileValue("run").textContent === "Текущий · Исследование", "resuming updates run identity");
+    assert(profileValue("health").textContent === element("health-value").textContent, "resumed health matches sidebar");
+  });
   check("profile, display and sound choices survive reload", () => {
     assert(element("player-name").textContent === "Ада Лавлейс", "profile name restored");
     assert(app().document.body.dataset.reduceMotion === "true", "reduced motion restored");
     assert(app().document.body.dataset.highContrast === "true", "contrast restored");
     assert(element("sound-toggle").getAttribute("aria-pressed") === "false", "sound remains opt-out");
+  });
+  check("profile distinguishes combat, stairs and a completed run without stale values", () => {
+    app().eval("state.enemy={name:'Страж'};render();");
+    assert(profileValue("run").textContent === "Текущий · Бой с Страж", "combat state updates");
+    app().eval("state.enemy=null;state.waitingToDescend=true;render();");
+    assert(profileValue("run").textContent === "Текущий · Лестница в глубину открыта", "stairs state updates");
+    app().eval("state.hp=0;state.gameOver=true;render();");
+    assert(profileValue("run").textContent === "Текущий · Спуск завершён", "completed state is explicit");
+    assert(profileValue("health").textContent.startsWith("0 / "), "defeated health is not replaced by starting HP");
   });
 
   document.getElementById("result").dataset.result = failures.length ? "fail" : "pass";

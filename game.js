@@ -552,6 +552,7 @@ function persistProfileSettings(nextSettings) {
   profileSettings = nextSettings;
   applyProfileSettings();
   $("player-name").textContent = profileSettings.displayName;
+  if ($("settings-dialog").open) renderProfileSummary();
   return true;
 }
 
@@ -2149,18 +2150,18 @@ function startGameWithClass(classId) {
   render();
 }
 
-function getCharacterClass() {
-  return CLASS_BY_ID.get(state.classId) || BASE_CLASSES[0];
+function getCharacterClass(run = state) {
+  return CLASS_BY_ID.get(run.classId) || BASE_CLASSES[0];
 }
 
-function getSelectedClassNodes() {
-  return [state.classId, state.advancedClassId, state.masteryClassId]
+function getSelectedClassNodes(run = state) {
+  return [run.classId, run.advancedClassId, run.masteryClassId]
     .map((id) => id ? CLASS_BY_ID.get(id) : null)
     .filter(Boolean);
 }
 
-function getClassStat(effect) {
-  return getSelectedClassNodes().reduce((total, characterClass) => {
+function getClassStat(effect, run = state) {
+  return getSelectedClassNodes(run).reduce((total, characterClass) => {
     const baseEffect = characterClass.tier === 1 &&
       ["dodge", "potionHealing", "potionCapacity"].includes(effect)
       ? characterClass[effect] || 0
@@ -3295,15 +3296,15 @@ function recordTavernInjury() {
   persistMetaProgress();
 }
 
-function getAttackPower() {
-  const base = state.attack + (state.equipment.weapon?.bonus || 0) +
-    getClassStat("attack") + getRuneStat("attack") + getAttributeEffects().attack;
+function getAttackPower(run = state) {
+  const base = run.attack + (run.equipment?.weapon?.bonus || 0) +
+    getClassStat("attack", run) + getRuneStat("attack") + getAttributeEffects().attack;
   return hasActiveMealBuff("attack") ? Math.floor(base * 1.5) : base;
 }
 
-function getArmorDefense() {
-  const base = (state.equipment.armor?.bonus || 0) + getCharacterClass().defense +
-    getClassStat("defense") + getRuneStat("armor") + getAttributeEffects().defense;
+function getArmorDefense(run = state) {
+  const base = (run.equipment?.armor?.bonus || 0) + getCharacterClass(run).defense +
+    getClassStat("defense", run) + getRuneStat("armor") + getAttributeEffects().defense;
   return hasActiveMealBuff("defense") ? Math.floor(base * 1.5) : base;
 }
 
@@ -3714,6 +3715,70 @@ function renderJournal() {
   }
 }
 
+function renderGearValue(element, gear, type) {
+  if (!gear) {
+    element.replaceChildren(document.createTextNode("Нет"));
+    return;
+  }
+  element.replaceChildren(
+    createArtIcon(getGearArtId(gear), `${gear.name}, ${type}`, "gear-icon"),
+    document.createTextNode(`${gear.name} · +${gear.bonus}`),
+  );
+}
+
+function renderProfileSummary() {
+  const run = state.started ? state : savedRun;
+  const values = $("profile-summary-values");
+  const equipment = $("profile-summary-equipment");
+  values.replaceChildren();
+  equipment.replaceChildren();
+  function addValue(list, label, value, key) {
+    const row = document.createElement("div");
+    const term = document.createElement("dt");
+    const description = document.createElement("dd");
+    description.dataset.profileValue = key;
+    term.textContent = label;
+    description.textContent = value;
+    row.append(term, description);
+    list.append(row);
+    return description;
+  }
+  addValue(values, "Локальное имя", profileSettings.displayName, "name");
+  const characterClass = run
+    ? getSelectedClassNodes(run).slice(-1)[0]
+    : CLASS_BY_ID.get(selectedClassId);
+  addValue(values, run ? "Класс героя" : "Выбранный класс",
+    characterClass?.name || "Будет определён при продолжении", "class");
+  $("profile-summary-empty").textContent = run
+    ? ""
+    : "Героя ещё нет: текущий и сохранённый забег отсутствуют. Выбранный класс относится к новому спуску.";
+  equipment.hidden = !run;
+  if (!run) return;
+  const status = run.gameOver ? "Спуск завершён"
+    : run.liveDuelId ? "Онлайн-дуэль"
+    : run.ghostDuel ? "Бой с призраком"
+    : run.enemy ? `Бой с ${run.enemy.name}`
+    : run.waitingToDescend ? "Лестница в глубину открыта"
+    : run.merchantAvailable ? "У торговца"
+    : "Исследование";
+  addValue(values, "Забег", `${run === savedRun ? "Сохранённый" : "Текущий"} · ${status}`, "run");
+  addValue(values, "Уровень · XP", `${run.level} · ${run.xp} / ${XP_PER_LEVEL * run.level}`, "progress");
+  addValue(values, "Этаж · зал", `${run.floor} · ${run.room} / ${MAX_ROOMS}`, "floor");
+  addValue(values, "Здоровье", `${run.hp} / ${run.maxHp}`, "health");
+  if (characterClass && CLASS_BY_ID.has(run.classId)) {
+    const attack = getAttackPower(run);
+    addValue(values, "Урон · защита", `${attack}–${attack + 3} · ${getArmorDefense(run)}`, "combat");
+  } else {
+    addValue(values, "Урон · защита", "Доступны после продолжения старого сохранения", "combat");
+  }
+  addValue(values, "Запас силы", run.focus === undefined ? "—" : `${run.focus} / ${MAX_FOCUS}`, "focus");
+  for (const [slot, gear] of Object.entries(run.equipment || {})) {
+    const label = { weapon: "Оружие", armor: "Броня" }[slot] || slot;
+    renderGearValue(addValue(equipment, label, "", slot), gear, label);
+  }
+  addValue(values, "Рюкзак", `${run.inventory?.length || 0} / ${MAX_GEAR}`, "inventory");
+}
+
 function renderEquipment() {
   const craftButton = $("profile-crafting-button");
   const bestHome = window.WellHomesteadModel.getBestHome(metaProgress.homestead);
@@ -3733,14 +3798,7 @@ function renderEquipment() {
     [ui.equippedWeapon, weapon, "оружие"],
     [ui.equippedArmor, armor, "броня"],
   ]) {
-    if (!gear) {
-      element.replaceChildren(document.createTextNode("Нет"));
-      continue;
-    }
-    element.replaceChildren(
-      createArtIcon(getGearArtId(gear), `${gear.name}, ${type}`, "gear-icon"),
-      document.createTextNode(`${gear.name} · +${gear.bonus}`),
-    );
+    renderGearValue(element, gear, type);
   }
   ui.inventoryCount.textContent = `${state.inventory.length} / ${MAX_GEAR}`;
   ui.inventory.replaceChildren();
@@ -6104,6 +6162,7 @@ function render() {
   renderTrack();
   renderJournal();
   renderEquipment();
+  if ($("settings-dialog").open) renderProfileSummary();
   renderClassProgression();
   renderMetaProgress();
   renderRunQuests();
@@ -6431,6 +6490,7 @@ $("player-progress-open-button").addEventListener("click", () => {
 $("settings-open-button").addEventListener("click", () => {
   $("settings-status").textContent = "";
   $("profile-display-name").value = profileSettings.displayName;
+  renderProfileSummary();
   settingsDialog.showModal();
 });
 $("profile-settings-form").addEventListener("submit", (event) => {

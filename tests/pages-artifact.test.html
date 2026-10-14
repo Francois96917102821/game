@@ -57,8 +57,14 @@
   frame.src = artifactUrl.href;
   document.body.append(frame);
   await loaded;
-  await frame.contentWindow.gameServicesReady;
+  const readiness = frame.contentWindow.eval("gameServicesReady");
+  check("built artifact exposes its real service readiness promise", () => {
+    assert(readiness instanceof frame.contentWindow.Promise, "gameServicesReady is not a Promise");
+  });
+  await readiness;
   check("built artifact initializes the game and opens achievements", () => {
+    assert(frame.contentWindow.eval("tavernStorageReady") === true, "game services did not finish initializing");
+    assert(frame.contentWindow.eval("tavernStorageError") === "", "game services reported a storage error");
     assert(frame.contentWindow.WellPlayerProgressModel, "progress model did not load");
     assert(frame.contentWindow.document.getElementById("player-progress-open-button"),
       "built game's progress entry is missing");

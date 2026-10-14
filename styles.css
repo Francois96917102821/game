@@ -58,6 +58,8 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--gold-light); ou
 .side-panel { min-height: 660px; padding: 21px 19px; display: flex; flex-direction: column; }
 .panel-heading { display: flex; align-items: center; justify-content: space-between; color: #b7bbac; font-size: 9px; }
 .level-badge { border: 1px solid #59503b; border-radius: 4px; padding: 4px 7px; color: var(--gold-light); font-size: 9px; }
+.settings-open-button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-width: 44px; min-height: 44px; border: 1px solid #414638; border-radius: 6px; padding: 5px 8px; background: #1b2019; color: #c8cabb; font-size: 9px; cursor: pointer; }
+.settings-open-button:hover { border-color: #78865f; color: var(--gold-light); }
 .portrait { height: 144px; margin: 21px 0 10px; position: relative; overflow: hidden; display: grid; place-items: center; border: 1px solid #34382c; border-radius: 8px; background: radial-gradient(ellipse at 50% 82%, rgba(178, 144, 78, .24), transparent 43%), linear-gradient(170deg, #242820, #121510); }
 .portrait:before, .portrait:after { content: ""; position: absolute; bottom: -46px; width: 100px; height: 160px; border: 1px solid rgba(191, 168, 108, .14); border-radius: 50%; }
 .portrait:before { transform: rotate(28deg); left: -43px; }
@@ -349,6 +351,21 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--gold-light); ou
 .game-dialog::backdrop { background: rgba(5,7,5,.78); backdrop-filter: blur(5px); }
 .game-dialog h2 { margin: 7px 0 6px; font-size: 22px; }
 .dialog-intro { margin: 0 0 16px; color: #aeb2a5; font-size: 11px; line-height: 1.55; }
+.settings-dialog { width: min(480px, calc(100% - 28px)); }
+.profile-settings-form { display: grid; gap: 7px; margin: 16px 0; color: #c8cabb; font-size: 11px; }
+.profile-name-row { display: flex; gap: 8px; }
+.profile-name-row input { min-width: 0; min-height: 44px; flex: 1; border: 1px solid #51594a; border-radius: 6px; padding: 9px 11px; background: #11150f; color: var(--text); font: inherit; }
+.profile-name-row .primary-button { min-height: 44px; padding: 8px 12px; }
+.profile-settings-form > small { color: #92988a; font-size: 9px; line-height: 1.45; }
+.settings-options { display: grid; gap: 5px; margin: 16px 0 8px; border: 1px solid #393d31; border-radius: 7px; padding: 10px; }
+.settings-options legend { padding: 0 5px; color: var(--gold-light); font-size: 11px; }
+.settings-option { display: flex; align-items: center; gap: 10px; min-height: 48px; border-radius: 5px; padding: 6px; color: #d4d6ca; cursor: pointer; }
+.settings-option:hover { background: #252a21; }
+.settings-option input { width: 20px; height: 20px; flex: 0 0 20px; accent-color: #b79b65; }
+.settings-option span, .settings-option strong, .settings-option small { display: block; }
+.settings-option strong { font-size: 10px; }
+.settings-option small { margin-top: 3px; color: #9b9d8f; font-size: 9px; line-height: 1.4; }
+.settings-status { min-height: 18px; margin: 8px 0 0; color: var(--green); font-size: 10px; line-height: 1.5; }
 .tavern-dialog { width: min(760px, calc(100% - 24px)); max-height: min(850px, calc(100% - 24px)); }
 .harbor-dialog { width: min(760px, calc(100% - 24px)); max-height: min(850px, calc(100% - 24px)); }
 .homestead-dialog { width: min(900px, calc(100% - 24px)); max-height: min(900px, calc(100% - 24px)); }
@@ -624,6 +641,28 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--gold-light); ou
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; }
+}
+body[data-reduce-motion="true"] *, body[data-reduce-motion="true"] *::before, body[data-reduce-motion="true"] *::after {
+  scroll-behavior: auto !important;
+  transition-duration: .01ms !important;
+  animation-duration: .01ms !important;
+}
+body[data-high-contrast="true"] {
+  --muted: #c3c9b8;
+  --border: #56604f;
+  --text: #f5f6ef;
+}
+body[data-high-contrast="true"] .player-subtitle,
+body[data-high-contrast="true"] .class-profile span,
+body[data-high-contrast="true"] .subclass-progress-row > span,
+body[data-high-contrast="true"] .inventory-empty,
+body[data-high-contrast="true"] .meta-panel > p,
+body[data-high-contrast="true"] .dialog-intro,
+body[data-high-contrast="true"] .profile-settings-form > small,
+body[data-high-contrast="true"] .settings-option small,
+body[data-high-contrast="true"] .event-copy p,
+body[data-high-contrast="true"] .journal-intro {
+  color: #c3c9b8;
 }
 .gang-form, .dungeon-kit {
   display: flex;

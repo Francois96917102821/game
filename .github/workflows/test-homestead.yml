@@ -6,6 +6,7 @@ on:
       - "homestead-model.js"
       - "class-model.js"
       - "city-model.js"
+      - "heart-shard-model.js"
       - "tavern-model.js"
       - "cloud-save.js"
       - "game.js"
@@ -13,10 +14,14 @@ on:
       - "index.html"
       - "styles.css"
       - "tests/homestead.test.html"
+      - "tests/heart-shards.test.html"
       - "tests/tavern.test.html"
       - "tests/food.test.html"
       - "tests/settings.test.html"
       - "tests/run-browser-tests.mjs"
+      - "tests/pages-artifact.test.mjs"
+      - "tests/prepare-pages-artifact.py"
+      - ".github/workflows/deploy-pages.yml"
       - ".github/workflows/test-homestead.yml"
   workflow_dispatch:
 
@@ -38,6 +43,7 @@ jobs:
       - name: Run homestead, food and settings browser tests
         run: |
           set -euo pipefail
+          node tests/pages-artifact.test.mjs
           python3 -m http.server 8765 --bind 127.0.0.1 > /tmp/game-homestead-test-server.log 2>&1 &
           server_pid=$!
           trap 'kill "$server_pid"' EXIT
@@ -47,4 +53,4 @@ jobs:
             fi
             sleep 1
           done
-          node tests/run-browser-tests.mjs homestead tavern food settings
+          node tests/run-browser-tests.mjs homestead tavern food settings heart-shards

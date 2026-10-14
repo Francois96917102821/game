@@ -77,6 +77,9 @@
     sent.armor === attributeFighter.armor && sent.accuracy === attributeFighter.accuracy &&
     sent.concentration === attributeFighter.concentration && sent.focus === attributeFighter.focus &&
     !("strength" in sent) && !("endurance" in sent), "attributes changed existing RPC contract or lost effects");
+  assert(sent.agility === app.getDungeonFighter().agility &&
+    !Object.hasOwn(app.getCloudSaveSnapshot().run.state, "agilityBonus"),
+  "start snapshot/request missing or introduced a temporary Agility stat");
   assert(!doc.getElementById("pvp-join-button") && !doc.getElementById("pvp-leave-button"),
     "forced event exposes a join, decline, or cancel control");
   assert(!doc.getElementById("pvp-panel").hidden, "forced event panel is hidden");

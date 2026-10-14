@@ -7,8 +7,11 @@ on:
       - "player-progress-model.js"
       - "tests/prepare-pages-artifact.py"
       - "tests/pages-artifact.test.html"
+      - "tests/pages-artifact.test.mjs"
       - "class-model.js"
       - "city-model.js"
+      - "heart-shard-model.js"
+      - "homestead-model.js"
       - "rune-model.js"
       - "attribute-model.js"
       - "soul-crafting-model.js"
@@ -51,6 +54,7 @@ jobs:
       - name: Run dungeon browser tests
         run: |
           set -euo pipefail
+          node tests/pages-artifact.test.mjs
           mkdir -p .dungeon-ci
           python3 -m http.server 8765 --bind 127.0.0.1 > .dungeon-ci/server.log 2>&1 &
           server_pid=$!

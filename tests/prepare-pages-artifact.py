@@ -15,6 +15,7 @@ ASSETS = (
     "tavern-model.js",
     "gold-economy-model.js",
     "expeditions-model.js",
+    "heart-shard-model.js",
     "homestead-model.js",
     "soul-crafting-model.js",
     "rune-model.js",

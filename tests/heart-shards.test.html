@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="ru">
+<meta charset="utf-8">
+<title>Heart Shard economy tests</title>
+<h1 id="result">RUNNING</h1>
+<pre id="log"></pre>
+<script>
+"use strict";
+(async () => {
+  const output = document.getElementById("log");
+  const failures = [];
+  const frame = document.createElement("iframe");
+  frame.style.width = "390px";
+  frame.style.height = "800px";
+  localStorage.clear();
+  frame.src = "../index.html?heart-shards=1";
+  document.body.append(frame);
+  await new Promise((resolve) => frame.addEventListener("load", resolve, { once: true }));
+  let app = frame.contentWindow;
+  let doc = app.document;
+  const model = app.WellHeartShardModel;
+  const homeModel = app.WellHomesteadModel;
+  const ids = [
+    "11111111-1111-4111-8111-111111111111",
+    "22222222-2222-4222-8222-222222222222",
+    "33333333-3333-4333-8333-333333333333",
+    "44444444-4444-4444-8444-444444444444",
+  ];
+  function assert(condition, message) {
+    if (!condition) throw new Error(message);
+  }
+  function check(name, action) {
+    try {
+      action();
+      output.textContent += `PASS ${name}\n`;
+    } catch (error) {
+      failures.push(`${name}: ${error.stack}`);
+    }
+  }
+  async function waitFor(predicate) {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      if (predicate()) return;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    throw new Error("Timed out waiting for the game to save.");
+  }
+  async function reloadApp() {
+    await new Promise((resolve) => {
+      frame.addEventListener("load", resolve, { once: true });
+      frame.contentWindow.location.reload();
+    });
+    app = frame.contentWindow;
+    doc = app.document;
+  }
+
+  app.eval(`(() => {
+    const home = WellHomesteadModel.createState();
+    home.homes.push({ id: "test-cabin", tier: "cabin", purchasedAt: Date.now() });
+    home.atHome = true;
+    home.resources.fish = 2;
+    metaProgress = { ...metaProgress, homestead: home };
+    ui.homesteadDialog.showModal();
+    renderHomestead();
+  })()`);
+  const fishButton = doc.querySelector('button[data-homestead-action="process-fish"]');
+  assert(fishButton && !fishButton.disabled, "fish processing is not available with real fish in stock");
+  fishButton.click();
+  await waitFor(() => {
+    const snapshot = app.getCloudSaveSnapshot().meta;
+    return snapshot.heartShards === 1 && snapshot.homestead.resources.fish === 1;
+  });
+  check("fish processing consumes one stocked fish and awards one shard", () => {
+    const snapshot = app.getCloudSaveSnapshot().meta;
+    assert(snapshot.heartShards === 1, "processing did not award one shard");
+    assert(snapshot.homestead.resources.fish === 1, "fish was not consumed");
+    assert(snapshot.homestead.fishProcessingReceipts.length === 1, "processing receipt was not persisted");
+  });
+
+  check("fish receipt replay is rejected without another debit", () => {
+    const current = app.getCloudSaveSnapshot().meta.homestead;
+    const replay = homeModel.processFish(current, current.fishProcessingReceipts[0].id, 1);
+    assert(!replay.ok && replay.state.resources.fish === current.resources.fish,
+      "replay consumed fish or succeeded");
+  });
+
+  app.eval(`(() => {
+    ui.homesteadDialog.close();
+    startGameWithClass("knight");
+    state.floor = 3;
+    state.room = 1;
+    setEvent("ЦВЕТОК ГЛУБИН", "Корни.", "❀", "ВЫБЕРИ ДЕЙСТВИЕ",
+      ["flower-harvest"], "${ids[0]}");
+  })()`);
+  app.resolveDungeonEvent("flower-harvest");
+  check("deep flower grants one receipt-backed shard", () => {
+    const snapshot = app.getCloudSaveSnapshot();
+    assert(snapshot.meta.heartShards === 2, "deep flower did not grant exactly one");
+    assert(snapshot.meta.heartShardReceipts.some((receipt) =>
+      receipt.id === ids[0] && receipt.source === "deep-flower" && receipt.shards === 1),
+    "deep flower receipt is missing");
+    const event = app.eval('DUNGEON_EVENTS.find((item) => item.shardSource === "deep-flower")');
+    assert(event.minFloor === 3 && event.weight === 10, "deep flower is not in the regular floor-3 event pool");
+  });
+
+  app.eval(`(() => {
+    state.hp = state.maxHp;
+    setEvent("ЦВЕТОК ГЛУБИН", "Повтор.", "❀", "ВЫБЕРИ ДЕЙСТВИЕ",
+      ["flower-harvest"], "${ids[0]}");
+  })()`);
+  app.resolveDungeonEvent("flower-harvest");
+  check("replayed event receipt does not mint another shard", () => {
+    assert(app.getCloudSaveSnapshot().meta.heartShards === 2, "replayed flower minted a shard");
+    assert(app.getCloudSaveSnapshot().meta.heartShardReceipts.length === 1,
+      "replayed flower appended another receipt");
+  });
+
+  app.eval(`(() => {
+    state.floor = 2;
+    state.hp = state.maxHp;
+    setEvent("ПОГРУЖЕНИЕ", "Глубокая ниша.", "♆", "ВЫБЕРИ ДЕЙСТВИЕ",
+      ["dive-deep"], "${ids[1]}");
+  })()`);
+  const agilityBeforeDive = app.getDungeonFighter().agility;
+  app.resolveDungeonEvent("dive-deep");
+  check("Shard Dive awards two shards without changing combat Agility", () => {
+    const snapshot = app.getCloudSaveSnapshot();
+    assert(snapshot.meta.heartShards === 4, "deep dive did not grant two shards");
+    assert(snapshot.meta.essence === 1, "existing ordinary essence reward was removed");
+    assert(!Object.hasOwn(snapshot.run.state, "agilityBonus"), "temporary Agility stat introduced");
+    assert(app.getDungeonFighter().agility === agilityBeforeDive,
+      "dive changed normalized combat Agility instead of a permanent attribute");
+    const event = app.eval('DUNGEON_EVENTS.find((item) => item.shardSource === "shard-dive")');
+    assert(event.minFloor === 2 && event.weight === 10, "Shard Dive left the existing regular event pool");
+    assert(snapshot.run.state.event.text.includes("Постоянная награда ловкости заблокирована"),
+      "blocked permanent attribute reward was not disclosed");
+  });
+
+  app.eval(`(() => {
+    state.hp = state.maxHp;
+    setEvent("ПОГРУЖЕНИЕ", "Повтор.", "♆", "ВЫБЕРИ ДЕЙСТВИЕ",
+      ["dive-deep"], "${ids[1]}");
+  })()`);
+  app.resolveDungeonEvent("dive-deep");
+  check("restored Shard Dive receipt cannot duplicate shards or change Agility", () => {
+    const snapshot = app.getCloudSaveSnapshot();
+    assert(snapshot.meta.heartShards === 4, "replayed dive minted shards");
+    assert(!Object.hasOwn(snapshot.run.state, "agilityBonus") &&
+      app.getDungeonFighter().agility === agilityBeforeDive, "replayed dive changed Agility");
+  });
+
+  check("invalid receipts, over-cap rewards, and invalid save data are rejected", () => {
+    assert(!model.isValidReceipt({ id: "bad", source: "deep-flower", shards: 1 }),
+      "malformed receipt id accepted");
+    assert(model.issue([], "bad", "deep-flower", 0).reason === "invalid", "invalid ID issued a reward");
+    const capped = model.issue([], ids[2], "deep-flower", model.MAX_SHARDS);
+    assert(capped.ok && capped.shards === 0 && capped.balance === model.MAX_SHARDS,
+      "shard cap was not enforced and the event receipt was not consumed");
+    const snapshot = app.getCloudSaveSnapshot();
+    const invalidMeta = JSON.parse(JSON.stringify(snapshot.meta));
+    invalidMeta.heartShardReceipts.push({ id: "bad", source: "deep-flower", shards: 1 });
+    assert(!app.isValidMetaProgress(invalidMeta), "invalid meta receipt accepted");
+    const invalidRun = JSON.parse(JSON.stringify(snapshot.run));
+    invalidRun.state.event.receiptId = "bad";
+    assert(!app.isValidRun(invalidRun), "invalid active-event receipt accepted");
+  });
+
+  check("cloud merge and restore deduplicate event and fish receipts", () => {
+    const snapshot = app.getCloudSaveSnapshot();
+    const duplicateMerge = app.mergeMetaProgress(snapshot.meta, snapshot.meta);
+    assert(duplicateMerge.heartShards === snapshot.meta.heartShards,
+      "merging identical cloud snapshots duplicated shards");
+    const branch = JSON.parse(JSON.stringify(snapshot.meta));
+    const award = model.issue(branch.heartShardReceipts, ids[3], "deep-flower", branch.heartShards);
+    branch.heartShardReceipts = award.receipts;
+    branch.heartShards = model.balance(award.receipts, branch.homestead.fishProcessingReceipts);
+    const independentMerge = app.mergeMetaProgress(snapshot.meta, branch);
+    assert(independentMerge.heartShards === snapshot.meta.heartShards + 1,
+      "merge lost an independent event receipt");
+    const base = homeModel.createState(1000);
+    base.atHome = true;
+    base.resources.fish = 1;
+    const spent = homeModel.processFish(base, ids[2], 0, 1001);
+    const mergedHome = homeModel.merge(spent.state, base);
+    assert(mergedHome.resources.fish === 0 && mergedHome.fishProcessingReceipts.length === 1,
+      "cloud merge restored fish or duplicated the accepted processing receipt");
+    assert(homeModel.merge(mergedHome, base).fishProcessingReceipts.length === 1,
+      "repeated cloud merge duplicated the fish receipt");
+    app.restoreCloudSave(snapshot);
+    assert(app.getCloudSaveSnapshot().meta.heartShards === snapshot.meta.heartShards,
+      "restoring the same cloud snapshot changed the shard balance");
+  });
+
+  check("conflicting event payloads reject successive cloud merges without dropping history", () => {
+    const original = [{ id: ids[0], source: "deep-flower", shards: 1 }];
+    const disputed = [{ id: ids[0], source: "deep-flower", shards: 0 }];
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      let rejected = false;
+      try { model.mergeReceipts(original, disputed); } catch { rejected = true; }
+      assert(rejected, "conflicting UUID was silently dropped instead of rejecting the merge");
+      assert(model.mergeReceipts(original, original).length === 1 &&
+        model.balance(original, []) === 1, "failed merge changed the accepted ledger");
+    }
+    const snapshot = app.getCloudSaveSnapshot();
+    const invalidCloud = JSON.parse(JSON.stringify(snapshot));
+    invalidCloud.meta.heartShardReceipts.find((receipt) => receipt.id === ids[0]).shards = 0;
+    invalidCloud.meta.heartShards -= 1;
+    let restoreRejected = false;
+    try { app.restoreCloudSave(invalidCloud); } catch { restoreRejected = true; }
+    assert(restoreRejected, "conflicting cloud snapshot was accepted");
+    assert(app.getCloudSaveSnapshot().meta.heartShards === snapshot.meta.heartShards,
+      "failed conflicting restore changed the local balance");
+  });
+
+  check("rejected fish receipts stay rejected after new fish and stale cloud merges", () => {
+    const base = homeModel.createState(1000);
+    base.atHome = true;
+    base.resources.fish = 1;
+    const left = homeModel.processFish(base, ids[2], 0, 1001).state;
+    const right = homeModel.processFish(base, ids[3], 0, 1002).state;
+    const merged = homeModel.merge(left, right);
+    assert(merged.fishProcessingReceipts.length === 1 &&
+      merged.fishProcessingConflicts.includes(ids[2]), "overspent fish receipt was not rejected");
+    merged.resources.fish = 2;
+    merged.updatedAt = 1003;
+    merged.revision += 1;
+    const stale = homeModel.merge(merged, left);
+    const repeated = homeModel.merge(stale, left);
+    assert(repeated.resources.fish === 2 && repeated.fishProcessingReceipts.length === 1 &&
+      repeated.fishProcessingConflicts.includes(ids[2]), "rejected receipt spent newly caught fish");
+    assert(!homeModel.processFish(repeated, ids[2], 1).ok, "rejected UUID reused for a new debit");
+    const conflict = JSON.parse(JSON.stringify(right));
+    conflict.fishProcessingReceipts[0].shards = 0;
+    let rejected = false;
+    try { homeModel.merge(right, conflict); } catch { rejected = true; }
+    assert(rejected, "fish receipt payload conflict was silently accepted");
+  });
+
+  const beforeReload = app.getCloudSaveSnapshot();
+  await reloadApp();
+  check("page reload preserves shard balance and receipt history", () => {
+    const after = app.getCloudSaveSnapshot();
+    assert(after.meta.heartShards === beforeReload.meta.heartShards, "reload changed shard balance");
+    assert(after.meta.heartShardReceipts.length === beforeReload.meta.heartShardReceipts.length,
+      "reload lost event receipts");
+    assert(app.isValidMetaProgress(after.meta), "reloaded meta is invalid");
+  });
+
+  const legacyMeta = app.createMetaProgress();
+  delete legacyMeta.heartShards;
+  delete legacyMeta.heartShardReceipts;
+  delete legacyMeta.homestead.fishProcessingReceipts;
+  delete legacyMeta.homestead.fishProcessingConflicts;
+  const legacyRun = beforeReload.run;
+  delete legacyRun.state.event.receiptId;
+  check("pre-feature saves validate and receive safe defaults", () => {
+    assert(app.isValidMetaProgress(legacyMeta), "legacy meta save rejected");
+    const normalized = app.normalizeMetaProgress(legacyMeta);
+    assert(normalized.heartShards === 0 && normalized.heartShardReceipts.length === 0,
+      "legacy meta migration created shards");
+    assert(normalized.homestead.fishProcessingReceipts.length === 0,
+      "legacy home state missed its empty receipt ledger");
+    assert(app.isValidRun(legacyRun), "legacy run save rejected");
+  });
+  localStorage.setItem("well-of-whispers-camp-progress", JSON.stringify(legacyMeta));
+  localStorage.setItem("well-of-whispers-active-run", JSON.stringify(legacyRun));
+  await reloadApp();
+  check("resuming an old run defaults receipts without introducing temporary stats", () => {
+    app.eval("resumeGame()");
+    const run = app.getCloudSaveSnapshot().run;
+    assert(!Object.hasOwn(run.state, "agilityBonus") && run.state.event.receiptId === null,
+      "legacy run introduced a temporary stat or missed safe receipt defaults");
+    assert(app.getCloudSaveSnapshot().meta.heartShards === 0, "legacy migration created shards");
+  });
+
+  const lastFish = app.createMetaProgress();
+  lastFish.homestead.homes.push({ id: "test-cabin", tier: "cabin", purchasedAt: Date.now() });
+  lastFish.homestead.atHome = true;
+  lastFish.homestead.resources.fish = 1;
+  localStorage.setItem("well-of-whispers-camp-progress", JSON.stringify(lastFish));
+  app.eval(`metaProgress = normalizeMetaProgress(${JSON.stringify(lastFish)})`);
+  const secondFrame = document.createElement("iframe");
+  secondFrame.src = "../index.html?heart-shards-second-tab=1";
+  document.body.append(secondFrame);
+  await new Promise((resolve) => secondFrame.addEventListener("load", resolve, { once: true }));
+  const secondApp = secondFrame.contentWindow;
+  await secondApp.eval("gameServicesReady");
+  await Promise.all([
+    app.handleHomesteadAction("process-fish"),
+    secondApp.handleHomesteadAction("process-fish"),
+  ]);
+  const raced = JSON.parse(localStorage.getItem("well-of-whispers-camp-progress"));
+  check("two tabs process the last fish once under the shared resource lock", () => {
+    assert(raced.heartShards === 1 && raced.homestead.resources.fish === 0 &&
+      raced.homestead.fishProcessingReceipts.length === 1,
+    "parallel real actions minted two receipts or restored the last fish");
+    for (const tab of [app, secondApp]) {
+      const merged = tab.mergeMetaProgress(tab.getCloudSaveSnapshot().meta, raced);
+      const replayed = tab.mergeMetaProgress(merged, lastFish);
+      assert(replayed.heartShards === 1 && replayed.homestead.resources.fish === 0 &&
+        replayed.homestead.fishProcessingReceipts.length === 1,
+      "repeated stale-cloud merge resurrected a rejected receipt or fish");
+      tab.restoreCloudSave({ ...tab.getCloudSaveSnapshot(), meta: replayed });
+    }
+  });
+  secondFrame.remove();
+  await reloadApp();
+  check("two-tab processing remains single-issued after reload", () => {
+    const saved = app.getCloudSaveSnapshot().meta;
+    assert(saved.heartShards === 1 && saved.homestead.resources.fish === 0 &&
+      saved.homestead.fishProcessingReceipts.length === 1,
+    "reload resurrected a rejected processing receipt or fish");
+  });
+
+  if (failures.length) {
+    output.textContent += failures.join("\n");
+    document.getElementById("result").dataset.result = "fail";
+    document.getElementById("result").textContent = "FAIL";
+  } else {
+    document.getElementById("result").dataset.result = "pass";
+    document.getElementById("result").textContent = "PASS";
+  }
+})().catch((error) => {
+  document.getElementById("result").dataset.result = "fail";
+  document.getElementById("log").textContent += error.stack;
+});
+</script>

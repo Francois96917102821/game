@@ -43,6 +43,15 @@
     assert(assets.find((asset) => asset.url.href === model.href)?.response.ok,
       "cache-busted progress model cannot be fetched from the artifact");
   });
+  check("heart shard model is packaged, cache-busted and loaded before homestead", () => {
+    const index = (name) => localScripts.findIndex((url) => url.pathname.endsWith(`/${name}`));
+    const model = localScripts[index("heart-shard-model.js")];
+    assert(model, "artifact index does not reference the heart shard model");
+    assert(model.searchParams.has("v"), "heart shard model URL has no release cache-busting query");
+    assert(assets.find((asset) => asset.url.href === model.href)?.response.ok,
+      "cache-busted heart shard model cannot be fetched from the artifact");
+    assert(index("heart-shard-model.js") < index("homestead-model.js"), "heart shard model loads after homestead");
+  });
 
   const frame = document.createElement("iframe");
   frame.title = "Built GitHub Pages game";

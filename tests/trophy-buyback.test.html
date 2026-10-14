@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="ru">
+<meta charset="utf-8">
+<title>Hunter guild trophy buyback</title>
+<h1 id="result">RUNNING</h1>
+<pre id="log"></pre>
+<script src="../gold-economy-model.js"></script>
+<script>
+"use strict";
+(async () => {
+  const log = document.getElementById("log");
+  const failures = [];
+  const model = WellGoldEconomyModel;
+  const id = (n) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+  function assert(value, message) { if (!value) throw new Error(message); }
+  async function rejects(work, message) {
+    let rejected = false;
+    try { await work(); } catch { rejected = true; }
+    assert(rejected, message);
+  }
+  async function check(name, work) {
+    try { await work(); log.textContent += `PASS ${name}\n`; }
+    catch (error) { failures.push(`${name}: ${error.stack}`); }
+  }
+  const base = () => ({
+    dungeonTrophies: { courage: 2, elite: 5 },
+    trophySales: [], tavern: { gold: 10, revision: 0, updatedAt: 0 },
+  });
+  await check("model: explicit ordinary and four fish allowlist, one gold each", async () => {
+    assert(JSON.stringify(model.TROPHY_KEYS) === JSON.stringify([
+      "courage", "valor", "admBlood", "shell", "fishEye", "fishFat", "fishScale",
+    ]), "unexpected allowlist");
+    for (const key of model.TROPHY_KEYS) {
+      const before = base();
+      before.dungeonTrophies[key] = 2;
+      const after = model.sellTrophy(before, key, id(1), 1);
+      assert(after.tavern.gold === 11 && after.dungeonTrophies[key] === 1, "wrong price/count");
+      assert(before.tavern.gold === 10 && before.dungeonTrophies[key] === 2, "input mutated");
+      assert(model.sellTrophy(after, key, id(1)) === after, "duplicate paid twice");
+    }
+    for (const key of ["elite", "keeperKey", "keeperHeart", "wealth", "blood", "knowledge",
+      "fate", "statPotion", "rawFish", "quest", "recipe", "unknown", "__proto__", null]) {
+      assert(model.trophySalePrice(key) === null, "excluded key has price");
+      await rejects(() => model.sellTrophy(base(), key, id(1)), "excluded key sold");
+    }
+  });
+  await check("model: missing/invalid stock, wallet bounds and receipts rejected", async () => {
+    for (const count of [0, -1, .5, NaN, Infinity, 1000000001]) {
+      const meta = base(); meta.dungeonTrophies.courage = count;
+      await rejects(() => model.sellTrophy(meta, "courage", id(1)), "invalid stock sold");
+    }
+    await rejects(() => model.sellTrophy(base(), "shell", id(1)), "missing stock sold");
+    for (const gold of [-1, .5, NaN, Infinity, 1000000000, 1000000001]) {
+      const meta = base(); meta.tavern.gold = gold;
+      await rejects(() => model.sellTrophy(meta, "courage", id(1)), "invalid wallet accepted");
+    }
+    const max = base(); max.tavern.gold = 999999999;
+    assert(model.sellTrophy(max, "courage", id(1)).tavern.gold === 1000000000, "last gold refused");
+    assert(model.isValidTrophySales(undefined), "legacy ledger rejected");
+    for (const ledger of [
+      [{ id: id(1), key: "elite", unit: 1 }],
+      [{ id: id(1), key: "shell", unit: 2 }],
+      [{ id: id(1), key: "shell", unit: -1 }],
+      [{ id: "bad", key: "shell", unit: 1 }],
+      [{ id: id(1), key: "shell", unit: 1 }, { id: id(1), key: "shell", unit: 1 }],
+    ]) assert(!model.isValidTrophySales(ledger), "invalid ledger accepted");
+    await rejects(() => model.mergeTrophySales(
+      [{ id: id(1), key: "shell", unit: 1 }], [{ id: id(1), key: "fishEye", unit: 1 }]),
+    "conflicting receipt accepted");
+  });
+  localStorage.clear();
+  async function loadApp() {
+    const frame = document.createElement("iframe");
+    frame.src = "../index.html?trophy-buyback=1";
+    const loaded = new Promise((resolve) => frame.addEventListener("load", resolve, { once: true }));
+    document.body.append(frame);
+    await loaded;
+    await frame.contentWindow.eval("gameServicesReady");
+    return frame.contentWindow;
+  }
+  const app = await loadApp();
+  const storageKey = app.eval("META_SAVE_KEY");
+  const snapshot = () => app.getCloudSaveSnapshot().meta;
+  function fresh(count = 2) {
+    const meta = app.createMetaProgress();
+    meta.dungeonTrophies = { courage: count, shell: count, elite: 5 };
+    meta.tavern.gold = 10;
+    return meta;
+  }
+  function setMeta(meta, target = app) {
+    target.eval(`metaProgress = normalizeMetaProgress(${JSON.stringify(meta)});`);
+    localStorage.setItem(storageKey, JSON.stringify(meta));
+  }
+  await check("browser: old saves and cloud validation", () => {
+    const old = fresh(); delete old.trophySales;
+    assert(app.isValidMetaProgress(old), "old save rejected");
+    assert(app.normalizeMetaProgress(old).trophySales.length === 0, "legacy default missing");
+    const valid = model.sellTrophy(fresh(), "shell", id(10));
+    assert(app.isValidMetaProgress(valid), "valid cloud meta rejected");
+    valid.trophySales[0].key = "elite";
+    assert(!app.isValidMetaProgress(valid), "cloud elite receipt accepted");
+  });
+  await check("browser: stale cloud, self-merge, spending, and future drops do not resurrect sales", () => {
+    const original = fresh();
+    const sale = model.sellTrophy(original, "shell", id(11));
+    const merged = app.mergeMetaProgress(original, sale);
+    assert(merged.dungeonTrophies.shell === 1 && merged.tavern.gold === 11, "stale merge restored sale");
+    assert(app.mergeMetaProgress(merged, merged).tavern.gold === 11, "self merge paid twice");
+    sale.tavern.gold = 4; sale.tavern.updatedAt += 1;
+    assert(app.mergeMetaProgress(original, sale).tavern.gold === 4, "spent proceeds restored");
+    const drop = fresh();
+    drop.dungeonTrophies.shell += 1;
+    drop.dungeonVictories = [{ id: id(12), reputation: 1, trophies: ["shell"] }];
+    const withDrop = app.mergeMetaProgress(drop, sale);
+    assert(withDrop.dungeonTrophies.shell === 2, "new drop lost or sold stock restored");
+  });
+  await check("browser: divergent offline sales reconcile by inventory ordinal, not UUID", () => {
+    const original = fresh(1);
+    const first = model.sellTrophy(original, "shell", id(13));
+    const second = model.sellTrophy(original, "shell", id(14));
+    const merged = app.mergeMetaProgress(first, second);
+    assert(merged.dungeonTrophies.shell === 0 && merged.tavern.gold === 11, "offline oversell paid twice");
+    assert(merged.trophySales.length === 2, "replay tombstone lost");
+    assert(app.mergeMetaProgress(merged, first).tavern.gold === 11, "offline replay paid twice");
+    const reverse = app.mergeMetaProgress(second, first);
+    assert(reverse.tavern.gold === 11 && reverse.dungeonTrophies.shell === 0, "merge order changes payout");
+    const next = { ...merged, dungeonTrophies: { ...merged.dungeonTrophies, shell: 1 } };
+    assert(model.sellTrophy(next, "shell", id(15)).trophySales.at(-1).unit === 2, "next ordinal reused");
+  });
+  await check("browser: merged payout cannot overflow the wallet", async () => {
+    const original = fresh(); original.tavern.gold = 999999999;
+    const first = model.sellTrophy(original, "shell", id(16));
+    const second = model.sellTrophy(original, "courage", id(17));
+    await rejects(() => app.mergeMetaProgress(first, second), "merge silently overflowed/clamped");
+  });
+  await check("browser: atomic durable sale and duplicate/missing/elite rejection", async () => {
+    setMeta(fresh(1));
+    await app.sellGuildTrophy("shell", id(20));
+    await app.sellGuildTrophy("shell", id(20));
+    const durable = JSON.parse(localStorage.getItem(storageKey));
+    assert(durable.dungeonTrophies.shell === 0 && durable.tavern.gold === 11 &&
+      durable.trophySales.length === 1, "transaction not atomic/durable");
+    await rejects(() => app.sellGuildTrophy("shell", id(21)), "missing trophy sold");
+    await rejects(() => app.sellGuildTrophy("elite", id(22)), "elite sold");
+    await rejects(() => app.sellGuildTrophy("fishEye", id(23)), "absent fish sold");
+    assert(snapshot().tavern.gold === 11 && snapshot().dungeonTrophies.elite === 5, "failed sale changed balance");
+  });
+  await check("browser: storage failure changes neither wallet nor inventory nor receipt", async () => {
+    setMeta(fresh());
+    const before = JSON.stringify(snapshot());
+    const prototype = app.Storage.prototype;
+    const write = prototype.setItem;
+    prototype.setItem = () => { throw new app.DOMException("blocked", "QuotaExceededError"); };
+    try { await rejects(() => app.sellGuildTrophy("shell", id(24)), "failed write reported success"); }
+    finally { prototype.setItem = write; }
+    assert(JSON.stringify(snapshot()) === before, "failed write changed memory");
+    assert(JSON.parse(localStorage.getItem(storageKey)).trophySales.length === 0, "failed write left receipt");
+  });
+  await check("browser: two tabs competing for the last trophy pay once", async () => {
+    setMeta(fresh(1));
+    const other = await loadApp();
+    const results = await Promise.allSettled([
+      app.sellGuildTrophy("shell", id(25)), other.sellGuildTrophy("shell", id(26)),
+    ]);
+    assert(results.filter((result) => result.status === "fulfilled").length === 1, "multi-tab oversell");
+    const durable = JSON.parse(localStorage.getItem(storageKey));
+    assert(durable.tavern.gold === 11 && durable.dungeonTrophies.shell === 0 &&
+      durable.trophySales.length === 1, "multi-tab transaction wrong");
+  });
+  await check("browser: Hall shows price/stock, excludes special rewards and confirms remainder", async () => {
+    setMeta(fresh());
+    app.WellCloudSave.getCurrentUser = () => ({ id: "test" });
+    app.WellCloudSave.groupRpc = async (name) => {
+      assert(name === "guild_state", "buyback invoked a server/treasury RPC");
+      return { guild: {
+        name: "Test", role: "member", guild_level: 1, reputation: 0,
+        treasury_gold: 0, treasury_essence: 0, buildings: {}, settings: {}, members: [],
+      } };
+    };
+    await app.WellGuild.refresh();
+    const buttons = app.document.querySelectorAll("[data-guild-trophy]");
+    assert(buttons.length === 7 && !app.document.querySelector('[data-guild-trophy="elite"]'), "Hall allowlist wrong");
+    const button = app.document.querySelector('[data-guild-trophy="shell"]');
+    assert(button.textContent.includes("1 зол.") && button.textContent.includes("2"), "price/stock missing");
+    let confirmation;
+    app.confirm = (message) => { confirmation = message; return false; };
+    button.click();
+    assert(confirmation.includes("В наличии: 2") && confirmation.includes("После продажи: 1") &&
+      confirmation.includes("постоянное золото"), "confirmation missing details");
+    assert(snapshot().tavern.gold === 10, "cancel sold trophy");
+    app.confirm = () => true;
+    button.click();
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("Hall sale timed out")), 5000);
+      const timer = setInterval(() => {
+        if (!app.document.getElementById("guild-status").textContent.includes("Трофей выкуплен")) return;
+        clearInterval(timer); clearTimeout(timeout); resolve();
+      }, 20);
+    });
+    assert(snapshot().tavern.gold === 11 && snapshot().dungeonTrophies.shell === 1, "Hall did not sell");
+  });
+  document.getElementById("result").dataset.result = failures.length ? "fail" : "pass";
+  document.getElementById("result").textContent = failures.length ? "FAIL" : "PASS";
+  log.textContent += failures.join("\n");
+})().catch((error) => {
+  document.getElementById("result").dataset.result = "fail";
+  document.getElementById("log").textContent += error.stack;
+});
+</script>
+</html>

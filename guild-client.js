@@ -103,11 +103,49 @@
     }
   }
 
+  async function buyTrophy(key) {
+    if (busy || pending || !guild) return;
+    const offer = options.getTrophyOffers().find((item) => item.key === key);
+    if (!offer || offer.count < 1) {
+      setStatus("Нет подходящего трофея для выкупа.", true);
+      return;
+    }
+    if (!window.confirm(`Продать «${offer.name}» за ${offer.price} постоянное золото? В наличии: ${offer.count}. После продажи: ${offer.count - 1}. Баланс: ${options.getBalance("gold")} → ${options.getBalance("gold") + offer.price}.`)) return;
+    busy = true;
+    render();
+    try {
+      await options.buyTrophy(key, requestId());
+      setStatus("Трофей выкуплен. Постоянное золото сохранено.");
+    } catch (error) {
+      console.error("Выкуп трофея не выполнен.", error);
+      setStatus(`Выкуп не выполнен: ${error.message}`, true);
+    } finally {
+      busy = false;
+      render();
+    }
+  }
+
   function renderHall() {
     const panel = $("guild-hall-content");
     panel.replaceChildren();
     const buildings = getBuildings();
     const memberCooldowns = guild.cooldowns || {};
+    const bounty = document.createElement("article");
+    bounty.className = "guild-building";
+    appendText(bounty, "strong", "", "Гильдия охотников · выкуп трофеев");
+    appendText(bounty, "p", "", "1 обычный трофей = 1 постоянное золото. Не из казны. Элитные, уникальные, квестовые награды и ингредиенты не принимаются.");
+    for (const offer of options.getTrophyOffers()) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "action-button";
+      button.dataset.guildTrophy = offer.key;
+      button.textContent = `${offer.name} · ${offer.price} зол. · в наличии ${offer.count}`;
+      button.disabled = busy || Boolean(pending) || offer.count < 1 ||
+        options.getBalance("gold") >= window.WellGoldEconomyModel.MAX_GOLD;
+      button.addEventListener("click", () => buyTrophy(offer.key));
+      bounty.append(button);
+    }
+    panel.append(bounty);
     for (const [id, name, cost] of BUILDINGS) {
       const card = document.createElement("article");
       card.className = "guild-building";
@@ -119,6 +157,7 @@
           ? "Пока недоступно: в игре нет корней знаний и книг."
           : "Пока недоступно: обломки сердца не добываются в текущей версии.");
       }
+
       if (!buildings[id] || id === "warehouse" || id === "treasurer") {
         const button = document.createElement("button");
         button.type = "button";

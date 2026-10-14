@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
 const availableTests = ["dungeon", "dungeon-integration", "gold-economy", "runes", "pvp-client",
-  "tavern", "expeditions", "homestead", "soul-crafting", "food", "settings"];
+  "tavern", "expeditions", "homestead", "soul-crafting", "soul-sources", "food", "settings"];
 const tests = process.argv.length > 2 ? process.argv.slice(2) : availableTests;
 if (tests.some((test) => !availableTests.includes(test))) throw new Error("Unknown browser test.");
 let failed = false;
@@ -28,12 +28,12 @@ for (const test of tests) {
         port = Number((await readFile(join(profile, "DevToolsActivePort"), "utf8")).split("\n")[0]);
         break;
       } catch (error) {
-        if (error.code !== "ENOENT") throw error;
+        if (!["ENOENT", "EBUSY", "EACCES"].includes(error.code)) throw error;
         await delay(100);
       }
     }
     if (!port) throw new Error("Chrome did not start its debugging endpoint.");
-    const url = `http://127.0.0.1:8765/tests/${test}.test.html`;
+    const url = `${process.env.BROWSER_TEST_BASE_URL || "http://127.0.0.1:8765"}/tests/${test}.test.html`;
     const response = await fetch(`http://127.0.0.1:${port}/json/new?${encodeURIComponent(url)}`, { method: "PUT" });
     if (!response.ok) throw new Error(`Chrome target creation failed: ${response.status}`);
     const target = await response.json();

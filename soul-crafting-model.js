@@ -70,18 +70,21 @@
     );
   }
 
-  function replay(base, transactions) {
+  function replay(base, transactions, rejectedIds = []) {
     const balances = { ...base };
-    const accepted = [];
+    const rejected = new Set(rejectedIds);
     for (const transaction of [...transactions].sort((left, right) =>
       left.createdAt - right.createdAt || left.id.localeCompare(right.id))) {
       const changes = transaction.changes;
+      if (rejected.has(transaction.id)) continue;
       if (Object.entries(changes).some(([soulId, amount]) =>
-        balances[soulId] + amount < 0 || balances[soulId] + amount > MAX_AMOUNT)) continue;
+        balances[soulId] + amount < 0 || balances[soulId] + amount > MAX_AMOUNT)) {
+        rejected.add(transaction.id);
+        continue;
+      }
       for (const [soulId, amount] of Object.entries(changes)) balances[soulId] += amount;
-      accepted.push(transaction);
     }
-    return { balances, transactions: accepted };
+    return { balances, transactions: copy(transactions), rejected: [...rejected].sort() };
   }
 
   function isValidState(state) {
@@ -112,7 +115,9 @@
           (!transaction.recipeId || !isValidGear(transaction.gear))) ||
         (transaction.kind === "drop" &&
           (Object.keys(transaction.changes).length !== 1 ||
-            Object.values(transaction.changes).some((amount) => amount !== 1))) ||
+            Object.values(transaction.changes).some((amount) => amount !== 1) ||
+            (transaction.changes.serpent && transaction.source !== "darkwood-boss") ||
+            (transaction.changes.cursed && transaction.source !== "victor-trophies"))) ||
         (transaction.kind === "craft" &&
           (Object.keys(transaction.changes).length !== 1 ||
             transaction.changes[recipe?.soulId] !== -recipe?.amount ||
@@ -127,8 +132,11 @@
             Object.values(transaction.changes).some((amount) => amount !== -1)))) return false;
       ids.add(transaction.id);
     }
-    const calculated = replay(state.base, state.transactions);
-    return calculated.transactions.length === state.transactions.length &&
+    const rejected = state.rejected || [];
+    if (!Array.isArray(rejected) || new Set(rejected).size !== rejected.length ||
+      rejected.some((id) => !ids.has(id))) return false;
+    const calculated = replay(state.base, state.transactions, rejected);
+    return JSON.stringify(calculated.rejected) === JSON.stringify([...rejected].sort()) &&
       SOUL_IDS.every((id) => calculated.balances[id] === state.balances[id]);
   }
 
@@ -148,6 +156,7 @@
       base: { ...emptyBalances(), ...(value.base || {}) },
       balances: { ...emptyBalances(), ...(value.balances || {}) },
       transactions: Array.isArray(value.transactions) ? copy(value.transactions) : [],
+      rejected: Array.isArray(value.rejected) ? [...value.rejected] : [],
     };
     return normalized;
   }
@@ -162,6 +171,9 @@
     if (previous) {
       if (JSON.stringify(previous) !== JSON.stringify(transaction)) {
         return { ok: false, reason: "Квитанция уже использована для другого действия." };
+      }
+      if (state.rejected.includes(transaction.id)) {
+        return { ok: false, reason: "Эта квитанция ранее отклонена при объединении сохранений." };
       }
       return { ok: true, state, duplicate: true, gear: previous.gear };
     }
@@ -185,6 +197,10 @@
       return { ok: false, reason: `Души начинают выпадать с ${DROP_LEVEL}-го уровня.` };
     }
     if (!Object.hasOwn(SOULS, soulId)) return { ok: false, reason: "Неизвестная душа." };
+    if ((soulId === "serpent" && source !== "darkwood-boss") ||
+      (soulId === "cursed" && source !== "victor-trophies")) {
+      return { ok: false, reason: "Эта душа не выпадает из указанного источника." };
+    }
     return apply(current, {
       id: receiptId,
       kind: "drop",
@@ -251,13 +267,25 @@
     const byId = new Map();
     for (const transaction of [...first.transactions, ...second.transactions]) {
       const existing = byId.get(transaction.id);
-      const gearOrder = (entry) => Number(entry?.gear?.id?.slice(5) || 0);
-      if (!existing || gearOrder(transaction) > gearOrder(existing)) {
-        byId.set(transaction.id, transaction);
+      if (existing && JSON.stringify(existing) !== JSON.stringify(transaction)) {
+        throw new Error("UUID души уже использован для другой операции.");
+      }
+      byId.set(transaction.id, transaction);
+    }
+    const result = replay(base, [...byId.values()], [...first.rejected, ...second.rejected]);
+    return { base, ...result };
+  }
+
+  function reconcileSources(current, rewards) {
+    const state = withDefaults(current);
+    const allowed = new Set(rewards.map((entry) => entry.id));
+    const rejected = new Set(state.rejected);
+    for (const entry of state.transactions) {
+      if (["darkwood-boss", "victor-trophies"].includes(entry.source) && !allowed.has(entry.id)) {
+        rejected.add(entry.id);
       }
     }
-    const result = replay(base, [...byId.values()]);
-    return { base, balances: result.balances, transactions: result.transactions };
+    return { base: state.base, ...replay(state.base, state.transactions, [...rejected]) };
   }
 
   root.WellSoulCraftingModel = Object.freeze({
@@ -272,6 +300,7 @@
     isValidState,
     merge,
     receive,
+    reconcileSources,
     transferOut,
     withDefaults,
   });

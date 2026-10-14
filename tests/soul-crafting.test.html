@@ -72,7 +72,8 @@
             .filter((recipe) => recipe.soulId === soulId)
             .reduce((total, recipe) => total + recipe.amount, 0);
           for (let index = 0; index < needed; index += 1) {
-            const grant = model.grant(state, 150, soulId, `stock-${soulId}-${index}`, "test");
+            const source = soulId === "serpent" ? "darkwood-boss" : soulId === "cursed" ? "victor-trophies" : "test";
+            const grant = model.grant(state, 150, soulId, `stock-${soulId}-${index}`, source);
             assert(grant.ok, `${soulId} stock setup`);
             state = grant.state;
           }

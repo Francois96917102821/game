@@ -269,6 +269,7 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--gold-light); ou
 .event-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; margin-top: 13px; }
 .event-actions[hidden] { display: none; }
 .event-actions .action-button { min-height: 48px; padding: 7px; line-height: 1.3; }
+#victor-trophy-count { grid-column: 1 / -1; margin: 0; font-size: 0.85rem; line-height: 1.5; }
 .action-area, .combat-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; margin-top: 13px; }
 .combat-focus { grid-column: 1 / -1; padding: 8px 10px; border: 1px solid #34382e; border-radius: 6px; background: #1c201a; }
 .combat-focus .stat-label { margin-bottom: 6px; }

@@ -157,7 +157,6 @@
           ? "Пока недоступно: в игре нет корней знаний и книг."
           : "Пока недоступно: обломки сердца не добываются в текущей версии.");
       }
-
       if (!buildings[id] || id === "warehouse" || id === "treasurer") {
         const button = document.createElement("button");
         button.type = "button";

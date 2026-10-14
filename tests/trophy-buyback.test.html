@@ -133,6 +133,24 @@
     const second = model.sellTrophy(original, "courage", id(17));
     await rejects(() => app.mergeMetaProgress(first, second), "merge silently overflowed/clamped");
   });
+  await check("browser: competing food or guild debits cannot hide a negative sale wallet", async () => {
+    const original = fresh(); original.tavern.gold = 4;
+    const first = model.sellTrophy(original, "shell", id(18));
+    const second = model.sellTrophy(original, "courage", id(19));
+    first.tavern.gold = 0;
+    second.tavern.gold = 0;
+    first.tavern.foodReceipts = [{ id: "food-first", at: 1, goldDelta: -5,
+      recipeId: null, recipeDelta: 0, injuryDelta: 0 }];
+    second.tavern.foodReceipts = [{ id: "food-second", at: 1, goldDelta: -5,
+      recipeId: null, recipeDelta: 0, injuryDelta: 0 }];
+    assert(app.isValidMetaProgress(first) && app.isValidMetaProgress(second), "invalid food test fixture");
+    await rejects(() => app.mergeMetaProgress(first, second), "food reconciliation hid a negative wallet");
+    first.tavern.foodReceipts = [];
+    second.tavern.foodReceipts = [];
+    first.guildWalletTransactions = [{ id: id(180), gold: -5, essence: 0 }];
+    second.guildWalletTransactions = [{ id: id(190), gold: -5, essence: 0 }];
+    await rejects(() => app.mergeMetaProgress(first, second), "guild reconciliation hid a negative wallet");
+  });
   await check("browser: atomic durable sale and duplicate/missing/elite rejection", async () => {
     setMeta(fresh(1));
     await app.sellGuildTrophy("shell", id(20));

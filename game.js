@@ -1083,8 +1083,15 @@ function mergeMetaProgress(left, right) {
   const tavernSourceWalletTransactions = useSecondTavern
     ? second.guildWalletTransactions : first.guildWalletTransactions;
   const otherHomestead = useSecondTavern ? first.homestead : second.homestead;
+  // Food reconciliation clamps legacy wallets; a sale merge must validate the raw total.
+  const sourceFoodIds = new Set(tavernSource.tavern.foodReceipts.map((receipt) => receipt.id));
+  const foodGold = trophySales.length
+    ? tavernSource.tavern.gold + tavern.foodReceipts
+      .filter((receipt) => !sourceFoodIds.has(receipt.id))
+      .reduce((sum, receipt) => sum + receipt.goldDelta, 0)
+    : tavern.gold;
   const walletGold =
-    tavern.gold - missingHomesteadDebits(tavernSourceReceipts, otherHomestead, "gold") -
+    foodGold - missingHomesteadDebits(tavernSourceReceipts, otherHomestead, "gold") -
       walletDelta(tavernSourceWalletTransactions, "gold") +
       walletDelta(guildWalletTransactions, "gold");
   const saleTotal = (counts) => Object.values(counts).reduce((sum, count) => sum + count, 0);
@@ -1204,7 +1211,6 @@ function updateGuildSupplies(receiptId, change) {
   if (metaProgress.guildSupplyTransactions.length >= 100000) {
     throw new Error("Достигнут предел истории гильдейских припасов.");
   }
-
   const transaction = {
     id: receiptId,
     healthPotions: change.healthPotions || 0,

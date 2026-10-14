@@ -710,6 +710,8 @@ function createMetaProgress(now = Date.now()) {
     orderReputation: 0,
     dungeonTrophies: {},
     dungeonVictories: [],
+    runeDrops: [],
+    runeUses: [],
     souls: window.WellSoulCraftingModel.createState(),
     harbor: window.WellExpeditionsModel.createState(),
     homestead: window.WellHomesteadModel.createState(now),
@@ -722,6 +724,17 @@ function isValidInboxReceipts(receipts) {
     receipts.every((id) => typeof id === "string" && /^\d{1,19}$/.test(id)) &&
     new Set(receipts).size === receipts.length
   );
+}
+
+function isValidRuneDropLedger(receipts) {
+  if (!window.WellRuneModel.isValidReceipts(receipts, window.WellRuneModel.isValidDrop)) return false;
+  const original = new Map(receipts.map((receipt) => [receipt.id, receipt]));
+  const reconciled = window.WellRuneModel.mergeDrops(receipts, []);
+  return reconciled.length === receipts.length && reconciled.every((receipt) => {
+    const existing = original.get(receipt.id);
+    return existing && existing.type === receipt.type &&
+      existing.count === receipt.count && existing.level === receipt.level;
+  });
 }
 
 function isValidMetaProgress(progress) {
@@ -754,6 +767,8 @@ function isValidMetaProgress(progress) {
         Array.isArray(receipt.trophies) && receipt.trophies.length <= 16 &&
         receipt.trophies.every((key) => Object.prototype.hasOwnProperty.call(DUNGEON_TROPHIES, key)))
     )) &&
+    (progress.runeDrops === undefined || isValidRuneDropLedger(progress.runeDrops)) &&
+    (progress.runeUses === undefined || window.WellRuneModel.isValidReceipts(progress.runeUses, window.WellRuneModel.isValidUse)) &&
     (progress.tavern === undefined || window.WellTavernModel.isValidState(progress.tavern)) &&
     (progress.harbor === undefined || window.WellExpeditionsModel.isValidState(progress.harbor)) &&
     (progress.homestead === undefined || window.WellHomesteadModel.isValidState(progress.homestead))
@@ -773,6 +788,8 @@ function normalizeMetaProgress(progress) {
   normalized.dungeonVictories = (progress?.dungeonVictories || []).map((receipt) => ({
     ...receipt, trophies: [...receipt.trophies],
   }));
+  normalized.runeDrops = (progress?.runeDrops || []).map((receipt) => ({ ...receipt }));
+  normalized.runeUses = (progress?.runeUses || []).map((receipt) => ({ ...receipt }));
   return normalized;
 }
 
@@ -832,12 +849,22 @@ function mergeMetaProgress(left, right) {
   }
   const dungeonVictories = [...victoryById.values()].sort((a, b) => a.id.localeCompare(b.id));
   const reputationSum = (receipts) => receipts.reduce((sum, receipt) => sum + receipt.reputation, 0);
+  const runeDrops = window.WellRuneModel.mergeDrops(first.runeDrops, second.runeDrops);
+  const runeUseCost = (receipts) => receipts.reduce((sum, receipt) => sum + receipt.cost, 0);
+  const reputationBase = Math.max(
+    0,
+    first.orderReputation - reputationSum(first.dungeonVictories) + runeUseCost(first.runeUses),
+    second.orderReputation - reputationSum(second.dungeonVictories) + runeUseCost(second.runeUses),
+  );
+  const runeProgress = window.WellRuneModel.mergeUses(
+    first.runeUses,
+    second.runeUses,
+    runeDrops,
+    Math.min(1000000000, reputationBase + reputationSum(dungeonVictories)),
+  );
+  const orderReputation = runeProgress.reputation;
   const trophySum = (receipts, key) => receipts.reduce((sum, receipt) =>
     sum + receipt.trophies.filter((trophy) => trophy === key).length, 0);
-  const orderReputation = Math.min(1000000000, Math.max(
-    0, first.orderReputation - reputationSum(first.dungeonVictories),
-    second.orderReputation - reputationSum(second.dungeonVictories),
-  ) + reputationSum(dungeonVictories));
   const dungeonTrophies = Object.fromEntries(Object.keys(DUNGEON_TROPHIES).map((key) => [
     key, Math.min(1000000000, Math.max(
       0, (first.dungeonTrophies[key] || 0) - trophySum(first.dungeonVictories, key),
@@ -920,6 +947,8 @@ function mergeMetaProgress(left, right) {
     orderReputation,
     dungeonTrophies,
     dungeonVictories,
+    runeDrops,
+    runeUses: runeProgress.uses,
     secretsFound: [...new Set([...first.secretsFound, ...second.secretsFound])],
     groupInboxReceipts: [...new Set([
       ...(first.groupInboxReceipts || []),
@@ -955,6 +984,8 @@ function persistMetaProgress() {
         orderReputation: dungeonMerged.orderReputation,
         dungeonTrophies: dungeonMerged.dungeonTrophies,
         dungeonVictories: dungeonMerged.dungeonVictories,
+        runeDrops: dungeonMerged.runeDrops,
+        runeUses: dungeonMerged.runeUses,
         souls: dungeonMerged.souls,
       };
     }
@@ -1292,6 +1323,8 @@ function isValidRun(run) {
       (saved.enemy.elite !== undefined && typeof saved.enemy.elite !== "boolean") ||
       (saved.enemy.elite === true && saved.enemy.boss) ||
       (saved.enemy.special != null && !["keeper", "mimic", "water", "worldeater", "captain"].includes(saved.enemy.special)) ||
+      (saved.enemy.runeReceiptId !== undefined && (typeof saved.enemy.runeReceiptId !== "string" ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(saved.enemy.runeReceiptId))) ||
       (saved.enemy.trait !== undefined && !Object.prototype.hasOwnProperty.call(ELITE_TRAITS, saved.enemy.trait)) ||
       (saved.enemy.fighter != null && !window.DungeonModel.isValidFighter(saved.enemy.fighter)) ||
       saved.room === 0 || saved.waitingToDescend || saved.merchantAvailable === true
@@ -1505,6 +1538,60 @@ function getUpgradeCost(id) {
   return META_UPGRADES[id].costs[getUpgradeLevel(id)];
 }
 
+function getRuneStat(type) {
+  return window.WellRuneModel.stats(metaProgress.runeUses)[type] || 0;
+}
+
+function getRuneLevel() {
+  return Math.max(state.level, metaProgress.tavern.characterLevel, 1);
+}
+
+function canUseEnhancementRunes() {
+  const coopBattle = window.WellPlayerGroups?.getBattle();
+  return (!state.started || state.gameOver) && !state.enemy && !dungeonDuelLocked() &&
+    !(coopBattle && ["waiting", "active"].includes(coopBattle.status));
+}
+
+function useEnhancementRune(type) {
+  if (!canUseEnhancementRunes()) return;
+  if (!window.WellRuneModel.validType(type)) return;
+  const rune = window.WellRuneModel.RUNES[type];
+  if (metaProgress.runeUses.length >= 100000) {
+    setEvent("РУНА НЕ ИСПОЛЬЗОВАНА", "Журнал применения рун достиг предела; состояние не изменено.", "ᛟ", "НЕДОСТУПНО");
+    render();
+    return;
+  }
+  const owned = window.WellRuneModel.inventory(metaProgress.runeDrops, metaProgress.runeUses)[type];
+  if (owned < 1 || metaProgress.orderReputation < rune.price) {
+    setEvent("РУНА НЕ ИСПОЛЬЗОВАНА", owned < 1
+      ? `В запасе нет руны «${rune.name}».`
+      : `Не хватает репутации: требуется ${rune.price}.`, "ᛟ", "НЕДОСТУПНО");
+    render();
+    return;
+  }
+  const previous = JSON.parse(JSON.stringify(metaProgress));
+  const receipt = { id: window.crypto.randomUUID(), type, cost: rune.price };
+  metaProgress.orderReputation -= rune.price;
+  metaProgress.runeUses.push(receipt);
+  if (!persistMetaProgress()) {
+    metaProgress = previous;
+    setEvent("РУНА НЕ ИСПОЛЬЗОВАНА", "Не удалось сохранить покупку и усиление; состояние не изменено.", "ᛟ", "ОШИБКА СОХРАНЕНИЯ");
+    render();
+    return;
+  }
+  if (!metaProgress.runeUses.some((item) => item.id === receipt.id)) {
+    setEvent("РУНА НЕ ИСПОЛЬЗОВАНА",
+      "В сохранении не хватило репутации или запаса руны после объединения. Баланс и характеристики не изменены.",
+      "ᛟ", "СОХРАНЕНИЕ ОБЪЕДИНЕНО");
+    render();
+    return;
+  }
+  setEvent("РУНА ИСПОЛЬЗОВАНА", `Руна «${rune.name}» навсегда усилила характеристику: ${rune.effect}. Потрачено ${rune.price} репутации ордена.`, "ᛟ", "УСИЛЕНИЕ");
+  addJournal("Использована руна усиления", `«${rune.name}»: ${rune.effect}. Потрачено ${rune.price} репутации.`, "ᛟ");
+  playSound("purchase");
+  render();
+}
+
 function buyMetaUpgrade(id) {
   const upgrade = META_UPGRADES[id];
   if (!upgrade || (state.started && !state.gameOver)) return;
@@ -1551,6 +1638,40 @@ function renderMetaProgress() {
   $("dungeon-trophies").textContent = Object.entries(metaProgress.dungeonTrophies)
     .filter(([, count]) => count > 0)
     .map(([key, count]) => `${DUNGEON_TROPHIES[key]}: ${count}`).join(" · ") || "Трофеев пока нет.";
+  renderRunes();
+}
+
+function renderRunes() {
+  const list = $("rune-list");
+  const found = window.WellRuneModel.counts(metaProgress.runeDrops);
+  const owned = window.WellRuneModel.inventory(metaProgress.runeDrops, metaProgress.runeUses);
+  const stats = window.WellRuneModel.stats(metaProgress.runeUses);
+  const level = getRuneLevel();
+  const campAvailable = canUseEnhancementRunes();
+  list.className = "rune-list";
+  list.replaceChildren();
+  for (const [type, rune] of Object.entries(window.WellRuneModel.RUNES)) {
+    const row = document.createElement("div");
+    row.className = "rune-entry";
+    const details = document.createElement("div");
+    const title = document.createElement("strong");
+    title.textContent = `${rune.name} · ${found[type]}/${Math.max(found[type], rune.cap(level))}`;
+    const description = document.createElement("span");
+    description.textContent = `Запас: ${owned[type]} · использовано: ${stats[type]} · ${rune.effect}`;
+    details.append(title, description);
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "meta-buy-button";
+    button.dataset.runeType = type;
+    button.textContent = owned[type] ? `Использовать · ${rune.price}` : `Нет руны · ${rune.price}`;
+    button.disabled = !campAvailable || owned[type] < 1 || metaProgress.orderReputation < rune.price;
+    button.title = button.disabled
+      ? !campAvailable ? "Руны можно использовать только в лагере, вне забега и боя."
+        : owned[type] < 1 ? "Сначала найди эту руну в PvE." : "Недостаточно репутации ордена."
+      : "Потратить одну руну и репутацию, навсегда повысив характеристику.";
+    row.append(details, button);
+    list.append(row);
+  }
 }
 
 function advanceQuest(questId) {
@@ -2336,6 +2457,7 @@ function spawnEnemy(isBoss, isElite = false, eventEnemy = null) {
     concentration: base.concentration ?? 0.25,
     accuracy: base.accuracy ?? 0.85,
     bleeding: 0,
+    runeReceiptId: window.crypto.randomUUID(),
   };
   if (isElite && !base.special) {
     const trait = Object.keys(ELITE_TRAITS)[randomInt(0, 7)];
@@ -2395,8 +2517,11 @@ function getDungeonFighter() {
   return window.DungeonModel.createFighter({
     ...(state.combatProgress || {}),
     hp: state.hp, maxHp: state.maxHp, attack,
-    armor: Math.min(0.75, getArmorDefense() * 0.06 + (state.stance === "defensive" ? 0.2 : 0)),
-    accuracy: 0.9, concentration: state.stance === "offensive" ? 0.5 : 0.35,
+    armor: Math.min(0.75, getArmorDefense() * 0.06 + getRuneStat("resistance") * 0.01 +
+      (state.stance === "defensive" ? 0.2 : 0)),
+    accuracy: Math.min(1, 0.9 + getRuneStat("accuracy") * 0.01),
+    concentration: Math.min(1.5, (state.stance === "offensive" ? 0.5 : 0.35) +
+      getRuneStat("concentration") * 0.01),
     agility: Math.min(1, getDodgeChance() * 2), evasion: Math.min(0.5, getDodgeChance()),
     potions: state.potions, focus: state.focus, offhand: state.offhand,
     skillType: ability.type, skillDamage: ability.type === "guard" ? Math.ceil(state.maxHp * 0.25) : Math.ceil(attack * 0.8),
@@ -2598,6 +2723,18 @@ function awardRunEssence() {
   addEssence(runEssenceReward());
 }
 
+function awardEnhancementRune(level, receiptId) {
+  if (metaProgress.runeDrops.length >= 100000 ||
+    metaProgress.runeDrops.some((receipt) => receipt.id === receiptId)) return null;
+  const drop = window.WellRuneModel.rollDrop(level, metaProgress.runeDrops);
+  if (!drop) return null;
+  const receipt = { id: receiptId || window.crypto.randomUUID(), ...drop };
+  metaProgress.runeDrops.push(receipt);
+  addJournal("Руна усиления найдена",
+    `Руна «${window.WellRuneModel.RUNES[drop.type].name}» добавлена в запас.`, "ᛟ");
+  return receipt;
+}
+
 function useClassAbility() {
   const ability = getCharacterClass().ability;
   if (!state.enemy || state.gameOver || state.abilityCooldown > 0 || !ability) return;
@@ -2606,6 +2743,7 @@ function useClassAbility() {
 
 function defeatEnemy() {
   const enemy = state.enemy;
+  const victoryLevel = state.level;
   const reputation = state.level * (enemy.special === "worldeater" ? 10 : 1);
   metaProgress.orderReputation = Math.min(1000000000, metaProgress.orderReputation + reputation);
   const trophy = (key) => {
@@ -2653,7 +2791,7 @@ function defeatEnemy() {
       gearMessage += ` Найдена ${window.WellSoulCraftingModel.SOULS[soulId].name}.`;
     }
   }
-  const lootChance = Math.min(0.8, 0.3 + getClassStat("lootChance"));
+  const lootChance = Math.min(0.8, 0.3 + getClassStat("lootChance") + getRuneStat("luck") * 0.01);
   if (enemy.boss || Math.random() < lootChance) {
     if (state.inventory.length < MAX_GEAR) {
       const gear = createGear(randomInt(0, 1) === 0 ? "weapon" : "armor");
@@ -2668,9 +2806,14 @@ function defeatEnemy() {
   const victoryHealing = getClassStat("healingOnVictory");
   const healed = Math.min(victoryHealing, state.maxHp - state.hp);
   state.hp += healed;
-  if (Math.random() < 0.08) {
-    state.attack += 1;
-    gearMessage += " Руна усиления прибавила 1 к атаке.";
+  if (metaProgress.runeDrops.length >= 100000) {
+    console.warn("Журнал добычи рун достиг предела; новая руна не выпала.");
+  } else {
+    const drop = awardEnhancementRune(victoryLevel, enemy.runeReceiptId);
+    if (drop) {
+      const total = window.WellRuneModel.counts(metaProgress.runeDrops)[drop.type];
+      gearMessage += ` Найдена руна «${window.WellRuneModel.RUNES[drop.type].name}» (${total}/${window.WellRuneModel.RUNES[drop.type].cap(victoryLevel)}).`;
+    }
   }
   if (Math.random() < 0.02 && state.inventory.length < MAX_GEAR) {
     const admGear = createGear(Math.random() < 0.5 ? "weapon" : "armor");
@@ -2735,12 +2878,14 @@ function recordTavernInjury() {
 }
 
 function getAttackPower() {
-  const base = state.attack + (state.equipment.weapon?.bonus || 0) + getClassStat("attack");
+  const base = state.attack + (state.equipment.weapon?.bonus || 0) +
+    getClassStat("attack") + getRuneStat("attack");
   return hasActiveMealBuff("attack") ? Math.floor(base * 1.5) : base;
 }
 
 function getArmorDefense() {
-  const base = (state.equipment.armor?.bonus || 0) + getCharacterClass().defense + getClassStat("defense");
+  const base = (state.equipment.armor?.bonus || 0) + getCharacterClass().defense +
+    getClassStat("defense") + getRuneStat("armor");
   return hasActiveMealBuff("defense") ? Math.floor(base * 1.5) : base;
 }
 
@@ -2764,7 +2909,7 @@ function getGroupBattlePlayer() {
     max_hp: state.maxHp,
     potions: state.potions,
     attack: Math.max(1, getAttackPower()),
-    defense: Math.max(0, getArmorDefense()),
+    defense: Math.max(0, getArmorDefense() + getRuneStat("resistance")),
     focus: state.focus,
     heavy_multiplier: getHeavyAttackMultiplier(),
   };
@@ -2800,6 +2945,7 @@ function applyGroupBattleUpdate(battle, userId) {
   } else if (battle.status === "victory") {
     if (state.coopBattleReceipts.includes(battle.id)) return;
     state.coopBattleReceipts.push(battle.id);
+    const victoryLevel = state.level;
     state.floor = battle.floor;
     state.room = MAX_ROOMS;
     state.enemy = null;
@@ -2808,6 +2954,10 @@ function applyGroupBattleUpdate(battle, userId) {
     state.gold = Math.min(1000000000, state.gold + battle.gold);
     gainXp(battle.xp);
     advanceQuest("defeat");
+    const runeDrop = awardEnhancementRune(victoryLevel, battle.id);
+    const runeText = runeDrop
+      ? ` Найдена руна «${window.WellRuneModel.RUNES[runeDrop.type].name}».`
+      : "";
     metaProgress.bossesDefeated = Math.min(1000000000, metaProgress.bossesDefeated + 1);
     persistMetaProgress();
     let trophyText = "";
@@ -2826,7 +2976,7 @@ function applyGroupBattleUpdate(battle, userId) {
     state.hp += healing;
     setEvent(
       "СТРАЖ ПОВЕРЖЕН ВМЕСТЕ",
-      `Оба искателя получили общую победу: +${battle.xp} опыта и +${battle.gold} монет.${victoryHealing ? ` Класс восстановил ${victoryHealing} здоровья.` : ""}${healing ? ` Передышка вернула ${healing} здоровья.` : ""}${trophyText} Путь вниз открыт.`,
+      `Оба искателя получили общую победу: +${battle.xp} опыта и +${battle.gold} монет.${victoryHealing ? ` Класс восстановил ${victoryHealing} здоровья.` : ""}${healing ? ` Передышка вернула ${healing} здоровья.` : ""}${trophyText}${runeText} Путь вниз открыт.`,
       "✧",
       "ПУТЬ ОТКРЫТ",
     );
@@ -5419,6 +5569,10 @@ ui.inventory.addEventListener("click", (event) => {
 $("meta-upgrades").addEventListener("click", (event) => {
   const button = event.target.closest("button[data-upgrade]");
   if (button) buyMetaUpgrade(button.dataset.upgrade);
+});
+$("rune-list").addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-rune-type]");
+  if (button) useEnhancementRune(button.dataset.runeType);
 });
 $("sound-toggle").addEventListener("click", (event) => {
   soundEnabled = !soundEnabled;

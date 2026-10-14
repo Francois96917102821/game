@@ -15,6 +15,7 @@ const POTION_LIMIT = 4;
 const MAX_FOCUS = 3;
 const HEAVY_ATTACK_COST = 2;
 const MAX_GEAR = 6;
+const PLAYER_PROGRESS_KEY = "well-of-whispers-player-progress";
 const SOUND_PREFERENCE_KEY = "well-of-whispers-sound-enabled";
 const PROFILE_SETTINGS_KEY = "well-of-whispers-profile-settings";
 const ELITE_TRAITS = {
@@ -630,6 +631,8 @@ let previousTownVisibility = false;
 let audioContext = null;
 let soundEnabled = readSoundPreference();
 let profileSettings = readProfileSettings();
+let playerProgressStatus = "";
+let playerProgress = readPlayerProgress();
 
 function readSoundPreference() {
   try {
@@ -680,6 +683,77 @@ function persistProfileSettings(nextSettings) {
   applyProfileSettings();
   $("player-name").textContent = profileSettings.displayName;
   return true;
+}
+
+function readPlayerProgress() {
+  let raw;
+  try {
+    raw = window.localStorage.getItem(PLAYER_PROGRESS_KEY);
+  } catch (error) {
+    playerProgressStatus = "Не удалось прочитать локальную статистику. Новые значения будут доступны только до закрытия страницы.";
+    console.warn("Не удалось прочитать статистику игрока.", error);
+    return window.WellPlayerProgressModel.createStats();
+  }
+  if (!raw) return window.WellPlayerProgressModel.createStats();
+  let stored;
+  try {
+    stored = JSON.parse(raw);
+  } catch (error) {
+    playerProgressStatus = "Локальная статистика повреждена; счётчики начаты заново. Остальные сохранения не затронуты.";
+    console.warn("Не удалось прочитать статистику игрока; используются безопасные значения.", error);
+    return window.WellPlayerProgressModel.createStats();
+  }
+  if (!window.WellPlayerProgressModel.isValidStats(stored)) {
+    playerProgressStatus = "Поле статистики повреждено или неполно; некорректные счётчики сброшены. Остальные сохранения не затронуты.";
+    console.warn("Статистика игрока неполна или несовместима; некорректные счётчики сброшены.");
+  }
+  return window.WellPlayerProgressModel.normalizeStats(stored);
+}
+
+function renderPlayerProgress() {
+  $("player-progress-descents").textContent = String(playerProgress.descentsStarted);
+  $("player-progress-guardians").textContent = String(playerProgress.guardiansDefeated);
+  $("player-progress-floor").textContent = playerProgress.deepestFloor
+    ? String(playerProgress.deepestFloor)
+    : "—";
+  const achievements = $("player-progress-achievements");
+  achievements.replaceChildren();
+  for (const achievement of window.WellPlayerProgressModel.listAchievements(playerProgress)) {
+    const item = document.createElement("li");
+    item.className = `player-progress-achievement${achievement.unlocked ? " is-unlocked" : ""}`;
+    const title = document.createElement("strong");
+    title.textContent = achievement.title;
+    const description = document.createElement("span");
+    description.textContent = achievement.description;
+    const status = document.createElement("small");
+    status.textContent = achievement.unlocked ? "Открыто" : "Пока закрыто";
+    item.append(title, description, status);
+    achievements.append(item);
+  }
+  $("player-progress-status").textContent = playerProgressStatus;
+}
+
+function recordPlayerProgress(event, value) {
+  const previous = window.WellPlayerProgressModel.listAchievements(playerProgress);
+  playerProgress = window.WellPlayerProgressModel.record(playerProgress, event, value);
+  let saved = false;
+  try {
+    window.localStorage.setItem(PLAYER_PROGRESS_KEY, JSON.stringify(playerProgress));
+    playerProgressStatus = "";
+    saved = true;
+  } catch (error) {
+    playerProgressStatus = "Статистика обновлена только в памяти: браузер не смог сохранить её на этом устройстве.";
+    console.warn("Не удалось сохранить статистику игрока.", error);
+  }
+  if (saved) {
+    const unlockedBefore = new Set(previous.filter((achievement) => achievement.unlocked).map((achievement) => achievement.id));
+    const newlyUnlocked = window.WellPlayerProgressModel.listAchievements(playerProgress)
+      .filter((achievement) => achievement.unlocked && !unlockedBefore.has(achievement.id));
+    if (newlyUnlocked.length) {
+      playerProgressStatus = `Новое достижение: ${newlyUnlocked.map((achievement) => `«${achievement.title}»`).join(", ")}.`;
+    }
+  }
+  renderPlayerProgress();
 }
 
 function createState() {
@@ -1765,6 +1839,7 @@ function startGameWithClass(classId) {
   state = createState();
   savedRun = null;
   state.started = true;
+  recordPlayerProgress("descent-started");
   state.classId = characterClass.id;
   state.gearSequence = metaProgress.tavern.nextGearSequence;
   state.tavernGearIds = [];
@@ -2876,6 +2951,7 @@ function defeatEnemy() {
   }
   persistMetaProgress();
   if (enemy.boss) {
+    recordPlayerProgress("guardian-defeated");
     state.runBossesDefeated += 1;
     metaProgress.bossesDefeated = Math.min(1000000000, metaProgress.bossesDefeated + 1);
     persistMetaProgress();
@@ -2998,6 +3074,7 @@ function applyGroupBattleUpdate(battle, userId) {
     state.coopBattleReceipts.push(battle.id);
     const victoryLevel = state.level;
     state.floor = battle.floor;
+    recordPlayerProgress("guardian-defeated");
     state.room = MAX_ROOMS;
     state.enemy = null;
     state.waitingToDescend = true;
@@ -3184,6 +3261,7 @@ function drinkPotion(inCombat = false) {
 function descend() {
   if (!state.waitingToDescend || state.gameOver) return;
   state.floor += 1;
+  recordPlayerProgress("floor-reached", state.floor);
   state.room = 0;
   state.waitingToDescend = false;
   state.hp = Math.min(state.maxHp, state.hp + 8);
@@ -5573,6 +5651,7 @@ function render() {
       ? "Страж повержен. Отдохни и спускайся к следующему этажу."
       : "Исследуй пять залов и одолей стража на шестом, чтобы открыть путь дальше.";
   ui.journalStatus.textContent = state.gameOver ? "Путешествие завершено" : state.waitingToDescend ? "Лестница в глубину открыта" : state.started ? "Ты внутри колодца" : "Твой путь ждёт начала";
+  renderPlayerProgress();
   renderTrack();
   renderJournal();
   renderEquipment();
@@ -5753,6 +5832,10 @@ $("sound-toggle").addEventListener("click", (event) => {
 });
 
 const settingsDialog = $("settings-dialog");
+$("player-progress-open-button").addEventListener("click", () => {
+  renderPlayerProgress();
+  $("player-progress-dialog").showModal();
+});
 $("settings-open-button").addEventListener("click", () => {
   $("settings-status").textContent = "";
   $("profile-display-name").value = profileSettings.displayName;
@@ -5796,6 +5879,7 @@ for (const [inputId, settingKey, label] of [
 
 renderSoundToggle();
 applyProfileSettings();
+renderPlayerProgress();
 render();
 ui.districtTabs.addEventListener("click", (event) => {
   const tab = event.target.closest("button[data-district]");

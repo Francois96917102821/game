@@ -5,8 +5,10 @@
   const MAX_AMOUNT = 1000000000;
   const MAX_TRANSACTIONS = 100000;
   const CRITICAL_CHANCE = 0.08;
-  const GEAR_CRAFTING_BLOCKED_REASON =
-    "Стихийное снаряжение пока недоступно: в игре нет системы дальнейшего роста характеристик.";
+  const COMBAT_BONUS = 0.05;
+  const COMBAT_CAP = 0.10;
+  const RECIPE_COST = Object.freeze({ essence: 1, heartFragment: 1, recipeBook: 1 });
+  const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
   const validId = (id) => typeof id === "string" && id.length > 0 && id.length <= 100;
   const MATERIALS = Object.freeze({
     emberglass: Object.freeze({ name: "Угольное стекло", source: "ore-careful", essence: "emberEssence" }),
@@ -112,16 +114,66 @@
         [transaction.essenceId]: transaction.count,
       };
     }
+    if (transaction.kind === "craft") return Object.fromEntries(
+      Object.entries(cost(transaction.recipeId)).map(([id, amount]) => [id, -amount]),
+    );
+    if (transaction.kind === "equip") return {};
     return null;
+  }
+
+  function cost(recipeId) {
+    if (!Object.hasOwn(RECIPES, recipeId)) throw new Error("Рецепт стихийного снаряжения не найден.");
+    const recipe = RECIPES[recipeId];
+    return { [recipe.essence]: RECIPE_COST.essence,
+      heartFragment: RECIPE_COST.heartFragment, recipeBook: RECIPE_COST.recipeBook };
+  }
+
+  function inventory(state) {
+    return state.transactions.filter((entry) => entry.kind === "craft")
+      .map((entry) => ({ id: entry.id, recipeId: entry.recipeId }));
+  }
+
+  function preparedGear(state) {
+    const slots = { weapon: null, armor: null };
+    for (const entry of [...state.transactions].sort((a, b) =>
+      a.createdAt - b.createdAt || a.id.localeCompare(b.id))) {
+      if (entry.kind === "equip") slots[entry.slot] = entry.gearId;
+    }
+    return inventory(state).filter((gear) => slots[RECIPES[gear.recipeId].type] === gear.id);
+  }
+
+  function equipped(state) {
+    return preparedGear(state).map((gear) => gear.recipeId);
+  }
+
+  function isValidLoadout(value) {
+    return Array.isArray(value) && value.length <= 2 &&
+      value.every((id) => Object.hasOwn(RECIPES, id)) &&
+      new Set(value.map((id) => RECIPES[id].type)).size === value.length;
+  }
+
+  function combatEffects(recipeIds) {
+    if (!Array.isArray(recipeIds) || !recipeIds.every((id) => Object.hasOwn(RECIPES, id))) {
+      throw new Error("Стихийная экипировка некорректна.");
+    }
+    return {
+      outgoingDamage: Math.min(COMBAT_CAP, recipeIds.filter((id) => RECIPES[id].type === "weapon").length * COMBAT_BONUS),
+      incomingReduction: Math.min(COMBAT_CAP, recipeIds.filter((id) => RECIPES[id].type === "armor").length * COMBAT_BONUS),
+    };
   }
 
   function validTransaction(transaction) {
     if (!transaction || typeof transaction !== "object" ||
       !validId(transaction.id) ||
       !Number.isFinite(transaction.createdAt) ||
-      !["drop", "essence"].includes(transaction.kind)) return false;
+      !["drop", "essence", "craft", "equip"].includes(transaction.kind)) return false;
     if (transaction.kind === "drop") return validDrop(transaction);
-    return validEssence(transaction);
+    if (transaction.kind === "essence") return validEssence(transaction);
+    if (!UUID.test(transaction.id)) return false;
+    if (transaction.kind === "craft") return Object.hasOwn(RECIPES, transaction.recipeId) &&
+      Number.isInteger(transaction.playerLevel) && transaction.playerLevel >= CRAFT_LEVEL;
+    return ["weapon", "armor"].includes(transaction.slot) &&
+      (transaction.gearId === null || UUID.test(transaction.gearId));
   }
 
   function replay(base, transactions) {
@@ -130,6 +182,9 @@
     for (const transaction of [...transactions].sort((left, right) =>
       left.createdAt - right.createdAt || left.id.localeCompare(right.id))) {
       if (!validTransaction(transaction)) continue;
+      if (transaction.kind === "equip" && transaction.gearId !== null &&
+        !accepted.some((entry) => entry.kind === "craft" && entry.id === transaction.gearId &&
+          RECIPES[entry.recipeId].type === transaction.slot)) continue;
       const changes = transactionChanges(transaction);
       if (!changes || Object.entries(changes).some(([id, amount]) =>
         balances[id] + amount < 0 || balances[id] + amount > MAX_AMOUNT)) continue;
@@ -174,7 +229,7 @@
     const changes = transactionChanges(transaction);
     if (Object.entries(changes).some(([id, amount]) =>
       state.balances[id] + amount < 0 || state.balances[id] + amount > MAX_AMOUNT)) {
-      return { ok: false, reason: "Недостаточно стихийного материала или первородной воды." };
+      return { ok: false, reason: "Недостаточно стихийных материалов, воды, эссенций, сердец или свитков." };
     }
     const next = copy(state);
     for (const [id, amount] of Object.entries(changes)) next.balances[id] += amount;
@@ -223,14 +278,21 @@
     return result.ok ? { ...result, essence: ESSENCES[material.essence], critical: transaction.critical } : result;
   }
 
-  function craft(playerLevel, recipeId) {
+  function craft(current, playerLevel, recipeId, receiptId, now = Date.now()) {
     if (!Number.isInteger(playerLevel) || playerLevel < CRAFT_LEVEL) {
       return { ok: false, reason: `Стихийное снаряжение доступно с ${CRAFT_LEVEL}-го уровня.` };
     }
     if (!Object.hasOwn(RECIPES, recipeId)) {
       return { ok: false, reason: "Рецепт стихийного снаряжения не найден." };
     }
-    return { ok: false, reason: GEAR_CRAFTING_BLOCKED_REASON };
+    return apply(current, { id: receiptId, kind: "craft", recipeId, playerLevel, createdAt: now });
+  }
+
+  function equip(current, slot, gearId, receiptId, now = Date.now()) {
+    const createdAt = (current?.transactions || []).reduce(
+      (latest, entry) => Math.max(latest, entry.createdAt + 1), now,
+    );
+    return apply(current, { id: receiptId, kind: "equip", slot, gearId, createdAt });
   }
 
   function merge(left, right) {
@@ -262,11 +324,20 @@
     CRAFT_LEVEL,
     CRITICAL_CHANCE,
     ESSENCES,
-    GEAR_CRAFTING_BLOCKED_REASON,
+    COMBAT_BONUS,
+    COMBAT_CAP,
+    RECIPE_COST,
     MATERIALS,
     RECIPES,
     apply,
     craft,
+    cost,
+    inventory,
+    preparedGear,
+    equipped,
+    equip,
+    combatEffects,
+    isValidLoadout,
     createEssence,
     createState,
     grant,

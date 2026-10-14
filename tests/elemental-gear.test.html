@@ -8,6 +8,7 @@
     <h1 id="result">RUNNING</h1>
     <pre id="log"></pre>
     <script src="../elemental-gear-model.js"></script>
+    <script src="../dungeon-model.js"></script>
     <script src="../tavern-model.js"></script>
     <script src="../expeditions-model.js"></script>
     <script src="../homestead-model.js"></script>
@@ -82,7 +83,7 @@
           "missing water leaves every balance unchanged");
       });
 
-      check("gear recipes stay gated without a real growth system", () => {
+      check("craft spends exact inputs once, validates receipts, and rejects missing stock", () => {
         let state = model.createState();
         state = grant(state, "emberglass", "ore-careful", 10);
         state = grant(state, "primalWater", "grove-drink", 11);
@@ -90,13 +91,82 @@
         state = grant(state, "heartFragment", "keeper-defeat", 13);
         state = grant(state, "recipeBook", "book-study", 14);
         const before = JSON.stringify(state);
-        const blocked = model.craft(30, "ember-edge");
+        const id = crypto.randomUUID();
+        const crafted = model.craft(state, 30, "ember-edge", id, 15);
         const forged = model.apply(state, {
           id: "forged-craft", kind: "craft", recipeId: "ember-edge", createdAt: 15,
         });
-        assert(!blocked.ok && blocked.reason === model.GEAR_CRAFTING_BLOCKED_REASON &&
-          !forged.ok && JSON.stringify(state) === before && model.isValidState(state),
-        "neither the API nor a forged transaction can create gear or spend resources");
+        assert(crafted.ok && !forged.ok && JSON.stringify(state) === before &&
+          model.isValidState(crafted.state) && model.inventory(crafted.state).length === 1 &&
+          crafted.state.balances.emberEssence === 0 && crafted.state.balances.heartFragment === 0 &&
+          crafted.state.balances.recipeBook === 0, "one receipt spends only the recipe inputs");
+        assert(model.craft(crafted.state, 30, "ember-edge", id, 15).duplicate,
+          "same UUID and payload is idempotent");
+        assert(!model.craft(crafted.state, 30, "ember-edge", crypto.randomUUID(), 16).ok &&
+          !model.craft(state, 29, "ember-edge", crypto.randomUUID(), 16).ok,
+          "insufficient materials and level gate cannot create gear");
+        const remote = model.craft(state, 30, "ember-edge", crypto.randomUUID(), 100).state;
+        for (let retry = 0; retry < 2; retry++) {
+          let error;
+          try { model.merge(JSON.parse(JSON.stringify(crafted.state)), remote); } catch (caught) { error = caught; }
+          assert(error?.message.includes("Конфликт стихийных ресурсов"), "conflicting gear merge throws on every retry");
+        }
+        const selected = model.equip(crafted.state, "weapon", id, crypto.randomUUID(), 15);
+        assert(selected.ok && model.equipped(selected.state)[0] === "ember-edge" &&
+          model.equipped(model.merge(selected.state, state))[0] === "ember-edge",
+          "selection follows owned gear and survives stale cloud merge");
+        assert(!model.equip(state, "weapon", id, crypto.randomUUID(), 17).ok &&
+          !model.equip(crafted.state, "armor", id, crypto.randomUUID(), 17).ok,
+          "unowned gear and wrong slot are rejected");
+        assert(model.equipped(model.equip(selected.state, "weapon", null, crypto.randomUUID(), 18).state).length === 0,
+          "unequip persists without spending stock");
+      });
+
+      check("PvE damage effects are bounded, temporary and absent from PvP", () => {
+        const all = Array(20).fill("ember-edge").concat(Array(20).fill("root-guard"));
+        const effects = model.combatEffects(all);
+        assert(effects.outgoingDamage === 0.10 && effects.incomingReduction === 0.10, "aggregate caps at ten percent");
+        const dungeon = window.DungeonModel;
+        const player = dungeon.createFighter({ hp: 1000, attack: 100, accuracy: 1, concentration: 0 });
+        const enemy = dungeon.createFighter({ hp: 1000, attack: 100, accuracy: 1, concentration: 0 });
+        const plain = dungeon.pveRound(player, enemy, () => 0.5);
+        const boosted = dungeon.pveRound(player, enemy, () => 0.5, effects);
+        assert(plain.target.hp === 900 && boosted.target.hp === 890 &&
+          plain.actor.hp === 900 && boosted.actor.hp === 910, "PvE applies +10% and -10%");
+        assert(boosted.actor.attack === player.attack && boosted.actor.armor === player.armor &&
+          JSON.stringify(dungeon.pvpTurn({ ...boosted.actor, hp: plain.actor.hp }, enemy, "attack", () => 0.5)) ===
+          JSON.stringify(dungeon.pvpTurn(plain.actor, enemy, "attack", () => 0.5)),
+          "PvP output remains identical after normalizing actual battle HP");
+        const small = dungeon.pveRound({ ...player, attack: 9 }, { ...enemy, attack: 9 }, () => 0.5, effects);
+        assert(small.actor.hp === 991 && small.target.hp === 991, "rounding never exceeds the cap on small hits");
+        const skill = dungeon.pveRound({ ...player, skillType: "blast", skillDamage: 100, concentration: 1 },
+          { ...enemy, skillType: "blast", skillDamage: 100, concentration: 1 }, () => 0.5, effects);
+        assert(skill.target.hp === 780 && skill.actor.hp === 820, "attack skills receive the same bounded effects");
+        assert(model.isValidLoadout([]) && !model.isValidLoadout(["ember-edge", "root-spear"]),
+          "legacy empty and separate slot validation");
+      });
+
+      check("all six recipes debit their own essence and require every ingredient", () => {
+        for (const recipe of Object.values(model.RECIPES)) {
+          const stock = model.createState();
+          for (const [id, amount] of Object.entries(model.cost(recipe.id))) {
+            stock.base[id] = stock.balances[id] = amount;
+          }
+          for (const resourceId of Object.keys(model.cost(recipe.id))) {
+            const short = JSON.parse(JSON.stringify(stock));
+            short.base[resourceId] = short.balances[resourceId] = 0;
+            const before = JSON.stringify(short);
+            assert(!model.craft(short, 30, recipe.id, crypto.randomUUID(), 1).ok &&
+              JSON.stringify(short) === before, `${recipe.id} requires ${resourceId} without partial debit`);
+          }
+          const crafted = model.craft(stock, 30, recipe.id, crypto.randomUUID(), 1);
+          const selected = model.equip(crafted.state, recipe.type, model.inventory(crafted.state)[0].id,
+            crypto.randomUUID(), 2);
+          assert(crafted.ok && model.isValidState(selected.state) &&
+            model.equipped(JSON.parse(JSON.stringify(selected.state)))[0] === recipe.id &&
+            Object.values(crafted.state.balances).every((amount) => amount === 0),
+            `${recipe.id} craft, preparation and reload`);
+        }
       });
 
       check("offline last-material conflicts reject atomically across successive merges and reload", () => {
@@ -193,7 +263,7 @@
         essenceButton = doc.querySelector('[data-homestead-action="make-elemental-essence"][data-material-id="emberglass"]');
         craftButton = doc.querySelector('[data-homestead-action="craft-elemental-gear"][data-recipe-id="ember-edge"]');
         assert(essenceButton && !essenceButton.disabled && craftButton?.disabled,
-          "level 30 enables essence but does not unlock gear recipes");
+          "level 30 enables essence; gear still needs the essence input");
         const stale = JSON.parse(game.localStorage.getItem("well-of-whispers-camp-progress"));
         essenceButton.click();
         for (let attempt = 0; attempt < 100; attempt += 1) {
@@ -204,12 +274,11 @@
         let saved = JSON.parse(game.localStorage.getItem("well-of-whispers-camp-progress"));
         assert(saved.elemental.balances.emberEssence >= 1 && saved.elemental.balances.emberglass === 0 &&
           saved.elemental.balances.primalWater === 0, "UI persists essence inputs and output together");
-        const blocked = model.craft(30, "ember-edge");
-        assert(!blocked.ok && craftButton.disabled &&
+        assert(craftButton.disabled &&
           saved.tavern.gold === 150 && saved.essence === 15 &&
           saved.tavern.stash.length === stale.tavern.stash.length &&
           saved.elemental.balances.heartFragment === 1 && saved.elemental.balances.recipeBook === 1,
-        "blocked recipes leave gold, shards, stash and recipe inputs untouched");
+        "essence conversion leaves gold, shards, stash and gear recipe inputs untouched");
         const merged = game.mergeMetaProgress(saved, stale);
         assert(merged.elemental.balances.emberEssence === saved.elemental.balances.emberEssence &&
           merged.elemental.balances.emberglass === 0 &&
@@ -247,6 +316,55 @@
           afterReload.elemental.transactions.filter((entry) => entry.kind === "essence").length === 1,
           "reload does not retry or multiply the two-tab conversion");
         game = frame.contentWindow;
+        await Promise.all([
+          game.handleHomesteadAction("craft-elemental-gear", { recipeId: "ember-edge" }),
+          otherGame.handleHomesteadAction("craft-elemental-gear", { recipeId: "ember-edge" }),
+        ]);
+        const gearSave = JSON.parse(game.localStorage.getItem("well-of-whispers-camp-progress"));
+        const gear = model.inventory(gearSave.elemental);
+        assert(gear.length === 1 && gearSave.elemental.balances.emberEssence === 0 &&
+          gearSave.elemental.balances.heartFragment === 0 && gearSave.elemental.balances.recipeBook === 0,
+          "two real tabs craft the last recipe once under the shared lock");
+        await game.handleHomesteadAction("equip-elemental-gear", { slot: "weapon", gearId: gear[0].id });
+        game.eval("startGameWithClass(BASE_CLASSES[0].id)");
+        assert(game.eval("JSON.stringify(state.elementalLoadout)") === '["ember-edge"]',
+          "new run snapshots prepared elemental gear");
+        const fighterBefore = game.eval("JSON.stringify(getDungeonFighter())");
+        await game.handleHomesteadAction("equip-elemental-gear", { slot: "weapon", gearId: "" });
+        assert(game.eval("JSON.stringify(state.elementalLoadout)") === '["ember-edge"]' &&
+          game.eval("JSON.stringify(getDungeonFighter())") === fighterBefore,
+          "camp changes cannot change running loadout or the PvP fighter formula");
+        assert(game.eval(`(() => {
+          const original = JSON.parse(JSON.stringify(state));
+          const random = Math.random;
+          Math.random = () => 0.5;
+          try {
+            state.attack = 100;
+            state.hp = state.maxHp = 1000;
+            state.room = 1;
+            state.enemy = { name: "Test foe", hp: 1000, maxHp: 1000, damage: 100,
+              xp: 0, gold: 0, boss: false };
+            const prepared = JSON.parse(JSON.stringify(state));
+            state.elementalLoadout = [];
+            runPveRound();
+            const plainDamage = 1000 - state.enemy.hp;
+            state = prepared;
+            runPveRound();
+            return 1000 - state.enemy.hp === plainDamage + Math.floor(plainDamage * 0.05);
+          } finally { state = original; Math.random = random; }
+        })()`), "real game PvE round uses the frozen elemental loadout");
+        const snapshot = game.getCloudSaveSnapshot();
+        assert(game.isValidRun(snapshot.run) && game.isValidMetaProgress(snapshot.meta),
+          "cloud snapshot accepts gear and loadout");
+        game.saveActiveRun();
+        const gearReload = new Promise((resolve) => frame.addEventListener("load", resolve, { once: true }));
+        frame.src = "../index.html?elemental-crafting-test=gear-reload";
+        await gearReload;
+        game = frame.contentWindow;
+        game.resumeGame();
+        assert(game.eval("JSON.stringify(state.elementalLoadout)") === '["ember-edge"]' &&
+          model.inventory(JSON.parse(game.localStorage.getItem("well-of-whispers-camp-progress")).elemental).length === 1,
+          "reload preserves crafted inventory and original run loadout, not the current camp selection");
         const localCraft = JSON.parse(JSON.stringify(seed));
         const remoteCraft = JSON.parse(JSON.stringify(seed));
         localCraft.elemental = model.createEssence(seed.elemental, 30, "emberglass",
@@ -266,7 +384,7 @@
           "retry cannot silently remove or accept a rejected offline debit");
         secondFrame.remove();
         frame.remove();
-        output.textContent += "PASS UI level gate, safe essence conversion, two-tab lock/reload and unavailable recipes\n";
+        output.textContent += "PASS UI level gate, essence/gear two-tab lock, camp selection, frozen run and reload\n";
       }
 
       testCraftingUiAndWalletReconciliation().catch((error) => {

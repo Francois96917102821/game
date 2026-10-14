@@ -2810,6 +2810,10 @@ begin
     raise exception 'Item owner not found.';
   end if;
 
+  -- Serialize receipt retries before either unique index can reject the insert.
+  perform pg_catalog.pg_advisory_xact_lock(
+    pg_catalog.hashtextextended('item-issuance:' || p_source_kind || ':' || p_source_ref, 0)
+  );
   insert into public.item_issuance_receipts
     (item_id, issued_owner_id, gear, source_kind, source_ref)
   values (p_item_id, p_owner_id, p_gear, p_source_kind, p_source_ref)

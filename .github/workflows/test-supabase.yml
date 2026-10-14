@@ -60,3 +60,11 @@ jobs:
           PGPASSWORD: local-test-only
           PGDATABASE: game_groups_test
         run: psql -X -v ON_ERROR_STOP=1 -f supabase/tests/pvp.sql
+      - name: Test authoritative item issuance and custody
+        env:
+          PGHOST: localhost
+          PGPORT: "5432"
+          PGUSER: postgres
+          PGPASSWORD: local-test-only
+          PGDATABASE: game_groups_test
+        run: psql -X -v ON_ERROR_STOP=1 -f supabase/tests/items.sql

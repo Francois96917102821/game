@@ -2732,3 +2732,135 @@ grant execute on function public.wallet_transfer(text, uuid, bigint, uuid) to au
 grant execute on function public.wallet_claim_funding_receipts() to authenticated;
 grant execute on function public.wallet_register_funding_receipt(uuid, text, bigint, text, text)
   to service_role;
+
+-- The allowlist mirrors WellGoldEconomyModel.ORDINARY_GEAR_NAMES. Legacy gear
+-- ids describe the payload, not asset identity or proof of acquisition.
+create or replace function public.item_is_ordinary_gear(p_gear jsonb)
+returns boolean
+language sql
+immutable
+set search_path = ''
+as $$
+  select coalesce(
+    jsonb_typeof(p_gear) = 'object' and
+    p_gear ?& array['id', 'type', 'name', 'bonus'] and
+    (p_gear - array['id', 'type', 'name', 'bonus']) = '{}'::jsonb and
+    jsonb_typeof(p_gear -> 'id') = 'string' and
+    length(p_gear ->> 'id') between 6 and 64 and
+    p_gear ->> 'id' ~ '^gear-[0-9]+$' and
+    jsonb_typeof(p_gear -> 'type') = 'string' and
+    jsonb_typeof(p_gear -> 'name') = 'string' and
+    jsonb_typeof(p_gear -> 'bonus') = 'number' and
+    (
+      (p_gear ->> 'type' = 'weapon' and
+        p_gear ->> 'name' in ('Клинок каменного эха', 'Якорный тесак',
+          'Серп живых корней', 'Молот пепельной кузни') and
+        (p_gear -> 'bonus') in ('1'::jsonb, '2'::jsonb, '3'::jsonb,
+          '4'::jsonb, '5'::jsonb, '6'::jsonb)) or
+      (p_gear ->> 'type' = 'armor' and
+        p_gear ->> 'name' in ('Плащ колодезного стража', 'Панцирь глубин',
+          'Кора древнего собора', 'Кованый доспех') and
+        (p_gear -> 'bonus') in ('1'::jsonb, '2'::jsonb, '3'::jsonb, '4'::jsonb))
+    ), false
+  );
+$$;
+
+create table if not exists public.item_issuance_receipts (
+  item_id uuid primary key,
+  issued_owner_id uuid not null references auth.users(id),
+  gear jsonb not null check (public.item_is_ordinary_gear(gear)),
+  source_kind text not null check (source_kind ~ '^[a-z][a-z0-9_]{0,31}$'),
+  source_ref text not null check (length(source_ref) between 1 and 200),
+  issued_at timestamptz not null default now(),
+  unique (source_kind, source_ref)
+);
+
+create table if not exists public.player_items (
+  item_id uuid primary key references public.item_issuance_receipts(item_id),
+  owner_id uuid not null references auth.users(id),
+  custody_state text not null default 'owned' check (custody_state = 'owned')
+);
+create index if not exists player_items_owner_idx on public.player_items(owner_id);
+alter table public.item_issuance_receipts enable row level security;
+alter table public.player_items enable row level security;
+revoke all on public.item_issuance_receipts, public.player_items
+  from public, anon, authenticated, service_role;
+
+create or replace function public.item_register_issuance(
+  p_item_id uuid, p_owner_id uuid, p_gear jsonb,
+  p_source_kind text, p_source_ref text
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = ''
+set row_security = off
+as $$
+declare
+  v_item_id uuid;
+  v_existing public.item_issuance_receipts%rowtype;
+begin
+  if p_item_id is null or p_owner_id is null or
+    not public.item_is_ordinary_gear(p_gear) or
+    p_source_kind is null or p_source_kind !~ '^[a-z][a-z0-9_]{0,31}$' or
+    p_source_ref is null or length(p_source_ref) not between 1 and 200 then
+    raise exception 'Invalid trusted item issuance parameters.';
+  end if;
+  if not exists (select 1 from auth.users where id = p_owner_id) then
+    raise exception 'Item owner not found.';
+  end if;
+
+  insert into public.item_issuance_receipts
+    (item_id, issued_owner_id, gear, source_kind, source_ref)
+  values (p_item_id, p_owner_id, p_gear, p_source_kind, p_source_ref)
+  on conflict (source_kind, source_ref) do nothing
+  returning item_id into v_item_id;
+
+  if v_item_id is null then
+    select * into v_existing from public.item_issuance_receipts
+    where source_kind = p_source_kind and source_ref = p_source_ref
+    for update;
+    if v_existing.item_id <> p_item_id or v_existing.issued_owner_id <> p_owner_id or
+      v_existing.gear <> p_gear then
+      raise exception 'Item issuance source already registered with different parameters.';
+    end if;
+    return v_existing.item_id;
+  end if;
+
+  insert into public.player_items (item_id, owner_id) values (v_item_id, p_owner_id);
+  return v_item_id;
+end;
+$$;
+
+create or replace function public.item_get_owned()
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = ''
+set row_security = off
+as $$
+declare
+  v_user_id uuid := auth.uid();
+begin
+  if v_user_id is null then
+    raise exception 'Authentication required.';
+  end if;
+  return (
+    select coalesce(jsonb_agg(jsonb_build_object(
+      'item_id', item.item_id, 'owner_id', item.owner_id,
+      'custody_state', item.custody_state, 'gear', receipt.gear
+    ) order by item.item_id), '[]'::jsonb)
+    from public.player_items item
+    join public.item_issuance_receipts receipt using (item_id)
+    where item.owner_id = v_user_id
+  );
+end;
+$$;
+
+revoke all on function public.item_is_ordinary_gear(jsonb) from public, anon, authenticated, service_role;
+revoke all on function public.item_register_issuance(uuid, uuid, jsonb, text, text)
+  from public, anon, authenticated, service_role;
+revoke all on function public.item_get_owned() from public, anon, authenticated, service_role;
+grant execute on function public.item_register_issuance(uuid, uuid, jsonb, text, text) to service_role;
+grant execute on function public.item_get_owned() to authenticated;

@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Profile and settings browser tests</title>
+<h1 id="result">RUNNING</h1>
+<pre id="log"></pre>
+<iframe id="game" title="Game under test" src="../index.html"></iframe>
+<script>
+"use strict";
+(async () => {
+  const log = document.getElementById("log");
+  const failures = [];
+  const frame = document.getElementById("game");
+  function assert(condition, message) {
+    if (!condition) throw new Error(message);
+  }
+  function check(name, work) {
+    try { work(); log.textContent += `PASS ${name}\n`; }
+    catch (error) { failures.push(`${name}: ${error.stack}`); }
+  }
+  function app() { return frame.contentWindow; }
+  function element(id) { return app().document.getElementById(id); }
+  function changeEvent() {
+    const EventConstructor = app().Event;
+    return new EventConstructor("change", { bubbles: true });
+  }
+  await new Promise((resolve, reject) => {
+    if (frame.contentDocument?.getElementById("settings-open-button")) {
+      resolve();
+      return;
+    }
+    const timer = setTimeout(() => reject(new Error("Game page load timed out.")), 10000);
+    frame.addEventListener("load", () => {
+      clearTimeout(timer);
+      resolve();
+    }, { once: true });
+    frame.addEventListener("error", reject, { once: true });
+  });
+
+  check("settings entry is labeled and sound stays opt-in", () => {
+    assert(element("settings-open-button").getAttribute("aria-haspopup") === "dialog", "settings entry opens a dialog");
+    assert(element("sound-toggle").getAttribute("aria-pressed") === "false", "sound starts disabled");
+    assert(element("settings-sound").checked === false, "sound setting starts disabled");
+    element("settings-open-button").click();
+    assert(element("settings-dialog").open, "settings dialog opens");
+  });
+  check("profile name is normalized and remains separate from class", () => {
+    const input = element("profile-display-name");
+    input.value = "  Ада   Лавлейс  ";
+    element("profile-settings-form").requestSubmit();
+    assert(element("player-name").textContent === "Ада Лавлейс", "name whitespace is normalized");
+    assert(element("player-subtitle").textContent === "Последний из наземных", "profile editing does not select a class");
+    assert(app().localStorage.getItem("well-of-whispers-profile-settings").includes('"displayName":"Ада Лавлейс"'),
+      "profile name is persisted locally");
+  });
+  const motion = element("settings-reduced-motion");
+  element("profile-display-name").value = "Черновик имени";
+  motion.checked = true;
+  motion.dispatchEvent(changeEvent());
+  const contrast = element("settings-high-contrast");
+  contrast.checked = true;
+  contrast.dispatchEvent(changeEvent());
+  await new Promise((resolve) => app().requestAnimationFrame(resolve));
+  check("display preferences apply and persist", () => {
+    assert(app().document.body.dataset.reduceMotion === "true", "reduced motion applies");
+    assert(app().document.body.dataset.highContrast === "true", "high contrast applies");
+    assert(Number.parseFloat(app().getComputedStyle(element("health-bar")).transitionDuration) < 0.001,
+      "reduced motion suppresses meter transitions");
+    const mutedColor = app().getComputedStyle(app().document.body).getPropertyValue("--muted").trim();
+    assert(mutedColor === "#c3c9b8", "high contrast palette is applied");
+    assert(element("profile-display-name").value === "Черновик имени", "changing a setting preserves an unsaved name");
+    assert(app().localStorage.getItem("well-of-whispers-profile-settings").includes('"reducedMotion":true'),
+      "display preference is persisted");
+  });
+  check("sound toggles from settings and the existing game control", () => {
+    const sound = element("settings-sound");
+    sound.checked = true;
+    sound.dispatchEvent(changeEvent());
+    assert(element("sound-toggle").getAttribute("aria-pressed") === "true", "top-level control reflects sound");
+    assert(app().localStorage.getItem("well-of-whispers-sound-enabled") === "true", "sound opt-in is persisted");
+    element("sound-toggle").click();
+    assert(sound.checked === false, "existing sound button remains synchronized");
+    assert(app().localStorage.getItem("well-of-whispers-sound-enabled") === "false", "sound opt-out is persisted");
+  });
+
+  frame.style.width = "360px";
+  check("mobile settings remain reachable with touch-sized controls", () => {
+    assert(app().matchMedia("(max-width: 700px)").matches, "game uses its mobile layout");
+    assert(element("settings-open-button").getBoundingClientRect().height >= 44, "settings entry is touch-sized");
+    for (const id of ["settings-sound", "settings-reduced-motion", "settings-high-contrast"]) {
+      const label = element(id).closest("label");
+      assert(label.getBoundingClientRect().height >= 44, `${id} has a touch-sized label`);
+    }
+  });
+
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("Game reload timed out.")), 10000);
+    frame.addEventListener("load", () => {
+      clearTimeout(timer);
+      resolve();
+    }, { once: true });
+    frame.contentWindow.location.reload();
+  });
+  check("profile, display and sound choices survive reload", () => {
+    assert(element("player-name").textContent === "Ада Лавлейс", "profile name restored");
+    assert(app().document.body.dataset.reduceMotion === "true", "reduced motion restored");
+    assert(app().document.body.dataset.highContrast === "true", "contrast restored");
+    assert(element("sound-toggle").getAttribute("aria-pressed") === "false", "sound remains opt-out");
+  });
+
+  document.getElementById("result").dataset.result = failures.length ? "fail" : "pass";
+  document.getElementById("result").textContent = failures.length ? "FAIL" : "PASS";
+  if (failures.length) log.textContent += failures.join("\n");
+})().catch((error) => {
+  document.getElementById("result").dataset.result = "fail";
+  document.getElementById("result").textContent = "FAIL";
+  document.getElementById("log").textContent += `${error.stack}\n`;
+});
+</script>

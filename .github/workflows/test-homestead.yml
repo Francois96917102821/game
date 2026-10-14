@@ -1,4 +1,4 @@
-name: Test houses, homesteads and food
+name: Test homestead, food and settings UI
 
 on:
   pull_request:
@@ -13,6 +13,7 @@ on:
       - "tests/homestead.test.html"
       - "tests/tavern.test.html"
       - "tests/food.test.html"
+      - "tests/settings.test.html"
       - "tests/run-browser-tests.mjs"
       - ".github/workflows/test-homestead.yml"
   workflow_dispatch:
@@ -32,7 +33,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - name: Run homestead and food browser tests
+      - name: Run homestead, food and settings browser tests
         run: |
           set -euo pipefail
           python3 -m http.server 8765 --bind 127.0.0.1 > /tmp/game-homestead-test-server.log 2>&1 &
@@ -44,4 +45,4 @@ jobs:
             fi
             sleep 1
           done
-          node tests/run-browser-tests.mjs homestead tavern food
+          node tests/run-browser-tests.mjs homestead tavern food settings

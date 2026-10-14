@@ -53,14 +53,11 @@
   function render() {
     const panel = $("pvp-panel");
     panel.hidden = !battle && !invitation && !pending;
-    $("pvp-join-button").hidden = !invitation;
-    $("pvp-join-button").disabled = busy || !callbacks.canDuel();
     $("pvp-retry-button").hidden = !pending;
     if (!battle) {
       for (const button of panel.querySelectorAll("[data-pvp-action]")) button.disabled = true;
-      $("pvp-leave-button").hidden = true;
       $("pvp-close-button").hidden = true;
-      if (invitation) notify("Напарник приглашает на PvP. Вступи из свободного зала — до согласия бой не начнётся.");
+      if (invitation && !pending) notify("Началось событие PvP: оппонент подключается автоматически. Отказаться или отменить бой нельзя.");
       return;
     }
     const own = battle.players.find((player) => player.user_id === userId);
@@ -69,10 +66,12 @@
       `${player.nickname || "Искатель"}${player.user_id === userId ? " · ты" : ""}: ${player.hp}/${player.max_hp ?? player.maxHp} HP`
     ).join(" · ");
     const remaining = Math.max(0, Math.ceil((Date.parse(battle.deadline_at) - Date.now()) / 1000));
+    const outcome = battle.reason === "stale" ? "событие закрыто"
+      : battle.winner_id === userId ? "победа" : "поражение";
     $("pvp-turn").textContent = battle.status === "active"
       ? `Ход ${battle.turn} · ${battle.current_user_id === userId ? "твой" : "напарника"} · ${remaining} с (таймер проверяет сервер)`
-      : battle.status === "waiting" ? "Ожидаем согласия напарника."
-      : `Поединок завершён · ${battle.winner_id === userId ? "победа" : "поражение"} · ${battle.reason || ""}`;
+      : battle.status === "waiting" ? "Событие началось. Подключение оппонента выполняется автоматически."
+      : `Поединок завершён · ${outcome} · ${battle.reason || ""}`;
     const log = $("pvp-log");
     log.replaceChildren(...(battle.log || []).slice(-12).map((entry) => {
       const line = document.createElement("p");
@@ -87,8 +86,6 @@
       ) || (action === "heavy" && own?.focus < 2) ||
         (action === "potion" && (!own?.potions || own.hp >= (own.max_hp ?? own.maxHp)));
     }
-    $("pvp-leave-button").hidden = !["active", "waiting"].includes(battle.status);
-    $("pvp-leave-button").disabled = busy;
     $("pvp-close-button").hidden = battle.status !== "finished";
   }
 
@@ -101,7 +98,7 @@
       notify("");
     } catch (error) {
       console.error("Ошибка PvP.", error);
-      notify(`PvP: ${error.message}. Неподтверждённый ход сохранён; повтори отправку кнопкой «Повторить».`);
+      notify(`PvP: ${error.message}. Неподтверждённое действие сохранено; повтори отправку кнопкой «Повторить».`);
     } finally {
       busy = false;
       $("pvp-retry-button").hidden = !pending;
@@ -141,6 +138,10 @@
       }
     }
     userId = info.userId;
+    if (pending && pending.rpc !== "pvp_start") {
+      notify("Сначала разреши сохранённое действие кнопкой «Повторить».");
+      return;
+    }
     await perform(async () => {
       if (!pending) storePending({
         userId, rpc: "pvp_start",
@@ -193,8 +194,17 @@
       } else if (info.active && callbacks.canDuel()) {
         const found = await rpc("pvp_find", {});
         if (info.userId !== context().userId) return;
-        if (found && found.players?.some((player) => player.user_id === userId)) acceptState(found);
-        else invitation = found;
+        if (found && found.players?.some((player) => player.user_id === userId)) {
+          invitation = null;
+          acceptState(found);
+        } else if (found?.status === "waiting") {
+          invitation = found;
+          notify("Началось событие PvP: подключаемся автоматически.");
+          await start(false);
+        } else {
+          invitation = null;
+          notify("");
+        }
       }
     } catch (error) {
       notify(`Не удалось обновить PvP: ${error.message}`);
@@ -217,17 +227,11 @@
       start(false);
     });
     $("gang-button").addEventListener("click", () => start(false));
-    $("pvp-join-button").addEventListener("click", () => start(false));
     $("pvp-retry-button").addEventListener("click", () => perform(submitPending));
     $("pvp-panel").addEventListener("click", (event) => {
       const button = event.target.closest("[data-pvp-action]");
       if (button) action(button.dataset.pvpAction);
     });
-    $("pvp-leave-button").addEventListener("click", () => perform(async () => {
-      const result = await rpc("pvp_leave", { p_battle_id: battle.id });
-      storePending(null);
-      acceptState(result);
-    }));
     $("pvp-close-button").addEventListener("click", () => { battle = null; render(); });
     window.setInterval(poll, 4000);
     window.setInterval(render, 1000);

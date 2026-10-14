@@ -1619,11 +1619,11 @@ grant execute on function public.player_mailbox_claim(uuid) to authenticated;
 grant execute on function public.player_mailbox_ack_claim(uuid) to authenticated;
 
 -- Real-player PvP uses its own server-owned state. The fighter snapshot is
--- accepted from the browser at invitation time; no character record exists
+-- accepted from the browser when the event starts; no character record exists
 -- server-side, so those initial stats are necessarily client-authoritative.
 create table if not exists public.pvp_battles (
   id uuid primary key default gen_random_uuid(),
-  group_id uuid not null references public.player_groups (id) on delete cascade,
+  group_id uuid references public.player_groups (id) on delete set null,
   status text not null default 'waiting' check (status in ('waiting', 'active', 'finished')),
   turn integer not null default 1 check (turn > 0),
   current_user_id uuid references auth.users (id) on delete set null,
@@ -1635,6 +1635,25 @@ create table if not exists public.pvp_battles (
   updated_at timestamptz not null default now(),
   check ((status = 'active') = (current_user_id is not null and deadline_at is not null))
 );
+
+alter table public.pvp_battles alter column group_id drop not null;
+
+do $pvp_battle_group_fk$
+declare
+  v_delete_action text;
+begin
+  select confdeltype::text into v_delete_action
+  from pg_constraint
+  where conrelid = 'public.pvp_battles'::regclass
+    and conname = 'pvp_battles_group_id_fkey';
+  if v_delete_action is distinct from 'n' then
+    alter table public.pvp_battles drop constraint if exists pvp_battles_group_id_fkey;
+    alter table public.pvp_battles
+      add constraint pvp_battles_group_id_fkey
+      foreign key (group_id) references public.player_groups (id) on delete set null;
+  end if;
+end;
+$pvp_battle_group_fk$;
 
 create unique index if not exists pvp_one_waiting_duel_per_group_idx
   on public.pvp_battles (group_id) where status = 'waiting';
@@ -1857,6 +1876,22 @@ begin
 end;
 $$;
 
+create or replace function public.pvp_expire_waiting(p_battle_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+set row_security = off
+as $$
+begin
+  update public.pvp_battles
+  set status = 'finished', reason = 'stale', updated_at = now(),
+      log = log || jsonb_build_array('Событие PvP завершено: оппонент не подключился вовремя.')
+  where id = p_battle_id and status = 'waiting'
+    and created_at <= now() - interval '75 seconds';
+end;
+$$;
+
 create or replace function public.pvp_skill_chance(
   p_actor_concentration numeric,
   p_target_concentration numeric,
@@ -2018,6 +2053,11 @@ begin
   ) then
     raise exception 'Finish the cooperative group battle before starting PvP.';
   end if;
+  update public.pvp_battles
+  set status = 'finished', reason = 'stale', updated_at = now(),
+      log = log || jsonb_build_array('Событие PvP завершено: оппонент не подключился вовремя.')
+  where group_id = v_group_id and status = 'waiting'
+    and created_at <= now() - interval '75 seconds';
   select id into v_battle_id from public.pvp_battles
   where group_id = v_group_id and status = 'waiting' for update;
   if v_battle_id is null then
@@ -2084,6 +2124,7 @@ begin
   if not found or not exists (
     select 1 from public.pvp_fighters where battle_id = p_battle_id and user_id = auth.uid()
   ) then raise exception 'PvP battle is unavailable to this account.'; end if;
+  perform public.pvp_expire_waiting(p_battle_id);
   perform public.pvp_tick_expired(p_battle_id);
   return public.pvp_snapshot(p_battle_id);
 end;
@@ -2109,6 +2150,14 @@ begin
   select count(*) into v_live_count from public.player_group_members
   where group_id = v_group_id and in_dungeon and heartbeat_at > now() - interval '75 seconds';
   if v_live_count <> 2 then return null; end if;
+  perform 1 from public.player_groups where id = v_group_id for update;
+  perform 1 from public.player_group_members
+  where group_id = v_group_id order by user_id for update;
+  update public.pvp_battles
+  set status = 'finished', reason = 'stale', updated_at = now(),
+      log = log || jsonb_build_array('Событие PvP завершено: оппонент не подключился вовремя.')
+  where group_id = v_group_id and status = 'waiting'
+    and created_at <= now() - interval '75 seconds';
   select * into v_battle from public.pvp_battles
   where group_id = v_group_id and status in ('waiting', 'active')
   order by created_at desc limit 1;
@@ -2383,7 +2432,6 @@ as $$
 declare
   v_user_id uuid := (select auth.uid());
   v_battle public.pvp_battles%rowtype;
-  v_winner uuid;
 begin
   if v_user_id is null or p_battle_id is null then raise exception 'Authentication and battle UUID required.'; end if;
   select * into v_battle from public.pvp_battles where id = p_battle_id for update;
@@ -2391,21 +2439,13 @@ begin
     select 1 from public.pvp_fighters where battle_id = p_battle_id and user_id = v_user_id
   ) then raise exception 'PvP battle is unavailable to this account.'; end if;
   if v_battle.status = 'finished' then return public.pvp_snapshot(p_battle_id); end if;
-  select user_id into v_winner from public.pvp_fighters
-  where battle_id = p_battle_id and user_id <> v_user_id;
-  update public.pvp_battles
-  set status = 'finished', current_user_id = null, deadline_at = null,
-      winner_id = case when v_battle.status = 'active' then v_winner else null end,
-      reason = 'surrender', updated_at = now(),
-      log = log || jsonb_build_array((select nickname from public.pvp_fighters
-        where battle_id = p_battle_id and user_id = v_user_id) || ' сдался.')
-  where id = p_battle_id;
-  return public.pvp_snapshot(p_battle_id);
+  raise exception 'PvP encounters cannot be declined or cancelled.';
 end;
 $$;
 
 revoke all on function public.pvp_validate_player(jsonb) from public, anon, authenticated;
 revoke all on function public.pvp_snapshot(uuid) from public, anon, authenticated;
+revoke all on function public.pvp_expire_waiting(uuid) from public, anon, authenticated;
 revoke all on function public.pvp_skill_chance(numeric, numeric, numeric, numeric) from public, anon, authenticated;
 revoke all on function public.pvp_tick_expired(uuid) from public, anon, authenticated;
 revoke all on function public.pvp_start(jsonb, uuid) from public, anon, authenticated;

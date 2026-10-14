@@ -91,6 +91,7 @@ begin
   end if;
   if has_function_privilege('authenticated', 'public.pvp_validate_player(jsonb)', 'execute') or
     has_function_privilege('authenticated', 'public.pvp_snapshot(uuid)', 'execute') or
+    has_function_privilege('authenticated', 'public.pvp_expire_waiting(uuid)', 'execute') or
     has_function_privilege('authenticated', 'public.pvp_skill_chance(numeric,numeric,numeric,numeric)', 'execute') or
     has_function_privilege('authenticated', 'public.pvp_tick_expired(uuid)', 'execute') then
     raise exception 'Internal PvP helper functions must not be executable by authenticated clients.';
@@ -153,17 +154,27 @@ begin
   if v_saved_waiting ->> 'status' <> 'waiting' or
     (v_saved_waiting ->> 'turn')::integer <> 1 or
     jsonb_array_length(v_saved_waiting -> 'players') <> 1 then
-    raise exception 'First PvP start must create a one-player waiting invitation.';
+    raise exception 'First PvP start must create a one-player forced encounter.';
   end if;
   if public.pvp_start(v_player, v_owner_request) <> v_saved_waiting then
     raise exception 'pvp_start request replay must return its original response.';
   end if;
 
+  v_error := null;
+  begin
+    perform public.pvp_leave(v_battle_id);
+  exception when others then
+    get stacked diagnostics v_error = message_text;
+  end;
+  if v_error is null then
+    raise exception 'A participant must not decline or cancel a waiting PvP encounter.';
+  end if;
+
   perform set_config('request.jwt.claim.sub', v_partner::text, true);
   v_result := public.pvp_find();
   if v_result ->> 'id' is distinct from v_battle_id::text or
-    v_result ->> 'status' is distinct from 'waiting' then
-    raise exception 'The online partner must discover a waiting invitation.';
+    v_result ->> 'status' is distinct from 'waiting' or v_result ? 'players' then
+    raise exception 'The online partner must discover the forced encounter without a decline choice.';
   end if;
   v_error := null;
   begin
@@ -419,7 +430,7 @@ where user_id in (
 
 set local role authenticated;
 
-do $surrender_tests$
+do $forced_encounter_tests$
 declare
   v_owner constant uuid := '41111111-1111-4111-8111-111111111111';
   v_partner constant uuid := '42222222-2222-4222-8222-222222222222';
@@ -431,19 +442,48 @@ declare
   }'::jsonb;
   v_result jsonb;
   v_battle_id uuid;
+  v_error text;
 begin
   perform set_config('request.jwt.claim.sub', v_owner::text, true);
   v_result := public.pvp_start(v_player, 'b1111111-1111-4111-8111-111111111111');
   v_battle_id := (v_result ->> 'id')::uuid;
+  v_error := null;
+  begin
+    perform public.pvp_leave(v_battle_id);
+  exception when others then
+    get stacked diagnostics v_error = message_text;
+  end;
+  if v_error is null then raise exception 'The encounter starter must not cancel a waiting event.'; end if;
   perform set_config('request.jwt.claim.sub', v_partner::text, true);
   v_result := public.pvp_start(v_player, 'b2222222-2222-4222-8222-222222222222');
-  v_result := public.pvp_leave(v_battle_id);
-  if v_result ->> 'status' <> 'finished' or v_result ->> 'reason' <> 'surrender' or
-    v_result ->> 'winner_id' <> v_owner::text then
-    raise exception 'Surrender must finish a live duel and award victory to the opponent.';
+  v_error := null;
+  begin
+    perform public.pvp_leave(v_battle_id);
+  exception when others then
+    get stacked diagnostics v_error = message_text;
+  end;
+  if v_error is null or v_result ->> 'status' <> 'active' then
+    raise exception 'Neither participant may cancel the active forced encounter.';
+  end if;
+  perform set_config('request.jwt.claim.sub', v_owner::text, true);
+  v_result := public.pvp_action(
+    v_battle_id, 1, 'attack', 'b3333333-3333-4333-8333-333333333333'
+  );
+  if v_result ->> 'status' <> 'active' or (v_result ->> 'turn')::integer <> 2 then
+    raise exception 'The selected attack must continue the encounter into the next turn.';
   end if;
 end
-$surrender_tests$;
+$forced_encounter_tests$;
+
+reset role;
+update public.pvp_battles
+set status = 'finished', current_user_id = null, deadline_at = null, reason = 'test_cleanup'
+where id = (
+  select battle_id from public.pvp_request_receipts
+  where user_id = '42222222-2222-4222-8222-222222222222'
+    and request_id = 'b2222222-2222-4222-8222-222222222222'
+);
+set local role authenticated;
 
 do $periodic_tests$
 declare
@@ -487,9 +527,62 @@ begin
     (v_result -> 'players' -> 1 ->> 'hp')::integer <> 15 then
     raise exception 'A fighter''s own bleeding must wait until its opponent takes a turn.';
   end if;
-  perform public.pvp_leave(v_battle_id);
 end
 $periodic_tests$;
+
+reset role;
+update public.pvp_battles
+set status = 'finished', current_user_id = null, deadline_at = null, reason = 'test_cleanup'
+where id = (
+  select battle_id from public.pvp_request_receipts
+  where user_id = '42222222-2222-4222-8222-222222222222'
+    and request_id = 'c2222222-2222-4222-8222-222222222222'
+);
+
+do $stale_waiting_tests$
+declare
+  v_owner constant uuid := '41111111-1111-4111-8111-111111111111';
+  v_partner constant uuid := '42222222-2222-4222-8222-222222222222';
+  v_player jsonb := '{
+    "hp":100,"max_hp":100,"attack":20,"armor":0.1,"accuracy":0.9,
+    "concentration":0.9,"agility":0.4,"evasion":0.1,"regeneration":1,
+    "bleeding":1,"infection":0,"potions":2,"revivalChance":0.2,
+    "offhand":"none","focus":1
+  }'::jsonb;
+  v_result jsonb;
+  v_battle_id uuid;
+begin
+  perform set_config('request.jwt.claim.sub', v_owner::text, true);
+  v_result := public.pvp_start(v_player, 'd1111111-1111-4111-8111-111111111111');
+  v_battle_id := (v_result ->> 'id')::uuid;
+  update public.pvp_battles
+  set created_at = now() - interval '76 seconds'
+  where id = v_battle_id;
+  v_result := public.pvp_get(v_battle_id);
+  if v_result ->> 'status' <> 'finished' or v_result ->> 'reason' <> 'stale' or
+    v_result ->> 'winner_id' is not null then
+    raise exception 'A waiting event must expire without winner or reward after disconnect.';
+  end if;
+
+  v_result := public.pvp_start(v_player, 'd2222222-2222-4222-8222-222222222222');
+  v_battle_id := (v_result ->> 'id')::uuid;
+  update public.pvp_battles
+  set created_at = now() - interval '76 seconds'
+  where id = v_battle_id;
+  perform set_config('request.jwt.claim.sub', v_partner::text, true);
+  if public.pvp_find() is not null then
+    raise exception 'pvp_find must not return an expired waiting encounter.';
+  end if;
+  if not exists (
+    select 1 from public.pvp_battles
+    where id = v_battle_id and status = 'finished' and reason = 'stale'
+  ) then
+    raise exception 'pvp_find must settle stale waiting encounters.';
+  end if;
+end
+$stale_waiting_tests$;
+
+set local role authenticated;
 
 do $pvp_start_exclusion$
 declare
@@ -526,5 +619,56 @@ begin
   end if;
 end
 $pvp_start_exclusion$;
+
+reset role;
+
+do $group_removal_tests$
+declare
+  v_owner constant uuid := '41111111-1111-4111-8111-111111111111';
+  v_partner constant uuid := '42222222-2222-4222-8222-222222222222';
+  v_player jsonb := '{
+    "hp":100,"max_hp":100,"attack":20,"armor":0.1,"accuracy":0.9,
+    "concentration":0.9,"agility":0.4,"evasion":0.1,"regeneration":1,
+    "bleeding":1,"infection":0,"potions":2,"revivalChance":0.2,
+    "offhand":"none","focus":1
+  }'::jsonb;
+  v_group_id uuid;
+  v_battle_id uuid;
+  v_result jsonb;
+begin
+  update public.player_group_members
+  set heartbeat_at = now(), in_dungeon = true
+  where user_id in (v_owner, v_partner);
+  update public.player_group_battles
+  set status = 'abandoned'
+  where group_id = (select group_id from public.player_group_members where user_id = v_owner)
+    and status in ('waiting', 'active');
+  select group_id into v_group_id
+  from public.player_group_members where user_id = v_owner;
+
+  perform set_config('request.jwt.claim.sub', v_owner::text, true);
+  v_result := public.pvp_start(v_player, 'f1111111-1111-4111-8111-111111111111');
+  v_battle_id := (v_result ->> 'id')::uuid;
+  perform set_config('request.jwt.claim.sub', v_partner::text, true);
+  v_result := public.pvp_start(v_player, 'f2222222-2222-4222-8222-222222222222');
+  if v_result ->> 'status' <> 'active' then raise exception 'Expected active PvP before group removal.'; end if;
+
+  delete from public.player_groups where id = v_group_id;
+  if not exists (
+    select 1 from public.pvp_battles
+    where id = v_battle_id and group_id is null and status = 'active'
+  ) or (select count(*) from public.pvp_fighters where battle_id = v_battle_id) <> 2 then
+    raise exception 'Dissolving a group must not delete or cancel its active PvP encounter.';
+  end if;
+  perform set_config('request.jwt.claim.sub', v_owner::text, true);
+  v_result := public.pvp_get(v_battle_id);
+  v_result := public.pvp_action(
+    v_battle_id, 1, 'attack', 'f3333333-3333-4333-8333-333333333333'
+  );
+  if v_result ->> 'status' <> 'active' or (v_result ->> 'turn')::integer <> 2 then
+    raise exception 'An active encounter must keep resolving after group removal.';
+  end if;
+end
+$group_removal_tests$;
 
 rollback;

@@ -2868,3 +2868,170 @@ revoke all on function public.item_register_issuance(uuid, uuid, jsonb, text, te
 revoke all on function public.item_get_owned() from public, anon, authenticated, service_role;
 grant execute on function public.item_register_issuance(uuid, uuid, jsonb, text, text) to service_role;
 grant execute on function public.item_get_owned() to authenticated;
+
+-- Independent of writable saves, client combat stats, and local inventory.
+create table if not exists public.guild_expedition_rewards (
+  reward_id smallint primary key check (reward_id between 1 and 3),
+  gold bigint not null check (gold in (15, 20, 25))
+);
+insert into public.guild_expedition_rewards (reward_id, gold)
+values (1, 15), (2, 20), (3, 25)
+on conflict (reward_id) do nothing;
+
+create table if not exists public.guild_expeditions (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id),
+  request_id uuid not null,
+  route text not null check (route = 'guild_patrol'),
+  started_at timestamptz not null,
+  ready_at timestamptz not null,
+  start_response jsonb not null,
+  claimed_at timestamptz,
+  reward_id smallint references public.guild_expedition_rewards(reward_id),
+  receipt_id uuid unique references public.wallet_funding_receipts(id),
+  claim_response jsonb,
+  unique (user_id, request_id),
+  check (ready_at = started_at + interval '1 hour'),
+  check (
+    (claimed_at is null and reward_id is null and receipt_id is null and claim_response is null) or
+    (claimed_at is not null and claimed_at >= ready_at and reward_id is not null and receipt_id is not null and claim_response is not null)
+  )
+);
+create unique index if not exists guild_expeditions_unclaimed_idx
+  on public.guild_expeditions(user_id) where claimed_at is null;
+create index if not exists guild_expeditions_daily_idx
+  on public.guild_expeditions(user_id, started_at);
+alter table public.guild_expedition_rewards enable row level security;
+alter table public.guild_expeditions enable row level security;
+revoke all on public.guild_expedition_rewards, public.guild_expeditions
+  from public, anon, authenticated, service_role;
+
+create or replace function public.guild_expedition_start(
+  p_request_id uuid, p_route text default 'guild_patrol'
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+set row_security = off
+as $$
+declare
+  v_user_id uuid := auth.uid();
+  v_existing public.guild_expeditions%rowtype;
+  v_now timestamptz;
+  v_day timestamptz;
+  v_id uuid := gen_random_uuid();
+  v_response jsonb;
+begin
+  if v_user_id is null then raise exception 'Authentication required.'; end if;
+  if p_request_id is null then raise exception 'Request UUID required.'; end if;
+  -- Serialize all starts for one account, including different request UUIDs.
+  perform pg_catalog.pg_advisory_xact_lock(
+    pg_catalog.hashtextextended('guild-expedition:' || v_user_id::text, 0)
+  );
+  select * into v_existing from public.guild_expeditions
+  where user_id = v_user_id and request_id = p_request_id;
+  if found then
+    if v_existing.route is distinct from p_route then
+      raise exception 'Request UUID was already used with a different payload.';
+    end if;
+    return v_existing.start_response;
+  end if;
+  if p_route is distinct from 'guild_patrol' then raise exception 'Unknown expedition route.'; end if;
+  v_now := clock_timestamp();
+  v_day := date_trunc('day', v_now at time zone 'UTC') at time zone 'UTC';
+  if exists (select 1 from public.guild_expeditions where user_id = v_user_id and claimed_at is null) then
+    raise exception 'Claim the previous expedition first.';
+  end if;
+  if (select count(*) from public.guild_expeditions
+    where user_id = v_user_id and started_at >= v_day and started_at < v_day + interval '24 hours') >= 3 then
+    raise exception 'Daily expedition limit reached.';
+  end if;
+  v_response := jsonb_build_object(
+    'id', v_id, 'route', p_route, 'started_at', v_now,
+    'ready_at', v_now + interval '1 hour', 'status', 'running'
+  );
+  insert into public.guild_expeditions
+    (id, user_id, request_id, route, started_at, ready_at, start_response)
+  values (v_id, v_user_id, p_request_id, p_route, v_now, v_now + interval '1 hour', v_response);
+  return v_response;
+end;
+$$;
+
+create or replace function public.guild_expedition_claim(p_expedition_id uuid)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+set row_security = off
+as $$
+declare
+  v_user_id uuid := auth.uid();
+  v_expedition public.guild_expeditions%rowtype;
+  v_reward public.guild_expedition_rewards%rowtype;
+  v_reward_id smallint;
+  v_receipt_id uuid;
+  v_funding jsonb;
+  v_response jsonb;
+  v_now timestamptz;
+begin
+  if v_user_id is null then raise exception 'Authentication required.'; end if;
+  select * into v_expedition from public.guild_expeditions
+  where id = p_expedition_id and user_id = v_user_id for update;
+  if not found then raise exception 'Expedition not found.'; end if;
+  if v_expedition.claimed_at is not null then return v_expedition.claim_response; end if;
+  v_now := clock_timestamp();
+  if v_now < v_expedition.ready_at then raise exception 'Expedition is not ready.'; end if;
+  -- UUID entropy is server-generated, independent of the request UUID or setseed().
+  v_reward_id := 1 + get_byte(uuid_send(gen_random_uuid()), 0) % 3;
+  select * into strict v_reward from public.guild_expedition_rewards where reward_id = v_reward_id;
+  v_receipt_id := public.wallet_register_funding_receipt(
+    v_user_id, 'gold', v_reward.gold, 'guild_expedition', v_expedition.id::text
+  );
+  v_funding := public.wallet_claim_funding_receipts();
+  v_response := jsonb_build_object(
+    'id', v_expedition.id, 'status', 'claimed', 'claimed_at', v_now,
+    'reward_id', v_reward.reward_id, 'gold', v_reward.gold,
+    'receipt_id', v_receipt_id, 'balances', v_funding -> 'balances'
+  );
+  update public.guild_expeditions
+  set claimed_at = v_now, reward_id = v_reward.reward_id,
+    receipt_id = v_receipt_id, claim_response = v_response
+  where id = v_expedition.id;
+  return v_response;
+end;
+$$;
+
+create or replace function public.guild_expedition_get_owned()
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+set row_security = off
+as $$
+declare
+  v_user_id uuid := auth.uid();
+begin
+  if v_user_id is null then raise exception 'Authentication required.'; end if;
+  return jsonb_build_object(
+    'server_now', clock_timestamp(),
+    'balances', public.wallet_get_balances(),
+    'expeditions', (
+      select coalesce(jsonb_agg(
+        case when e.claimed_at is not null then e.claim_response
+        else e.start_response || jsonb_build_object(
+          'status', case when clock_timestamp() >= e.ready_at then 'ready' else 'running' end
+        ) end order by e.started_at, e.id
+      ), '[]'::jsonb)
+      from public.guild_expeditions e where e.user_id = v_user_id
+    )
+  );
+end;
+$$;
+
+revoke all on function public.guild_expedition_start(uuid, text) from public, anon, authenticated, service_role;
+revoke all on function public.guild_expedition_claim(uuid) from public, anon, authenticated, service_role;
+revoke all on function public.guild_expedition_get_owned() from public, anon, authenticated, service_role;
+grant execute on function public.guild_expedition_start(uuid, text) to authenticated;
+grant execute on function public.guild_expedition_claim(uuid) to authenticated;
+grant execute on function public.guild_expedition_get_owned() to authenticated;

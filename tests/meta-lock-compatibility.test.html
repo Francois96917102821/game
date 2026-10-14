@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Combined ring and food/trophy lock compatibility</title>
+<h1 id="result">RUNNING</h1>
+<pre id="log"></pre>
+<script>
+"use strict";
+(async () => {
+  const output = document.getElementById("log");
+  const failures = [];
+  function assert(condition, message) {
+    if (!condition) throw new Error(message);
+  }
+  async function check(name, action) {
+    try {
+      await action();
+      output.textContent += `PASS ${name}\n`;
+    } catch (error) {
+      failures.push(name);
+      output.textContent += `FAIL ${name}: ${error.message}\n`;
+    }
+  }
+  function withTimeout(promise, label) {
+    let timer;
+    return Promise.race([
+      promise,
+      new Promise((resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} timed out (possible lock deadlock)`)), 8000);
+      }),
+    ]).finally(() => clearTimeout(timer));
+  }
+  const id = (n) => `bbbbbbbb-bbbb-4bbb-8bbb-${String(n).padStart(12, "0")}`;
+  async function openTab(tag) {
+    const frame = document.createElement("iframe");
+    const loaded = new Promise((resolve) => frame.addEventListener("load", resolve, { once: true }));
+    frame.src = `../index.html?meta-lock=${tag}`;
+    document.body.append(frame);
+    await loaded;
+    await frame.contentWindow.eval("gameServicesReady");
+    await frame.contentWindow.initializeTavernPersistence();
+    frame.contentWindow.confirm = () => true;
+    return frame;
+  }
+  function stored(tab, key) {
+    return JSON.parse(tab.localStorage.getItem(key));
+  }
+  function goldMatchesReceipts(meta, startGold, saleGold) {
+    const spent = meta.tavern.foodReceipts.reduce((sum, receipt) => sum + receipt.goldDelta, 0);
+    return meta.tavern.gold === startGold + spent + saleGold;
+  }
+
+  localStorage.clear();
+  const builder = await openTab("builder");
+  const app = builder.contentWindow;
+  const metaKey = app.eval("META_SAVE_KEY");
+  const souls = app.WellSoulCraftingModel;
+  const ringRecipe = Object.values(souls.RECIPES).find((recipe) => recipe.type === "ring");
+  assert(ringRecipe, "combined snapshot must expose a ring soul recipe");
+  const startGold = 2000;
+  // Each installed fixture must supersede IndexedDB backups left by earlier scenarios.
+  let fixtureRevision = 1000;
+  function fixture({ crafted }) {
+    const meta = app.createMetaProgress();
+    meta.souls = souls.createState();
+    meta.souls.base[ringRecipe.soulId] = meta.souls.balances[ringRecipe.soulId] = ringRecipe.amount * 2;
+    meta.tavern.characterLevel = 150;
+    meta.tavern.gold = startGold;
+    meta.dungeonTrophies = { ...meta.dungeonTrophies, shell: 3, courage: 3 };
+    if (crafted) {
+      const result = souls.craft(meta.souls, 150, ringRecipe.id, "gear-1", "meta-lock-ring", 1);
+      assert(result.ok, "ring craft fixture failed");
+      meta.souls = result.state;
+      meta.tavern.stash = [result.gear];
+      meta.tavern.nextGearSequence = 1;
+    }
+    meta.tavern.equippedRingId = null;
+    fixtureRevision += 100;
+    meta.tavern.revision = fixtureRevision;
+    meta.tavern.updatedAt = Date.now();
+    assert(app.isValidMetaProgress(meta), "fixture meta invalid");
+    return meta;
+  }
+  async function installTabs(meta) {
+    for (const frame of document.querySelectorAll("iframe")) frame.remove();
+    localStorage.clear();
+    localStorage.setItem(metaKey, JSON.stringify(meta));
+    const loader = await openTab("seed");
+    await loader.contentWindow.persistTavernToIndexedDb(meta.tavern);
+    loader.remove();
+    const first = await openTab("a");
+    const second = await openTab("b");
+    return [first.contentWindow, second.contentWindow];
+  }
+  async function reloadedMeta() {
+    const frame = await openTab("verify");
+    const meta = frame.contentWindow.getCloudSaveSnapshot().meta;
+    frame.remove();
+    return meta;
+  }
+
+  for (const order of ["before-idb", "after-idb"]) {
+    await check(`ring equip (soul-equipment lock) vs tavern meal (food lock), food paused ${order}`, async () => {
+      const [tabA, tabB] = await installTabs(fixture({ crafted: true }));
+      const original = tabB.commitTavernToIndexedDb;
+      let release;
+      const gate = new Promise((resolve) => { release = resolve; });
+      let reached;
+      const paused = new Promise((resolve) => { reached = resolve; });
+      tabB.commitTavernToIndexedDb = async (...args) => {
+        if (order === "after-idb") await original(...args);
+        reached();
+        await gate;
+        if (order === "before-idb") await original(...args);
+      };
+      const meal = tabB.handleTavernAction("buy-meal", { mealId: "lunch" });
+      await withTimeout(Promise.race([paused, meal.then(() => { throw new Error(`meal finished before its IndexedDB commit: ${tabB.eval("tavernMessage")} / ${tabB.eval("tavernStorageError")}`); })]), "meal pause");
+      await withTimeout(tabA.handleTavernAction("equip-ring", { gearId: "gear-1", removeRing: "false" }),
+        "ring equip during food lock");
+      assert(stored(tabA, metaKey).tavern.equippedRingId === "gear-1",
+        `ring equip was not committed: ${tabA.eval("tavernMessage")}`);
+      release();
+      await withTimeout(meal, "meal commit");
+      tabB.commitTavernToIndexedDb = original;
+      const after = stored(tabA, metaKey);
+      assert(after.tavern.equippedRingId === "gear-1",
+        `concurrent meal overwrote the equipped ring (meal message: ${tabB.eval("tavernMessage")})`);
+      assert(after.tavern.stash.filter((gear) => gear.type === "ring").length === 1, "ring stash changed");
+      assert(goldMatchesReceipts(after, startGold, 0), "gold and food receipts diverged");
+      const reloaded = await reloadedMeta();
+      assert(reloaded.tavern.equippedRingId === "gear-1" &&
+        goldMatchesReceipts(reloaded, startGold, 0) &&
+        reloaded.tavern.foodReceipts.length === after.tavern.foodReceipts.length,
+        "reload (IndexedDB backup) lost ring selection or food receipt");
+      output.textContent += `  info ${order}: meal receipts=${after.tavern.foodReceipts.length}, gold=${after.tavern.gold}\n`;
+    });
+  }
+
+  await check("ring craft (soul-equipment lock) vs tavern meal (food lock) keeps craft debit and output", async () => {
+    const [tabA, tabB] = await installTabs(fixture({ crafted: false }));
+    const original = tabB.commitTavernToIndexedDb;
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    let reached;
+    const paused = new Promise((resolve) => { reached = resolve; });
+    tabB.commitTavernToIndexedDb = async (...args) => {
+      await original(...args);
+      reached();
+      await gate;
+    };
+    const meal = tabB.handleTavernAction("buy-meal", { mealId: "lunch" });
+    await withTimeout(Promise.race([paused, meal.then(() => { throw new Error(`meal finished before its IndexedDB commit: ${tabB.eval("tavernMessage")} / ${tabB.eval("tavernStorageError")}`); })]), "meal pause");
+    await withTimeout(tabA.handleHomesteadAction("craft-soul", { recipeId: ringRecipe.id }), "ring craft");
+    release();
+    await withTimeout(meal, "meal commit");
+    tabB.commitTavernToIndexedDb = original;
+    const after = stored(tabA, metaKey);
+    const crafts = after.souls.transactions.filter((entry) => entry.gear?.type === "ring");
+    assert(crafts.length === 1, `ring craft not committed: ${tabA.eval("homesteadMessage")}`);
+    assert(after.souls.balances[ringRecipe.soulId] === ringRecipe.amount, "soul debit lost or doubled");
+    assert(after.tavern.stash.filter((gear) => gear.type === "ring").length === 1,
+      "crafted ring missing from stash after concurrent meal");
+    assert(goldMatchesReceipts(after, startGold, 0), "gold and food receipts diverged");
+    const reloaded = await reloadedMeta();
+    assert(reloaded.tavern.stash.filter((gear) => gear.type === "ring").length === 1 &&
+      reloaded.souls.balances[ringRecipe.soulId] === ringRecipe.amount &&
+      goldMatchesReceipts(reloaded, startGold, 0), "reload lost ring, soul debit or meal");
+  });
+
+  await check("simultaneous ring equip/craft and trophy buyback in two tabs keep every receipt", async () => {
+    const [tabA, tabB] = await installTabs(fixture({ crafted: true }));
+    const priceBefore = stored(tabA, metaKey).tavern.gold;
+    await withTimeout(Promise.all([
+      tabA.handleTavernAction("equip-ring", { gearId: "gear-1", removeRing: "false" }),
+      tabB.sellGuildTrophy("shell", id(1)),
+      tabA.handleHomesteadAction("craft-soul", { recipeId: ringRecipe.id }),
+      tabB.sellGuildTrophy("courage", id(2)),
+    ]), "mixed ring/trophy operations");
+    const after = stored(tabA, metaKey);
+    const saleGold = after.trophySales.length === 2 ? after.tavern.gold - priceBefore : NaN;
+    assert(after.tavern.equippedRingId === "gear-1", "trophy sale overwrote ring equip");
+    assert(after.tavern.stash.filter((gear) => gear.type === "ring").length === 2, `craft output lost: ${tabA.eval("homesteadMessage")}`);
+    assert(after.souls.balances[ringRecipe.soulId] === 0, "soul debit lost");
+    assert(after.trophySales.length === 2 && after.dungeonTrophies.shell === 2 && after.dungeonTrophies.courage === 2,
+      "trophy receipts or stock lost");
+    assert(saleGold > 0, "trophy proceeds lost");
+    const reloaded = await reloadedMeta();
+    assert(reloaded.tavern.equippedRingId === "gear-1" && reloaded.trophySales.length === 2 &&
+      reloaded.tavern.gold === after.tavern.gold &&
+      reloaded.tavern.stash.filter((gear) => gear.type === "ring").length === 2,
+      "reload diverged from the committed mixed snapshot");
+  });
+
+  document.getElementById("result").dataset.result = failures.length ? "fail" : "pass";
+  document.getElementById("result").textContent = failures.length ? "FAIL" : "PASS";
+})().catch((error) => {
+  document.getElementById("result").dataset.result = "fail";
+  document.getElementById("result").textContent = "FAIL";
+  document.getElementById("log").textContent += error.stack;
+});
+</script>
+</html>

@@ -558,6 +558,7 @@ const ui = {
   abilityLabel: $("class-ability-label"),
   equippedWeapon: $("equipped-weapon"),
   equippedArmor: $("equipped-armor"),
+  equippedRing: $("equipped-ring"),
   inventoryCount: $("inventory-count"),
   inventory: $("inventory-list"),
   merchantActions: $("merchant-actions"),
@@ -719,7 +720,7 @@ function createState() {
     abilityGuarding: false,
     abilityDodge: false,
     focus: 0,
-    equipment: { weapon: null, armor: null },
+    equipment: { weapon: null, armor: null, ring: null },
     inventory: [],
     gearSequence: 0,
     tavernGearIds: [],
@@ -838,16 +839,36 @@ function normalizeMetaProgress(progress) {
   return normalized;
 }
 
-function mergeSoulCraftedGear(tavernState, soulState) {
+function mergeSoulCraftedGear(tavernState, soulState, originals = []) {
   const tavern = JSON.parse(JSON.stringify(tavernState));
+  const acceptedIds = new Set(soulState.transactions.map((entry) => entry.id));
+  const signature = (gear) => JSON.stringify([
+    gear.soulCraftId || gear.id, gear.type, gear.name, gear.bonus,
+  ]);
+  const acceptedRings = new Set(soulState.transactions.filter((entry) => entry.gear?.type === "ring")
+    .map((entry) => signature(entry.gear)));
+  const rejectedRings = new Set(originals.flatMap((source) => source.transactions)
+    .filter((entry) => entry.gear?.type === "ring" && !acceptedIds.has(entry.id))
+    .map((entry) => signature(entry.gear)));
+  // An overspent stale craft cannot keep its output after its debit is rejected.
+  tavern.stash = tavern.stash.filter((gear) =>
+    !rejectedRings.has(signature(gear)) || acceptedRings.has(signature(gear)));
+  if (!tavern.stash.some((gear) => gear.id === tavern.equippedRingId && gear.type === "ring")) {
+    tavern.equippedRingId = null;
+  }
   const usedGearIds = new Set(tavern.stash.map((item) => item.id));
   let addedGear = false;
   for (const transaction of soulState.transactions) {
     if (!transaction.gear) continue;
     const gear = transaction.gear;
+    const byReceipt = gear.soulCraftId && tavern.stash.find((item) => item.soulCraftId === gear.soulCraftId);
+    if (byReceipt) {
+      gear.id = byReceipt.id;
+      continue;
+    }
     const existing = tavern.stash.find((item) => item.id === gear.id);
     if (existing && existing.type === gear.type && existing.name === gear.name &&
-      existing.bonus === gear.bonus) continue;
+      existing.bonus === gear.bonus && existing.soulCraftId === gear.soulCraftId) continue;
     if (existing) {
       do {
         tavern.nextGearSequence += 1;
@@ -974,7 +995,7 @@ function mergeMetaProgress(left, right) {
     otherHomestead,
     "gold",
   ));
-  const mergedSoulGearTavern = mergeSoulCraftedGear(tavern, souls);
+  const mergedSoulGearTavern = mergeSoulCraftedGear(tavern, souls, [first.souls, second.souls]);
   const essenceAfterHomePurchases = (source, other, sourceReceipts) =>
     source.essence - missingHomesteadDebits(sourceReceipts, other.homestead, "essence");
   return {
@@ -1007,7 +1028,7 @@ function mergeMetaProgress(left, right) {
   };
 }
 
-function persistMetaProgress() {
+function persistMetaProgress({ requireLocalCommit = false } = {}) {
   let persisted = false;
   try {
     const stored = JSON.parse(window.localStorage.getItem(META_SAVE_KEY) || "null");
@@ -1019,7 +1040,8 @@ function persistMetaProgress() {
         .reduce((total, receipt) => total + receipt[`${currency}Cost`], 0);
       const dungeonMerged = mergeMetaProgress(metaProgress, local);
       const foodTavern = window.WellTavernModel.reconcileFood(metaProgress.tavern, local.tavern);
-      const soulGearTavern = mergeSoulCraftedGear(foodTavern, dungeonMerged.souls);
+      const soulGearTavern = mergeSoulCraftedGear(foodTavern, dungeonMerged.souls,
+        [metaProgress.souls, local.souls]);
       metaProgress = {
         ...metaProgress,
         essence: Math.max(0, metaProgress.essence - missingDebits("essence")),
@@ -1041,9 +1063,12 @@ function persistMetaProgress() {
   } catch (error) {
     console.warn("Не удалось сохранить развитие лагеря.", error);
   }
-  persistTavernToIndexedDb(metaProgress.tavern).catch((error) => {
-    console.warn("Не удалось создать резервную копию таверны в браузере.", error);
-  });
+  // A stash-only backup cannot atomically preserve soul debits or failed slot changes.
+  if (persisted || !requireLocalCommit) {
+    persistTavernToIndexedDb(metaProgress.tavern).catch((error) => {
+      console.warn("Не удалось создать резервную копию таверны в браузере.", error);
+    });
+  }
   if (persisted && window.WellCloudSave) window.WellCloudSave.scheduleSave(getCloudSaveSnapshot());
   return persisted;
 }
@@ -1143,7 +1168,7 @@ async function commitTavernProgress(nextTavern) {
       try {
         const latest = await readTavernFromIndexedDb();
         if (window.WellTavernModel.isValidState(latest)) {
-          metaProgress.tavern = latest;
+          metaProgress.tavern = window.WellTavernModel.withDefaults(latest);
           try {
             window.localStorage.setItem(META_SAVE_KEY, JSON.stringify(metaProgress));
           } catch (storageError) {
@@ -1185,7 +1210,7 @@ async function initializeTavernPersistence() {
     if (window.WellTavernModel.isValidState(backup) &&
       (!localMetaReadable || !localTavernPresent || backup.updatedAt > metaProgress.tavern.updatedAt ||
         (backup.updatedAt === metaProgress.tavern.updatedAt && backup.revision > metaProgress.tavern.revision))) {
-      metaProgress.tavern = backup;
+      metaProgress.tavern = window.WellTavernModel.withDefaults(backup);
       try {
         window.localStorage.setItem(META_SAVE_KEY, JSON.stringify(metaProgress));
         localMetaReadable = true;
@@ -1311,7 +1336,9 @@ function isValidRun(run) {
       !saved.equipment || typeof saved.equipment !== "object" ||
       !["weapon", "armor"].every((type) =>
         saved.equipment[type] === null || isValidGear(saved.equipment[type], type)
-      )
+      ) ||
+      (saved.equipment.ring !== undefined && saved.equipment.ring !== null &&
+        !isValidGear(saved.equipment.ring, "ring"))
     )) ||
     (saved.gearSequence !== undefined && !isIntegerBetween(saved.gearSequence, 0, 1000000000)) ||
     (saved.tavernGearIds !== undefined && (
@@ -1348,10 +1375,12 @@ function isValidRun(run) {
 
   const storedGear = [
     ...(saved.inventory || []),
-    ...["weapon", "armor"].map((type) => saved.equipment?.[type]).filter(Boolean),
+    ...["weapon", "armor", "ring"].map((type) => saved.equipment?.[type]).filter(Boolean),
   ];
   if (
     new Set(storedGear.map((item) => item.id)).size !== storedGear.length ||
+    new Set(storedGear.filter((item) => item.soulCraftId).map((item) => item.soulCraftId)).size !==
+      storedGear.filter((item) => item.soulCraftId).length ||
     (storedGear.length > 0 && saved.gearSequence === undefined) ||
     storedGear.some((item) => Number(item.id.slice(5)) > saved.gearSequence)
   ) return false;
@@ -1408,10 +1437,12 @@ function isValidGear(item, expectedType) {
   return Boolean(
     item && typeof item === "object" &&
     typeof item.id === "string" && /^gear-\d+$/.test(item.id) &&
-    (item.type === "weapon" || item.type === "armor") &&
+    ["weapon", "armor", "ring"].includes(item.type) &&
     (!expectedType || item.type === expectedType) &&
     typeof item.name === "string" && item.name.length > 0 && item.name.length <= 60 &&
-    isIntegerBetween(item.bonus, 1, 10)
+    isIntegerBetween(item.bonus, 1, 10) &&
+    (item.soulCraftId === undefined || item.type === "ring" &&
+      typeof item.soulCraftId === "string" && item.soulCraftId.length > 0 && item.soulCraftId.length <= 100)
   );
 }
 
@@ -1424,6 +1455,10 @@ function isValidSoulMailItem(item) {
     typeof item.id === "string" &&
     new RegExp(`^soul-${item.soul}-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`, "i").test(item.id),
   );
+}
+
+function isValidMailGear(item) {
+  return isValidGear(item) && item.type !== "ring";
 }
 
 function readBestFloor() {
@@ -1486,7 +1521,7 @@ function saveActiveRun() {
   if (runSaved && state.started && state.tavernGearIds?.length) {
     const usedGear = new Set(state.tavernGearIds);
     const tavern = metaProgress.tavern;
-    const stash = tavern.stash.filter((item) => !usedGear.has(item.id));
+    const stash = tavern.stash.filter((item) => item.type === "ring" || !usedGear.has(item.id));
     if (stash.length !== tavern.stash.length) {
       tavern.stash = stash;
       if (usedGear.has(tavern.preparedGearId)) tavern.preparedGearId = null;
@@ -1599,6 +1634,15 @@ function canUseEnhancementRunes() {
   const coopBattle = window.WellPlayerGroups?.getBattle();
   return (!state.started || state.gameOver) && !state.enemy && !dungeonDuelLocked() &&
     !(coopBattle && ["waiting", "active"].includes(coopBattle.status));
+}
+
+function canChangeRing() {
+  if (!canUseEnhancementRunes() || (savedRun && !savedRun.gameOver)) return false;
+  try {
+    return window.localStorage.getItem(RUN_SAVE_KEY) === null;
+  } catch {
+    return false;
+  }
 }
 
 function useEnhancementRune(type) {
@@ -1758,6 +1802,7 @@ function getRoomEnemies() {
 }
 
 function startGameWithClass(classId) {
+  if (tavernDialogBusy || homesteadBusy || pendingTavernState) return;
   const characterClass = CLASS_BY_ID.get(classId);
   if (!characterClass || characterClass.tier !== 1) return;
   selectedClassId = classId;
@@ -1772,6 +1817,12 @@ function startGameWithClass(classId) {
   if (preparedGear) {
     state.equipment[preparedGear.type] = JSON.parse(JSON.stringify(preparedGear));
     state.tavernGearIds.push(preparedGear.id);
+  }
+  const ring = metaProgress.tavern.stash.find((item) =>
+    item.id === metaProgress.tavern.equippedRingId && item.type === "ring");
+  if (ring) {
+    // The persistent stash owns the ring; the run freezes its equipped view.
+    state.equipment.ring = { ...ring };
   }
   state.quests = createRunQuests();
   state.runBossesDefeated = 0;
@@ -1916,7 +1967,8 @@ function resumeGame() {
   if (state.abilityCooldown === undefined) state.abilityCooldown = 0;
   if (state.abilityGuarding === undefined) state.abilityGuarding = false;
   if (state.abilityDodge === undefined) state.abilityDodge = false;
-  if (state.equipment === undefined) state.equipment = { weapon: null, armor: null };
+  if (state.equipment === undefined) state.equipment = { weapon: null, armor: null, ring: null };
+  if (state.equipment.ring === undefined) state.equipment.ring = null;
   if (state.inventory === undefined) state.inventory = [];
   if (state.gearSequence === undefined) state.gearSequence = 0;
   if (state.runBossesDefeated === undefined) state.runBossesDefeated = 0;
@@ -2776,12 +2828,14 @@ function awardRunEssence() {
 function awardEnhancementRune(level, receiptId) {
   if (metaProgress.runeDrops.length >= 100000 ||
     metaProgress.runeDrops.some((receipt) => receipt.id === receiptId)) return null;
-  const drop = window.WellRuneModel.rollDrop(level, metaProgress.runeDrops);
+  const drop = window.WellRuneModel.rollDrop(
+    level, metaProgress.runeDrops, Math.random, isValidGear(state.equipment?.ring, "ring"),
+  );
   if (!drop) return null;
   const receipt = { id: receiptId || window.crypto.randomUUID(), ...drop };
   metaProgress.runeDrops.push(receipt);
   addJournal("Руна усиления найдена",
-    `Руна «${window.WellRuneModel.RUNES[drop.type].name}» добавлена в запас.`, "ᛟ");
+    `Руна «${window.WellRuneModel.RUNES[drop.type].name}» ×${drop.count} добавлена в запас.`, "ᛟ");
   return receipt;
 }
 
@@ -3083,6 +3137,7 @@ function equipGear(gearId) {
   const index = state.inventory.findIndex((item) => item.id === gearId);
   if (index < 0) return;
   const gear = state.inventory[index];
+  if (gear.type === "ring") return;
   const previous = state.equipment[gear.type];
   state.inventory.splice(index, 1);
   state.equipment[gear.type] = gear;
@@ -3309,6 +3364,9 @@ function renderEquipment() {
   soulCraftButton.textContent = `Души и R-ремесло · ур. ${metaProgress.tavern.characterLevel} / ${window.WellSoulCraftingModel.CRAFT_LEVEL}`;
   const weapon = state.equipment.weapon;
   const armor = state.equipment.armor;
+  const ring = state.started && !state.gameOver ? state.equipment.ring
+    : metaProgress.tavern.stash.find((item) => item.id === metaProgress.tavern.equippedRingId);
+  ui.equippedRing.textContent = ring ? `${ring.name} · +${ring.bonus} · ×2 руны (до лимита)` : "Нет";
   for (const [element, gear, type] of [
     [ui.equippedWeapon, weapon, "оружие"],
     [ui.equippedArmor, armor, "броня"],
@@ -3339,14 +3397,15 @@ function renderEquipment() {
     const name = document.createElement("strong");
     name.textContent = gear.name;
     const stat = document.createElement("span");
-    stat.textContent = `+${gear.bonus} к ${gear.type === "weapon" ? "урону" : "защите"}`;
+    stat.textContent = gear.type === "ring" ? `+${gear.bonus} · ×2 руны (до лимита)`
+      : `+${gear.bonus} к ${gear.type === "weapon" ? "урону" : "защите"}`;
     details.append(name, stat);
     const equip = document.createElement("button");
     equip.className = "equip-button";
     equip.type = "button";
     equip.dataset.gearId = gear.id;
     equip.textContent = "Надеть";
-    equip.disabled = Boolean(state.enemy) || state.gameOver || dungeonDuelLocked();
+    equip.disabled = gear.type === "ring" || Boolean(state.enemy) || state.gameOver || dungeonDuelLocked();
     const actions = document.createElement("div");
     actions.className = "inventory-actions";
     actions.append(equip);
@@ -3665,9 +3724,11 @@ function renderHomestead() {
   for (const recipe of Object.values(soulModel.RECIPES)) {
     const missing = metaProgress.souls.balances[recipe.soulId] < recipe.amount;
     const level = metaProgress.tavern.characterLevel;
-    const unavailable = level < soulModel.CRAFT_LEVEL || missing || metaProgress.tavern.stash.length >= 10000;
+    const unavailable = !canChangeRing() || level < soulModel.CRAFT_LEVEL || missing ||
+      metaProgress.tavern.stash.length >= 10000;
     soulCrafting.append(homeCard(
-      `${recipe.name} · ${recipe.type === "weapon" ? "урон" : "защита"} +${recipe.bonus}`,
+      recipe.type === "ring" ? `${recipe.name} · +${recipe.bonus} · ×2 руны (до лимита)`
+        : `${recipe.name} · ${recipe.type === "weapon" ? "урон" : "защита"} +${recipe.bonus}`,
       `${recipe.amount} × ${recipe.soulName}. ${level < soulModel.CRAFT_LEVEL
         ? `Нужен ${soulModel.CRAFT_LEVEL}-й уровень.`
         : missing ? "Недостаточно душ."
@@ -3843,7 +3904,7 @@ function renderHomestead() {
       ? [
         ...["weapon", "armor"].map((type) => transferRun.equipment?.[type]).filter(Boolean)
           .map((gear) => ({ gear, source: "equipment" })),
-        ...(transferRun.inventory || []).map((gear) => ({ gear, source: "inventory" })),
+        ...(transferRun.inventory || []).filter(isValidMailGear).map((gear) => ({ gear, source: "inventory" })),
       ]
       : [];
     const availableSouls = Object.keys(window.WellSoulCraftingModel.SOULS)
@@ -4150,7 +4211,7 @@ function loadPendingMailboxOperations() {
       const operation = JSON.parse(window.localStorage.getItem(key) || "null");
       if (operation && operation.key === key && typeof operation.itemId === "string" &&
         typeof operation.recipientId === "string" && typeof operation.requestId === "string" &&
-        (isValidGear(operation.gear) || isValidSoulMailItem(operation.gear))) pending.push(operation);
+        (isValidMailGear(operation.gear) || isValidSoulMailItem(operation.gear))) pending.push(operation);
     }
   } catch (error) {
     console.warn("Не удалось прочитать очередь почтового ящика.", error);
@@ -4200,6 +4261,9 @@ function writeSavedMailboxRun(nextRun) {
 }
 
 async function finishMailboxSend(operation) {
+  if (!(isValidMailGear(operation?.gear) || isValidSoulMailItem(operation?.gear))) {
+    throw new Error("Кольца и неизвестные предметы не передаются по почте.");
+  }
   let escrow = operation.escrowId
     ? { id: operation.escrowId }
     : await mailboxRpc("player_mailbox_send", {
@@ -4275,7 +4339,7 @@ async function sendMailboxGear(gearId, recipientId, recipientName) {
     run.equipment?.weapon,
     run.equipment?.armor,
   ].filter(Boolean).find((item) => item.id === gearId);
-  if (!isValidGear(gear)) throw new Error("Можно отправить только валидную экипировку из сохранённого инвентаря.");
+  if (!isValidMailGear(gear)) throw new Error("Можно отправить только оружие или броню из сохранённого инвентаря. Кольца не передаются.");
   if (!window.confirm(`Передать ${gear.name} (+${gear.bonus}) игроку ${recipientName || "из вашей группы"}? Цена отправки — 0. Предмет останется вашим, пока локальное удаление не сохранится.`)) return;
   const key = `${mailboxStoragePrefix(context.userId)}${encodeURIComponent(gear.id)}:${encodeURIComponent(recipientId)}`;
   let operation;
@@ -4355,7 +4419,7 @@ async function retryMailboxSend(key) {
     throw new Error("Не удалось прочитать квитанцию отправки.");
   }
   if (!operation || operation.key !== key ||
-    !(isValidGear(operation.gear) || isValidSoulMailItem(operation.gear))) {
+    !(isValidMailGear(operation.gear) || isValidSoulMailItem(operation.gear))) {
     throw new Error("Квитанция отправки отсутствует или повреждена.");
   }
   const receipt = await finishMailboxSend(operation);
@@ -4381,7 +4445,7 @@ async function refreshMailbox() {
 async function claimMailboxItem(mailId) {
   const claim = await mailboxRpc("player_mailbox_claim", { p_mail_id: mailId });
   if (!claim || claim.id !== mailId ||
-    !(isValidGear(claim.gear) || isValidSoulMailItem(claim.gear))) {
+    !(isValidMailGear(claim.gear) || isValidSoulMailItem(claim.gear))) {
     throw new Error("Сервер не вернул валидный предмет для получения.");
   }
   if (isValidSoulMailItem(claim.gear)) {
@@ -4477,6 +4541,15 @@ function closeHomestead() {
 }
 
 async function handleHomesteadAction(action, data = {}) {
+  if (action === "craft-soul" && !data.gearLockAcquired) {
+    if (!navigator.locks) {
+      homesteadMessage = "Браузер не поддерживает безопасную блокировку ремесла. Души не списаны.";
+      renderHomestead();
+      return;
+    }
+    return navigator.locks.request("well-soul-equipment", () =>
+      handleHomesteadAction(action, { ...data, gearLockAcquired: true }));
+  }
   if (["cook-meal", "eat-meal"].includes(action) && !data.foodLockAcquired) {
     if (!navigator.locks) {
       homesteadMessage = "Браузер не поддерживает безопасную блокировку кухни. Еда не списана.";
@@ -4599,6 +4672,8 @@ async function handleHomesteadAction(action, data = {}) {
         message = `${recipe.name} сохранён в постоянном запасе.`;
       }
     } else if (action === "craft-soul") {
+      if (!canChangeRing()) throw new Error("R-ремесло доступно только вне забега и боя.");
+      latestHomesteadBalances();
       const soulModel = window.WellSoulCraftingModel;
       const recipe = soulModel.RECIPES[data.recipeId];
       if (!recipe) throw new Error("Рецепт R-экипировки не найден.");
@@ -4628,9 +4703,9 @@ async function handleHomesteadAction(action, data = {}) {
       tavern.stash.push(result.gear);
       tavern.nextGearSequence = nextSequence + 1;
       tavern.revision += 1;
-      tavern.updatedAt = now;
+      tavern.updatedAt = Math.max(now, previous.tavern.updatedAt + 1);
       metaProgress = { ...previous, souls: result.state, tavern };
-      if (!persistMetaProgress()) {
+      if (!persistMetaProgress({ requireLocalCommit: true })) {
         metaProgress = previous;
         throw new Error("Не удалось сохранить R-экипировку. Души не списаны.");
       }
@@ -5044,7 +5119,7 @@ function isTavernGearAlreadyInRun(gearId) {
   const run = savedRun || (state.started ? state : null);
   if (!run) return false;
   return (run.tavernGearIds || []).includes(gearId) ||
-    [...(run.inventory || []), run.equipment?.weapon, run.equipment?.armor]
+    [...(run.inventory || []), run.equipment?.weapon, run.equipment?.armor, run.equipment?.ring]
       .filter(Boolean).some((gear) => gear.id === gearId);
 }
 
@@ -5208,14 +5283,18 @@ function renderTavern() {
     const title = document.createElement("strong");
     title.textContent = gear.name;
     const description = document.createElement("span");
-    description.textContent = `${gear.type === "weapon" ? "Оружие" : "Броня"} · +${gear.bonus} к ${gear.type === "weapon" ? "атаке" : "защите"}`;
+    description.textContent = gear.type === "ring"
+      ? `Кольцо · +${gear.bonus} · ×2 руны за PvE-победу, до лимита; без боевых статов`
+      : `${gear.type === "weapon" ? "Оружие" : "Броня"} · +${gear.bonus} к ${gear.type === "weapon" ? "атаке" : "защите"}`;
     details.append(title, description);
     const button = tavernActionButton(
-      tavern.preparedGearId === gear.id ? "Подготовлено" : "Взять в новый спуск",
-      "prepare-gear",
-      { gearId: gear.id },
+      gear.type === "ring" ? (tavern.equippedRingId === gear.id ? "Снять кольцо" : "Надеть кольцо")
+        : tavern.preparedGearId === gear.id ? "Подготовлено" : "Взять в новый спуск",
+      gear.type === "ring" ? "equip-ring" : "prepare-gear",
+      { gearId: gear.id, removeRing: tavern.equippedRingId === gear.id ? "true" : "false" },
     );
     button.disabled = button.disabled || Boolean(state.started && !state.gameOver);
+    if (gear.type === "ring") button.disabled = button.disabled || !canChangeRing();
     row.append(details, button);
     ui.tavernStash.append(row);
   }
@@ -5300,6 +5379,15 @@ async function persistTavernCandidate(candidate) {
 }
 
 async function handleTavernAction(action, data = {}) {
+  if (action === "equip-ring" && !data.gearLockAcquired) {
+    if (!navigator.locks) {
+      tavernMessage = "Браузер не поддерживает безопасную блокировку экипировки. Кольцо не изменено.";
+      renderTavern();
+      return;
+    }
+    return navigator.locks.request("well-soul-equipment", () =>
+      handleTavernAction(action, { ...data, gearLockAcquired: true }));
+  }
   if (["eat", "buy-meal", "claim-job", "retry"].includes(action) && !data.foodLockAcquired) {
     if (!navigator.locks) {
       tavernMessage = "Браузер не поддерживает безопасную блокировку еды. Ничего не списано.";
@@ -5368,10 +5456,35 @@ async function handleTavernAction(action, data = {}) {
         : `Награда получена один раз: ${tavernRewardDescription(job)}.`;
     } else if (action === "prepare-gear") {
       const gear = candidate.stash.find((item) => item.id === data.gearId);
-      if (!gear || isTavernGearAlreadyInRun(gear.id)) throw new Error("Этот предмет уже подготовлен к сохранённому спуску.");
+      if (!gear || gear.type === "ring" || isTavernGearAlreadyInRun(gear.id)) throw new Error("Этот предмет недоступен для подготовки к спуску.");
       candidate.preparedGearId = candidate.preparedGearId === gear.id ? null : gear.id;
       candidate.updatedAt = now;
       tavernMessage = candidate.preparedGearId ? `${gear.name} подготовлен к следующему новому спуску.` : "Подготовка предмета отменена.";
+    } else if (action === "equip-ring") {
+      if (!canChangeRing()) throw new Error("Кольцо можно надеть или снять только вне забега и боя.");
+      const expectedRingId = metaProgress.tavern.equippedRingId ?? null;
+      latestHomesteadBalances();
+      candidate = window.WellTavernModel.withDefaults(metaProgress.tavern);
+      if (candidate.equippedRingId !== expectedRingId) {
+        throw new Error("Экипировка изменена в другой копии. Повтори действие с актуальным кольцом.");
+      }
+      const gear = candidate.stash.find((item) => item.id === data.gearId && item.type === "ring");
+      if (!gear) throw new Error("Кольцо не найдено в постоянном запасе.");
+      if (data.removeRing === "true" && candidate.equippedRingId !== gear.id) {
+        throw new Error("Это кольцо уже снято.");
+      }
+      candidate.equippedRingId = data.removeRing === "true" ? null : gear.id;
+      candidate.revision += 1;
+      candidate.updatedAt = Math.max(now, metaProgress.tavern.updatedAt + 1);
+      const previous = metaProgress;
+      metaProgress = { ...previous, tavern: candidate };
+      if (!persistMetaProgress({ requireLocalCommit: true })) {
+        metaProgress = previous;
+        throw new Error("Кольцо не изменено: не удалось сохранить экипировку.");
+      }
+      tavernMessage = candidate.equippedRingId ? `${gear.name} надет. ×2 руны, до лимита.` : "Кольцо снято.";
+      render();
+      return;
     } else if (action === "start-game") {
       const kind = data.kind;
       const bet = Number($("tavern-bet").value);

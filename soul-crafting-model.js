@@ -14,17 +14,17 @@
     fury: Object.freeze({ name: "Душа ярости", symbol: "⚔", weapon: 5, armor: 5, ring: 6 }),
   });
   const EQUIPMENT_NAMES = Object.freeze({
-    time: { weapon: "R · Клинок эпохи", armor: "R · Плащ секунд" },
-    fire: { weapon: "R · Пламенный меч", armor: "R · Кираса углей" },
-    death: { weapon: "R · Коса безмолвия", armor: "R · Покров последнего часа" },
-    blood: { weapon: "R · Кровавый резец", armor: "R · Броня алой клятвы" },
-    serpent: { weapon: "R · Змеиный клык", armor: "R · Чешуйчатая кираса" },
-    cursed: { weapon: "R · Проклятый клинок", armor: "R · Проклятый панцирь" },
-    fury: { weapon: "R · Яростная секира", armor: "R · Доспех ярости" },
+    time: { weapon: "R · Клинок эпохи", armor: "R · Плащ секунд", ring: "R · Перстень вечного мига" },
+    fire: { weapon: "R · Пламенный меч", armor: "R · Кираса углей", ring: "R · Кольцо тлеющего солнца" },
+    death: { weapon: "R · Коса безмолвия", armor: "R · Покров последнего часа", ring: "R · Перстень тихого исхода" },
+    blood: { weapon: "R · Кровавый резец", armor: "R · Броня алой клятвы", ring: "R · Кольцо алой печати" },
+    serpent: { weapon: "R · Змеиный клык", armor: "R · Чешуйчатая кираса", ring: "R · Перстень змеиной спирали" },
+    cursed: { weapon: "R · Проклятый клинок", armor: "R · Проклятый панцирь", ring: "R · Кольцо сумрачного обета" },
+    fury: { weapon: "R · Яростная секира", armor: "R · Доспех ярости", ring: "R · Перстень неукротимого пламени" },
   });
   const RECIPES = Object.freeze(Object.fromEntries(
     Object.entries(SOULS).flatMap(([soulId, soul]) =>
-      ["weapon", "armor"].map((type) => {
+      ["weapon", "armor", "ring"].map((type) => {
         const id = `${soulId}-${type}`;
         return [id, Object.freeze({
           id,
@@ -64,7 +64,7 @@
     return Boolean(
       gear && typeof gear === "object" &&
       typeof gear.id === "string" && /^gear-\d+$/.test(gear.id) &&
-      ["weapon", "armor"].includes(gear.type) &&
+      ["weapon", "armor", "ring"].includes(gear.type) &&
       typeof gear.name === "string" && gear.name.length > 0 && gear.name.length <= 60 &&
       Number.isInteger(gear.bonus) && gear.bonus >= 1 && gear.bonus <= 10,
     );
@@ -118,7 +118,8 @@
             transaction.changes[recipe?.soulId] !== -recipe?.amount ||
             transaction.gear.type !== recipe?.type ||
             transaction.gear.name !== recipe?.name ||
-            transaction.gear.bonus !== recipe?.bonus)) ||
+            transaction.gear.bonus !== recipe?.bonus ||
+            (recipe?.type === "ring" && transaction.gear.soulCraftId !== transaction.id))) ||
         (transaction.kind === "transfer-in" &&
           (Object.keys(transaction.changes).length !== 1 ||
             Object.values(transaction.changes).some((amount) => amount !== 1))) ||
@@ -204,6 +205,7 @@
       return { ok: false, reason: "Не удалось создать номер предмета." };
     }
     const gear = { id: gearId, type: recipe.type, name: recipe.name, bonus: recipe.bonus };
+    if (recipe.type === "ring") gear.soulCraftId = receiptId;
     const result = apply(current, {
       id: receiptId,
       kind: "craft",

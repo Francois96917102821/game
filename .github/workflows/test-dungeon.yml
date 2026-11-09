@@ -10,6 +10,7 @@ on:
       - "tavern-model.js"
       - "game.js"
       - "pvp-client.js"
+      - "player-groups.js"
       - "index.html"
       - "styles.css"
       - "tests/*.html"

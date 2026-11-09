@@ -551,6 +551,7 @@ declare
   v_min_level integer;
   v_max_level integer;
   v_invite jsonb;
+  v_expired_members integer := 0;
 begin
   if v_user_id is null then raise exception 'Войди в аккаунт, чтобы обновить статус группы.'; end if;
   if p_level is null or p_level not between 1 and 10000 then raise exception 'Уровень игрока недопустим.'; end if;
@@ -563,6 +564,29 @@ begin
   set nickname = btrim(p_nickname), level = p_level,
       in_dungeon = coalesce(p_in_dungeon, false), heartbeat_at = now()
   where group_id = v_group_id and user_id = v_user_id;
+
+  with expired_members as (
+    select member.ctid
+    from public.player_group_members as member
+    where member.group_id = v_group_id
+      and member.user_id <> v_user_id
+      and member.heartbeat_at <= now() - interval '75 seconds'
+    for update skip locked
+  )
+  delete from public.player_group_members as member
+  using expired_members
+  where member.ctid = expired_members.ctid;
+  get diagnostics v_expired_members = row_count;
+
+  if v_expired_members > 0 then
+    update public.player_group_battles
+    set status = 'abandoned',
+        action_log = action_log || jsonb_build_array(jsonb_build_object(
+          'type', 'system', 'text', 'Совместный бой завершён: напарник отключился.'
+        )),
+        updated_at = now()
+    where group_id = v_group_id and status in ('waiting', 'active');
+  end if;
 
   select min(level), max(level) into v_min_level, v_max_level
   from public.player_group_members where group_id = v_group_id;
@@ -578,6 +602,7 @@ begin
   return jsonb_build_object(
     'group', public.player_group_state(v_group_id),
     'invite', v_invite,
+    'partner_expired', v_expired_members > 0,
     'dissolved', false
   );
 end;
@@ -1061,6 +1086,7 @@ declare
   v_raw_damage integer := 0;
   v_target_damage integer := 0;
   v_acted integer;
+  v_live_member_count integer;
   v_response jsonb;
   v_log_item jsonb;
 begin
@@ -1071,24 +1097,51 @@ begin
   select group_id into v_group_id
   from public.player_group_members where user_id = v_user_id;
   if v_group_id is null then raise exception 'Ты не состоишь в группе.'; end if;
-  if not exists (
-    select 1 from public.player_group_battles
-    where id = p_battle_id and group_id = v_group_id
-  ) then raise exception 'Совместный бой недоступен для этой группы.'; end if;
-
-  select response into v_response
-  from public.player_group_battle_action_receipts
-  where battle_id = p_battle_id and user_id = v_user_id and request_id = p_request_id;
-  if found then return v_response; end if;
 
   select status, round, boss_hp, boss_damage
   into v_status, v_round, v_boss_hp, v_boss_damage
-  from public.player_group_battles where id = p_battle_id for update;
+  from public.player_group_battles
+  where id = p_battle_id and group_id = v_group_id
+  for update;
+  if not found then raise exception 'Совместный бой недоступен для этой группы.'; end if;
+
   select response into v_response
   from public.player_group_battle_action_receipts
   where battle_id = p_battle_id and user_id = v_user_id and request_id = p_request_id;
-  if found then return v_response; end if;
+  if found then
+    select count(*) into v_live_member_count
+    from public.player_group_members
+    where group_id = v_group_id and in_dungeon and heartbeat_at > now() - interval '75 seconds';
+    if v_status in ('waiting', 'active') and v_live_member_count <> 2 then
+      update public.player_group_battles
+      set status = 'abandoned',
+          action_log = action_log || jsonb_build_array(jsonb_build_object(
+            'type', 'system', 'text', 'Совместный бой завершён: напарник отключился.'
+          )),
+          updated_at = now()
+      where id = p_battle_id and status in ('waiting', 'active');
+    end if;
+    return public.player_group_battle_snapshot(p_battle_id);
+  end if;
   if v_status <> 'active' then raise exception 'Совместный бой сейчас не принимает действия.'; end if;
+
+  select count(*) into v_live_member_count
+  from public.player_group_members
+  where group_id = v_group_id and in_dungeon and heartbeat_at > now() - interval '75 seconds';
+  if v_live_member_count <> 2 then
+    update public.player_group_battles
+    set status = 'abandoned',
+        action_log = action_log || jsonb_build_array(jsonb_build_object(
+          'type', 'system', 'text', 'Совместный бой завершён: напарник отключился.'
+        )),
+        updated_at = now()
+    where id = p_battle_id and status in ('waiting', 'active');
+    v_response := public.player_group_battle_snapshot(p_battle_id);
+    insert into public.player_group_battle_action_receipts (battle_id, user_id, request_id, response)
+    values (p_battle_id, v_user_id, p_request_id, v_response);
+    return v_response;
+  end if;
+
   select * into v_player
   from public.player_group_battle_players
   where battle_id = p_battle_id and user_id = v_user_id

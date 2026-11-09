@@ -8,6 +8,7 @@
   const PENDING_INBOX_PREFIX = "well-of-whispers-pending-group-inbox:";
   const PENDING_BATTLE_INVITE_PREFIX = "well-of-whispers-pending-battle-invite:";
   const ACTIVE_BATTLE_PREFIX = "well-of-whispers-active-group-battle:";
+  const PENDING_BATTLE_ACTION_PREFIX = "well-of-whispers-pending-group-battle-action:";
   const HANDLED_HINTS_PREFIX = "well-of-whispers-handled-group-hints:";
   const HEARTBEAT_INTERVAL = 25_000;
   const PRESENCE_TTL = 75_000;
@@ -57,6 +58,7 @@
   let battlePollTimer = 0;
   let battlePollInFlight = false;
   let battleActionInFlight = false;
+  let pendingBattleAction = null;
 
   function notificationsEnabled() {
     try {
@@ -64,6 +66,43 @@
     } catch (error) {
       console.warn("Не удалось прочитать настройку уведомлений групп.", error);
       return true;
+    }
+  }
+
+  function savePendingBattleAction(operation) {
+    try {
+      const key = `${PENDING_BATTLE_ACTION_PREFIX}${operation?.userId || user?.id}`;
+      if (operation) window.localStorage.setItem(key, JSON.stringify(operation));
+      else if (user) window.localStorage.removeItem(key);
+      pendingBattleAction = operation;
+      return true;
+    } catch (error) {
+      pendingBattleAction = null;
+      console.error("Не удалось сохранить незавершённый ход совместного боя.", error);
+      setStatus(operation
+        ? "Не удалось сохранить ход для безопасного повтора; действие не отправлено."
+        : "Сервер уже принял ход, но локальный ключ повтора не удалён; повтор будет безопасным.", true);
+      return false;
+    }
+  }
+
+  function readPendingBattleAction(userId) {
+    if (!userId) return null;
+    try {
+      const saved = JSON.parse(window.localStorage.getItem(`${PENDING_BATTLE_ACTION_PREFIX}${userId}`) || "null");
+      if (saved === null) return null;
+      if (saved.userId !== userId || typeof saved.battleId !== "string" ||
+        !Number.isInteger(saved.round) || saved.round < 1 ||
+        !["attack", "heavy", "potion", "guard"].includes(saved.action) ||
+        typeof saved.requestId !== "string" ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(saved.requestId)) {
+        throw new Error("Сохранённый ход совместного боя имеет неверный формат.");
+      }
+      return saved;
+    } catch (error) {
+      console.error("Не удалось восстановить незавершённый ход совместного боя.", error);
+      setStatus("Не удалось восстановить незавершённый ход совместного боя.", true);
+      return null;
     }
   }
 
@@ -225,7 +264,8 @@
       log.append(row);
     }
     log.scrollTop = log.scrollHeight;
-    const canAct = battle.status === "active" && own && own.hp > 0 && !own.acted && !battleActionInFlight;
+    const canAct = battle.status === "active" && own && own.hp > 0 && !own.acted &&
+      !battleActionInFlight && !pendingBattleAction;
     for (const id of ["coop-attack-button", "coop-heavy-button", "coop-potion-button", "coop-guard-button"]) {
       $(id).disabled = !canAct;
     }
@@ -233,9 +273,18 @@
     $("coop-potion-button").textContent = `⚗ Выпить зелье · ${own?.potions ?? 0}`;
     $("coop-potion-button").disabled = !canAct || !own?.potions || own.hp >= own.max_hp;
     $("coop-leave-button").hidden = !["waiting", "active"].includes(battle.status);
+    $("coop-retry-button").hidden = !pendingBattleAction;
+    $("coop-retry-button").disabled = battleActionInFlight || pendingBattleAction?.userId !== user?.id ||
+      pendingBattleAction?.battleId !== battle.id;
   }
 
   function setBattle(nextBattle) {
+    if (pendingBattleAction?.battleId === nextBattle?.id) {
+      const own = nextBattle.players?.find((player) => player.user_id === pendingBattleAction.userId);
+      if (nextBattle.status !== "active" || nextBattle.round > pendingBattleAction.round || own?.acted) {
+        savePendingBattleAction(null);
+      }
+    }
     battle = nextBattle;
     if (battle?.id && group?.id) saveActiveBattleId(battle.id, group.id);
     if (typeof options?.onBattleUpdate === "function") options.onBattleUpdate(battle, user?.id);
@@ -337,29 +386,48 @@
     );
   }
 
-  function requestBattleAction(action) {
-    if (!battle?.id || battleActionInFlight) return;
-    const userId = user?.id;
-    const battleId = battle.id;
+  async function submitPendingBattleAction() {
+    const operation = pendingBattleAction;
+    if (!operation || operation.userId !== user?.id || operation.battleId !== battle?.id || battleActionInFlight) return;
     battleActionInFlight = true;
-    const requestId = createRequestId();
-    for (const id of ["coop-attack-button", "coop-heavy-button", "coop-potion-button", "coop-guard-button"]) {
-      $(id).disabled = true;
-    }
-    rpc("player_group_battle_action", {
-      p_battle_id: battleId,
-      p_action: action,
-      p_request_id: requestId,
-    }).then((result) => {
-      if (user?.id === userId && battle?.id === battleId) setBattle(result);
-    }).catch((error) => {
-      if (user?.id !== userId || battle?.id !== battleId) return;
-      setStatus(`Не удалось выполнить ход: ${friendlyError(error)}`, true);
-      console.error("Не удалось выполнить действие совместного боя.", error);
-    }).finally(() => {
+    renderBattleControls();
+    try {
+      const result = await rpc("player_group_battle_action", {
+        p_battle_id: operation.battleId,
+        p_action: operation.action,
+        p_request_id: operation.requestId,
+      });
+      if (user?.id !== operation.userId || battle?.id !== operation.battleId) return;
+      savePendingBattleAction(null);
+      setBattle(result);
+    } catch (error) {
+      if (user?.id === operation.userId && battle?.id === operation.battleId) {
+        setStatus(`Не удалось выполнить ход: ${friendlyError(error)}. Запрос сохранён — повтори отправку.`, true);
+        console.error("Не удалось выполнить действие совместного боя.", error);
+      }
+    } finally {
       battleActionInFlight = false;
-      if (user?.id === userId && battle?.id === battleId) renderBattleControls();
-    });
+      if (user?.id === operation.userId && battle?.id === operation.battleId) renderBattleControls();
+    }
+  }
+
+  function requestBattleAction(action) {
+    if (!battle?.id || battleActionInFlight || pendingBattleAction) return;
+    const operation = {
+      userId: user?.id,
+      battleId: battle.id,
+      round: battle.round,
+      action,
+      requestId: createRequestId(),
+    };
+    if (!operation.userId || !savePendingBattleAction(operation)) return;
+    submitPendingBattleAction();
+  }
+
+  function retryBattleAction() {
+    if (pendingBattleAction?.userId === user?.id && pendingBattleAction.battleId === battle?.id) {
+      submitPendingBattleAction();
+    }
   }
 
   async function leaveBattle() {
@@ -632,6 +700,10 @@
       group = result?.group || null;
       groupStateReceivedAt = group ? Date.now() : 0;
       invite = result?.invite || null;
+      if (result?.partner_expired) {
+        setStatus("Напарник не отправлял heartbeat дольше 75 секунд: его место освобождено.");
+        showNotice("Напарник отключился более чем на 75 секунд; можно пригласить другого игрока.");
+      }
       if (!group) {
         invite = null;
         battle = null;
@@ -681,14 +753,17 @@
 
   async function withBusy(action, successMessage) {
     if (busy) return;
+    const userId = user?.id;
     busy = true;
     render();
     try {
       await action();
-      if (successMessage) setStatus(successMessage);
+      if (successMessage && user?.id === userId) setStatus(successMessage);
     } catch (error) {
-      setStatus(`Не удалось выполнить действие: ${friendlyError(error)}`, true);
-      console.error("Ошибка управления группой игроков.", error);
+      if (user?.id === userId) {
+        setStatus(`Не удалось выполнить действие: ${friendlyError(error)}`, true);
+        console.error("Ошибка управления группой игроков.", error);
+      }
     } finally {
       busy = false;
       render();
@@ -697,10 +772,12 @@
 
   async function createGroup() {
     await withBusy(async () => {
+      const userId = user?.id;
       const result = await rpc("create_player_group", {
         p_nickname: getNickname(),
         p_level: playerState.level,
       });
+      if (user?.id !== userId) return;
       group = result?.group || null;
       groupStateReceivedAt = group ? Date.now() : 0;
       invite = result?.invite_code ? { invite_code: result.invite_code, expires_at: result.expires_at } : null;
@@ -710,7 +787,10 @@
 
   async function createInvite() {
     await withBusy(async () => {
+      const userId = user?.id;
+      const groupId = group?.id;
       const result = await rpc("create_player_group_invite");
+      if (!isCurrentContext(userId, groupId)) return;
       invite = result?.invite_code ? { invite_code: result.invite_code, expires_at: result.expires_at } : null;
       await heartbeat();
     }, "Код приглашения готов.");
@@ -718,11 +798,13 @@
 
   async function acceptInvite() {
     await withBusy(async () => {
+      const userId = user?.id;
       const result = await rpc("accept_player_group_invite", {
         p_code: ui.acceptCode.value.trim().toUpperCase(),
         p_nickname: getNickname(),
         p_level: playerState.level,
       });
+      if (user?.id !== userId) return;
       group = result || null;
       groupStateReceivedAt = group ? Date.now() : 0;
       invite = null;
@@ -733,10 +815,15 @@
   }
 
   async function dissolveGroup() {
+    const userId = user?.id;
+    const groupId = group?.id;
+    if (!groupId) return;
     if (!window.confirm("Распустить группу для обоих игроков?")) return;
+    if (!isCurrentContext(userId, groupId)) return;
     await withBusy(async () => {
       await rpc("dissolve_player_group");
-      const pendingCount = refundPendingShares(group.id);
+      if (!isCurrentContext(userId, groupId)) return;
+      const pendingCount = refundPendingShares(groupId);
       group = null;
       groupStateReceivedAt = 0;
       invite = null;
@@ -964,6 +1051,8 @@
       lastHeartbeatDungeon = null;
       lastPartnerActivity = null;
       battle = null;
+      battleActionInFlight = false;
+      pendingBattleAction = readPendingBattleAction(user?.id);
       battlePollInFlight = false;
       if (battlePollTimer) window.clearTimeout(battlePollTimer);
       battlePollTimer = 0;
@@ -1006,6 +1095,7 @@
     $("coop-heavy-button").addEventListener("click", () => requestBattleAction("heavy"));
     $("coop-potion-button").addEventListener("click", () => requestBattleAction("potion"));
     $("coop-guard-button").addEventListener("click", () => requestBattleAction("guard"));
+    $("coop-retry-button").addEventListener("click", retryBattleAction);
     $("coop-leave-button").addEventListener("click", () => leaveBattle().catch((error) => {
       setStatus(`Не удалось покинуть совместный бой: ${friendlyError(error)}`, true);
       console.error("Не удалось покинуть совместный бой.", error);

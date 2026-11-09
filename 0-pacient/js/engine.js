@@ -36,14 +36,15 @@
 
   function stopTyping() { if (typing) { typing.skip(); typing = null; } }
 
-  function typeParagraphs(paras, done) {
+  function typeParagraphs(paras, v, done) {
     const box = $('text');
     box.innerHTML = '';
-    const els = paras.map(p => {
+    const els = paras.map(raw => {
+      const p = typeof raw === 'function' ? raw(v) : raw;
       const el = document.createElement('p');
-      if (typeof p === 'object') el.className = 'echo';
+      if (typeof p === 'object' && p) el.className = 'echo';
       box.appendChild(el);
-      return { el, str: typeof p === 'object' ? p.e : p };
+      return { el, str: typeof p === 'object' && p ? p.e : p };
     });
     let pi = 0, ci = 0, timer = null, finished = false;
     const finish = () => {
@@ -74,6 +75,9 @@
 
     if (v.health <= 0 && !scene.ending) { return go('end_gray'); }
 
+    // Служебная сцена-маршрутизатор: без текста, сразу решает, куда идти дальше.
+    if (scene.route) { return go(scene.route(v)); }
+
     state.scene = id;
     save();
     show('game');
@@ -92,7 +96,7 @@
 
     const choicesBox = $('choices');
     choicesBox.innerHTML = '';
-    typeParagraphs(scene.text, () => {
+    typeParagraphs(scene.text, v, () => {
       if (scene.ending) {
         const e = STORY.endings.find(x => x.id === scene.ending);
         const h = document.createElement('h3');
@@ -106,7 +110,8 @@
         b.onclick = () => {
           Sound.play('click');
           if (c.do) c.do(state.vars);
-          if (c.next === '@menu') { save(); menu(); } else go(c.next);
+          const next = typeof c.next === 'function' ? c.next(state.vars) : c.next;
+          if (next === '@menu') { save(); menu(); } else go(next);
         };
         choicesBox.appendChild(b);
       });

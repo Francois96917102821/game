@@ -32,6 +32,7 @@ jobs:
         run: |
           mkdir -p dist
           cp index.html styles.css game.js game-art.svg cloud-save.js player-groups.js cloud-config.js tavern-model.js gold-economy-model.js expeditions-model.js homestead-model.js soul-crafting-model.js rune-model.js dungeon-model.js pvp-client.js dist/
+          cp -r 0-pacient dist/0-pacient
       - name: Configure optional Supabase client
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}

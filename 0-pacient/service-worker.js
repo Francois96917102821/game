@@ -1,6 +1,6 @@
 // Простой кэш «всё для офлайна». При обновлении версии игры меняем CACHE_NAME —
 // это заставит сервис-воркер перекачать файлы заново.
-const CACHE_NAME = 'tq-cache-v1';
+const CACHE_NAME = 'tq-cache-v2';
 const ASSETS = [
   './',
   './index.html',
@@ -12,7 +12,18 @@ const ASSETS = [
   './js/engine.js',
   './assets/icons/icon-192.png',
   './assets/icons/icon-512.png',
-  './assets/icons/apple-touch-icon.png'
+  './assets/icons/apple-touch-icon.png',
+  './assets/images/metro.jpg',
+  './assets/images/tunnel.jpg',
+  './assets/images/city.jpg',
+  './assets/images/hospital.jpg',
+  './assets/images/danger.jpg',
+  './assets/images/university.jpg',
+  './assets/images/warehouse.jpg',
+  './assets/images/radio.jpg',
+  './assets/images/camp.jpg',
+  './assets/images/dome.jpg',
+  './assets/images/dome_in.jpg'
 ];
 
 self.addEventListener('install', event => {

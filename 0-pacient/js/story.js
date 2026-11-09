@@ -2,19 +2,23 @@
 // Поля сцены: bg, fx (частицы), ambient, sfx[], effect ('shake'|'flash'), onEnter(v), text[], choices[], ending.
 // Абзац-объект {e: '...'} это голос Эхо. Выбор: {text, next, if(v), do(v)}.
 
+function img(name) {
+  return `linear-gradient(rgba(5,7,6,.1), rgba(4,5,5,.5)), url("assets/images/${name}.jpg") center/cover no-repeat`;
+}
+
 const BG = {
-  metro:    'radial-gradient(ellipse at 50% 20%, #1c2a2a 0%, #0a0f0f 70%)',
-  tunnel:   'radial-gradient(ellipse at 50% 90%, #2a1a14 0%, #0a0808 70%)',
-  city:     'linear-gradient(#1b1f1c, #2b2620 70%, #0d0c0a)',
-  hospital: 'radial-gradient(ellipse at 50% 30%, #243238 0%, #0b1013 75%)',
-  danger:   'radial-gradient(ellipse at 50% 50%, #3a1210 0%, #0a0505 75%)',
-  dark:     '#070807',
-  university: 'linear-gradient(#171c22, #262b22 70%, #0a0c09)',
-  warehouse:  'linear-gradient(#1a1a16, #2e2822 70%, #0b0a08)',
-  radio:      'radial-gradient(ellipse at 50% 10%, #1b2630 0%, #090c10 75%)',
-  camp:       'radial-gradient(ellipse at 50% 70%, #2a2016 0%, #0a0806 75%)',
-  dome:       'linear-gradient(#10161a, #1a2026 60%, #050607)',
-  dome_in:    'radial-gradient(ellipse at 50% 30%, #151a2a 0%, #05060a 75%)'
+  metro:      img('metro'),
+  tunnel:     img('tunnel'),
+  city:       img('city'),
+  hospital:   img('hospital'),
+  danger:     img('danger'),
+  dark:       '#070807',
+  university: img('university'),
+  warehouse:  img('warehouse'),
+  radio:      img('radio'),
+  camp:       img('camp'),
+  dome:       img('dome'),
+  dome_in:    img('dome_in')
 };
 
 const STORY = {
